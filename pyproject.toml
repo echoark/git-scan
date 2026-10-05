@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68.0", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "git-scan"
+version = "0.1.0"
+description = "Git precommit scanner for sensitive data"
+requires-python = ">=3.11"
+dependencies = [
+    "click>=8.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+mcp = [
+    "mcp[cli]>=1.0",
+]
+dev = [
+    "pytest>=7.0",
+]
+
+[project.scripts]
+git-scan = "git_scan.cli.main:cli"
+
+[tool.setuptools.packages.find]
+include = ["git_scan*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

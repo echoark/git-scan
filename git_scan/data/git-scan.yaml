@@ -1,0 +1,84 @@
+# git-scan package defaults — base layer of three-layer config.
+#
+# User overrides: ~/.config/git-scan/git-scan.yaml
+# Project overrides: ./git-scan.yaml (repo root)
+#
+# Arrays of dicts merge by composite key (id + name).
+# Set disabled: true on any inherited pattern to suppress it.
+# All patterns are regex.
+---
+
+entropy:
+  enabled: true
+  threshold: 4.2
+  min_len: 20
+  exclusions:
+    - id: npm-integrity
+      file_glob: "*lock.json"
+      content_pattern: '"integrity":\s*"sha\d+-[^"]+"'
+    - id: yarn-integrity
+      file_glob: "yarn.lock"
+      content_pattern: 'integrity\s+sha\d+-\S+'
+    - id: commit-sha-in-docs
+      file_glob: "*.md"
+      content_pattern: 'https://github\.com/[^/]+/[^/]+/commit/[a-f0-9]{40}'
+
+thresholds:
+  large_amount: 300000
+  suspicious_nonround: 10000
+  suspicious_any: 100000
+  cents_review: 500
+
+patterns:
+  # --- Tokens & credentials ---
+  - id: github-pat
+    pattern: "ghp_[0-9a-zA-Z]{36}"
+    category: token
+  - id: github-fine-grained
+    pattern: "github[_]pat[_][a-zA-Z0-9_]+"
+    category: token
+  - id: google-oauth-access
+    pattern: "ya29\\.[a-zA-Z0-9._-]+"
+    category: token
+  - id: google-oauth-client-id
+    pattern: "[0-9]+-[a-z0-9]+\\.apps\\.googleusercontent\\.com"
+    category: token
+  - id: google-oauth-client-secret
+    pattern: "GOCSPX-[a-zA-Z0-9_-]+"
+    category: token
+  - id: google-oauth-refresh
+    pattern: "1//[0-9a-zA-Z_-]+"
+    category: token
+  - id: google-api-key
+    pattern: "AIza[a-zA-Z0-9_-]{35}"
+    category: token
+  - id: openai-key
+    pattern: "sk-[a-zA-Z0-9]{48}"
+    category: token
+  - id: slack-token
+    pattern: "xox[bp]-[a-zA-Z0-9-]+"
+    category: token
+  - id: aws-access-key
+    pattern: "\\bAKIA[A-Z0-9]{16}\\b"
+    category: token
+
+  # --- Private keys ---
+  # Patterns use regex construction to avoid containing the literal key header,
+  # which would trigger secret scanners on this file itself.
+  - id: rsa-private-key
+    pattern: "[-]{5}BEGIN[ ]RSA[ ]PRIVATE[ ]KEY[-]{5}"
+    category: key
+  - id: openssh-private-key
+    pattern: "[-]{5}BEGIN[ ]OPENSSH[ ]PRIVATE[ ]KEY[-]{5}"
+    category: key
+
+  # --- Identifiers ---
+  - id: uuid-dashed
+    pattern: "\\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\\b"
+    category: identifier
+  - id: uuid-compact
+    pattern: "\\b[0-9a-fA-F]{32}\\b"
+    category: identifier
+  - id: hex-40
+    pattern: "\\b[a-f0-9]{40}\\b"
+    category: identifier
