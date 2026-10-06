@@ -72,12 +72,19 @@ patterns:
     pattern: "[-]{5}BEGIN[ ]OPENSSH[ ]PRIVATE[ ]KEY[-]{5}"
     category: key
 
+  - id: generic-api-key
+    # Four or more 8-character alphanumeric groups joined by - _ or .
+    pattern: "\\b[a-zA-Z0-9]{8}(?:[-_.][a-zA-Z0-9]{8}){3,}\\b"
+    category: token
   # --- Identifiers ---
   - id: uuid-dashed
     pattern: "\\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\\b"
     category: identifier
   - id: uuid-compact
     pattern: "\\b[0-9a-fA-F]{32}\\b"
+    category: identifier
+  - id: uuid-underscore
+    pattern: "\\b[0-9a-fA-F]{8}_[0-9a-fA-F]{4}_[0-9a-fA-F]{4}_[0-9a-fA-F]{4}_[0-9a-fA-F]{12}\\b"
     category: identifier
   - id: hex-40
     pattern: "\\b[a-f0-9]{40}\\b"

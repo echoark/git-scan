@@ -169,3 +169,26 @@ def test_disabled_pattern_not_detected(tmp_path):
     report = run_scan(str(repo), only_step="patterns")
     check = next(c for c in report.checks if c.name == "Patterns")
     assert check.passed
+
+
+def _scan_text(tmp_path, text):
+    repo = _init_repo(tmp_path)
+    (repo / "notes.txt").write_text(text)
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    report = run_scan(str(repo), only_step="patterns")
+    return next(c for c in report.checks if c.name == "Patterns")
+
+
+def test_generic_four_group_api_key_detected(tmp_path):
+    key = "-".join(["Ab3dEf7h", "Q2w9Zx4k", "Lm8nPq1r", "St5uVw6y"])
+    assert not _scan_text(tmp_path, f"key = {key}").passed
+
+
+def test_three_groups_not_flagged_as_api_key(tmp_path):
+    text = "-".join(["Ab3dEf7h", "Q2w9Zx4k", "Lm8nPq1r"])
+    assert _scan_text(tmp_path, f"ref = {text}").passed
+
+
+def test_uuid_underscore_detected(tmp_path):
+    uuid = "_".join(["3f2b8c1a", "9d4e", "4a7b", "8c6d", "1e2f3a4b5c6d"])
+    assert not _scan_text(tmp_path, f"id = {uuid}").passed
