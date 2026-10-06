@@ -13,6 +13,7 @@ def test_discover_steps_finds_modules():
     assert "drive_ids" in names
     assert "git_identity" in names
     assert "amounts" in names
+    assert "names" in names
 
 
 def test_get_step_names():

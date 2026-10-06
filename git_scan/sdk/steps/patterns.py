@@ -79,9 +79,13 @@ def _compile_config_patterns(config) -> List[Tuple[str, re.Pattern]]:
     """Build compiled regex patterns from merged config."""
     if config is None:
         return []
+    return compile_patterns(config.patterns)
 
+
+def compile_patterns(patterns: List[dict]) -> List[Tuple[str, re.Pattern]]:
+    """Compile pattern entries, applying word_boundary and not_followed_by."""
     result = []
-    for p in config.patterns:
+    for p in patterns:
         pattern_str = p.get("pattern", "")
         regex_str = pattern_str
 
