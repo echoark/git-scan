@@ -1,157 +1,177 @@
-"""Git identity consistency checks."""
+"""Git identity check: real git repos and a real GitHub CLI hosts file in tmp dirs."""
 
-import os
 import subprocess
-from unittest.mock import patch
-from pathlib import Path
 
 import pytest
 
-from git_scan.sdk.scanner import run_scan
+from git_scan.sdk.steps.git_identity import (
+    check_git_identity,
+    domain_matches,
+    remote_host,
+)
+
+NOREPLY = "12345+octo@users.noreply.github.com"
+OTHER_NOREPLY = "999+someone@users.noreply.github.com"
 
 
 @pytest.fixture(autouse=True)
-def home_sandbox(tmp_path, monkeypatch):
-    """Redirect HOME to isolate global git config."""
-    fake_home = tmp_path / "fake_home"
-    fake_home.mkdir()
-    monkeypatch.setenv("HOME", str(fake_home))
-    return fake_home
+def sandbox(tmp_path, monkeypatch):
+    """Isolate HOME (global git config) and the GitHub CLI config dir."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("GH_CONFIG_DIR", str(tmp_path / "gh"))
+    for var in ("GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL", "EMAIL",
+                "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    return tmp_path
 
 
-def _init_repo(path):
-    subprocess.run(["git", "init", "-b", "main", str(path)],
-                   check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.name", "Test User"],
-                   cwd=path, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"],
-                   cwd=path, check=True)
+def gh_login(tmp_path, host, *logins):
+    d = tmp_path / "gh"
+    d.mkdir(exist_ok=True)
+    users = "".join(f"            {u}:\n" for u in logins)
+    (d / "hosts.yml").write_text(
+        f"{host}:\n    git_protocol: https\n    users:\n{users}    user: {logins[0]}\n"
+    )
 
 
-def _commit(path, filename, content, author_email=None):
-    (path / filename).write_text(content)
-    subprocess.run(["git", "add", filename], cwd=path, check=True, capture_output=True)
-    env = os.environ.copy()
-    if author_email:
-        env["GIT_AUTHOR_EMAIL"] = author_email
-        env["GIT_COMMITTER_EMAIL"] = author_email
-    subprocess.run(["git", "commit", "--no-verify", "-m", f"Add {filename}"],
-                   cwd=path, env=env, check=True, capture_output=True)
-
-
-def _run_identity(repo_path):
-    report = run_scan(str(repo_path), only_step="git_identity")
-    return next(c for c in report.checks if c.name == "Git identity")
-
-
-# --- No Local Configuration (Historical Consistency Mode) ---
-
-def test_pristine_repo_single_user_passes(tmp_path):
+def make_repo(tmp_path, remote=None, global_email=None, repo_email=None):
     repo = tmp_path / "repo"
-    repo.mkdir()
-    _init_repo(repo)
-    _commit(repo, "file1.txt", "content", author_email="user@example.com")
-    subprocess.run(["git", "config", "--local", "--unset", "user.email"],
-                   cwd=repo, check=True)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    if global_email:
+        subprocess.run(["git", "config", "--global", "user.email", global_email], check=True)
+    subprocess.run(["git", "config", "--global", "user.name", "Test"], check=True)
+    if repo_email:
+        subprocess.run(["git", "config", "user.email", repo_email], cwd=repo, check=True)
+    if remote:
+        subprocess.run(["git", "remote", "add", "origin", remote], cwd=repo, check=True)
+    return repo
 
-    with patch.dict(os.environ, {"GIT_AUTHOR_EMAIL": "user@example.com"}):
-        result = _run_identity(repo)
-    assert result.passed
+
+# --- Rule 1: the repo's own setting is trusted ---
+
+def test_repo_setting_trusted_anywhere(tmp_path):
+    repo = make_repo(tmp_path, "https://github.com/customer/app.git",
+                     global_email="work@example.com", repo_email="me@example.org")
+    assert check_git_identity(repo).passed
 
 
-def test_pristine_history_but_impending_mismatch_fails(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _init_repo(repo)
-    _commit(repo, "file1.txt", "content", author_email="user@example.com")
-    subprocess.run(["git", "config", "--local", "--unset", "user.email"],
-                   cwd=repo, check=True)
-
-    with patch.dict(os.environ, {"GIT_AUTHOR_EMAIL": "test@fake.com"}):
-        result = _run_identity(repo)
+def test_repo_setting_overridden_by_env_fails(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path, "https://github.com/octo/app.git", repo_email=NOREPLY)
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "other@example.com")
+    result = check_git_identity(repo)
     assert not result.passed
-    assert any("History has" in f for f in result.findings)
+    assert "differs from the repo's user.email" in result.findings[0]
 
 
-def test_mixed_history_no_local_config_fails(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _init_repo(repo)
-    _commit(repo, "file1.txt", "c1", author_email="user@example.com")
-    _commit(repo, "file2.txt", "c2", author_email="test@example.com")
-    subprocess.run(["git", "config", "--local", "--unset", "user.email"],
-                   cwd=repo, check=True)
+# --- Rule 2: inherited email on github.com ---
 
-    result = _run_identity(repo)
+def test_github_noreply_of_logged_in_account_passes(tmp_path):
+    gh_login(tmp_path, "github.com", "octo")
+    repo = make_repo(tmp_path, "https://github.com/octo-org/app.git", global_email=NOREPLY)
+    assert check_git_identity(repo).passed
+
+
+def test_github_noreply_any_of_several_accounts(tmp_path):
+    gh_login(tmp_path, "github.com", "customer-acct", "octo")
+    repo = make_repo(tmp_path, "https://github.com/octo/app", global_email=NOREPLY)
+    assert check_git_identity(repo).passed
+
+
+def test_github_personal_address_blocked(tmp_path):
+    gh_login(tmp_path, "github.com", "octo")
+    repo = make_repo(tmp_path, "https://github.com/octo/app.git",
+                     global_email="me@example.net")
+    result = check_git_identity(repo)
     assert not result.passed
+    assert any("git config user.email" in f for f in result.findings)
 
 
-# --- Local Configuration Present (Explicit Trust Mode) ---
-
-def test_local_config_and_commits_match_passes(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _init_repo(repo)
-    subprocess.run(["git", "config", "--local", "user.email", "user@example.com"],
-                   cwd=repo, check=True)
-    _commit(repo, "file1.txt", "c1", author_email="user@example.com")
-
-    with patch.dict(os.environ, {"GIT_AUTHOR_EMAIL": "user@example.com"}):
-        result = _run_identity(repo)
-    assert result.passed
+def test_github_work_address_blocked(tmp_path):
+    gh_login(tmp_path, "github.com", "octo")
+    repo = make_repo(tmp_path, "https://github.com/octo/app.git",
+                     global_email="me@example.com")
+    assert not check_git_identity(repo).passed
 
 
-def test_local_config_but_unpushed_commits_mismatch_fails(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _init_repo(repo)
-    subprocess.run(["git", "config", "--local", "user.email", "user@example.com"],
-                   cwd=repo, check=True)
-    _commit(repo, "file1.txt", "c1", author_email="test@fake.com")
-
-    with patch.dict(os.environ, {"GIT_AUTHOR_EMAIL": "user@example.com"}):
-        result = _run_identity(repo)
+def test_github_noreply_of_account_not_logged_in_blocked(tmp_path):
+    gh_login(tmp_path, "github.com", "octo")
+    repo = make_repo(tmp_path, "https://github.com/octo/app.git", global_email=OTHER_NOREPLY)
+    result = check_git_identity(repo)
     assert not result.passed
-    assert any("Unpushed" in f for f in result.findings)
+    assert "isn't logged into" in result.findings[0]
 
 
-def test_impending_email_differs_from_local_config_fails(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _init_repo(repo)
-    subprocess.run(["git", "config", "--local", "user.email", "user@example.com"],
-                   cwd=repo, check=True)
-
-    with patch.dict(os.environ, {"GIT_AUTHOR_EMAIL": "test@fake.com"}):
-        result = _run_identity(repo)
+def test_github_not_logged_in_blocked(tmp_path):
+    repo = make_repo(tmp_path, "https://github.com/octo/app.git", global_email=NOREPLY)
+    result = check_git_identity(repo)
     assert not result.passed
-    assert any("differs from local config" in f for f in result.findings)
+    assert any("gh auth login" in f for f in result.findings)
 
 
-# --- Edge Cases (No Remote / Upstream) ---
+# --- Rule 3: inherited email on other hosts ---
 
-def test_no_upstream_local_config_commits_match_passes(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _init_repo(repo)
-    subprocess.run(["git", "config", "--local", "user.email", "user@example.com"],
-                   cwd=repo, check=True)
-    _commit(repo, "file1.txt", "c1", author_email="user@example.com")
-
-    with patch.dict(os.environ, {"GIT_AUTHOR_EMAIL": "user@example.com"}):
-        result = _run_identity(repo)
-    assert result.passed
+def test_self_hosted_domain_match_passes(tmp_path):
+    repo = make_repo(tmp_path, "git@internal-git.example.com:team/app.git",
+                     global_email="me@example.com")
+    assert check_git_identity(repo).passed
 
 
-def test_no_upstream_local_config_commits_mismatch_fails(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _init_repo(repo)
-    subprocess.run(["git", "config", "--local", "user.email", "user@example.com"],
-                   cwd=repo, check=True)
-    _commit(repo, "file1.txt", "c1", author_email="test@fake.com")
-
-    with patch.dict(os.environ, {"GIT_AUTHOR_EMAIL": "user@example.com"}):
-        result = _run_identity(repo)
+def test_self_hosted_noreply_blocked(tmp_path):
+    gh_login(tmp_path, "github.com", "octo")
+    repo = make_repo(tmp_path, "https://internal-git.example.com/team/app.git",
+                     global_email=NOREPLY)
+    result = check_git_identity(repo)
     assert not result.passed
-    assert any("Unpushed" in f for f in result.findings)
+    assert "doesn't match the remote host" in result.findings[0]
+
+
+def test_enterprise_server_noreply_of_logged_in_account_passes(tmp_path):
+    gh_login(tmp_path, "github.example.com", "octo")
+    repo = make_repo(tmp_path, "https://github.example.com/team/app.git",
+                     global_email="7+octo@users.noreply.github.example.com")
+    assert check_git_identity(repo).passed
+
+
+# --- No remote ---
+
+def test_no_remote_passes(tmp_path):
+    repo = make_repo(tmp_path, global_email="anyone@example.com")
+    assert check_git_identity(repo).passed
+
+
+# --- Helpers ---
+
+@pytest.mark.parametrize("url,host", [
+    ("https://github.com/o/r.git", "github.com"),
+    ("https://user@Git.Example.COM/o/r", "git.example.com"),
+    ("git@git.example.com:o/r.git", "git.example.com"),
+    ("ssh://git@git.example.org:2222/o/r.git", "git.example.org"),
+])
+def test_remote_host(url, host):
+    assert remote_host(url) == host
+
+
+@pytest.mark.parametrize("email,host,ok", [
+    ("me@example.com", "internal-git.example.com", True),
+    ("me@example.com", "example.com", True),
+    ("me@example.com.au", "git.example.com.au", True),
+    ("me@corp.example.com", "git.example.com", False),
+    ("me@example.org", "gitlab.example-tools.org", False),
+    ("me@test.com", "git.latest.com", False),
+])
+def test_domain_matches(email, host, ok):
+    assert domain_matches(email, host) is ok
+
+
+def test_runs_through_the_scanner(tmp_path):
+    """The step is discovered and run by run_scan."""
+    from git_scan.sdk.scanner import run_scan
+
+    gh_login(tmp_path, "github.com", "octo")
+    repo = make_repo(tmp_path, "https://github.com/octo/app.git", global_email=NOREPLY)
+    report = run_scan(str(repo), only_step="git_identity")
+    check = next(c for c in report.checks if c.name == "Git identity")
+    assert check.passed
