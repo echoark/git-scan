@@ -95,8 +95,10 @@ class Compiled:
         yield self.regex
 
     def applies_to(self, file_path: str) -> bool:
-        return not any(fnmatch.fnmatch(file_path, g) or fnmatch.fnmatch(
-            file_path.rsplit("/", 1)[-1], g) for g in self.exclude_files)
+        """Globs match the whole repo-relative path, never just the base
+        name, so an exclusion for one file can't silently cover every file
+        of the same name elsewhere."""
+        return not any(fnmatch.fnmatch(file_path, g) for g in self.exclude_files)
 
     def search(self, text: str):
         return self.regex.search(text)

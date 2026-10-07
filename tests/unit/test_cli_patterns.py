@@ -158,3 +158,17 @@ def test_allowed_emails_round_trip_and_scan(tmp_path, monkeypatch):
     assert _run("emails", "disallow", addr).exit_code == 0
     assert _run("emails", "disallow", addr).exit_code == 1
     assert _run("emails", "allow", "not-an-address").exit_code == 1
+
+
+def test_exclude_files_matches_the_full_path_not_the_base_name(tmp_path, monkeypatch):
+    repo = _repo(tmp_path, monkeypatch)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "--allow-empty", "-m", "init"], check=True)
+    _run("patterns", "add", "co", "--pattern", "Vendorco", "--exclude-file", "data/defaults.yaml")
+    (repo / "data").mkdir()
+    (repo / "data" / "defaults.yaml").write_text("Vendorco\n")      # excluded
+    (repo / "other").mkdir()
+    (repo / "other" / "defaults.yaml").write_text("Vendorco\n")     # same name, still scanned
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    r = _run("run", str(repo), "--step", "patterns")
+    assert r.exit_code == 1
+    assert "other/defaults.yaml:1" in r.output and "data/defaults.yaml" not in r.output

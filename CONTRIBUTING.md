@@ -93,8 +93,10 @@ Rules:
   deleting and disabling.
 - **A pattern entry's fields:** `id`, `pattern`, `category`,
   `word_boundary`, `not_followed_by` (list), `exclude_files` (list of
-  globs matched against the file path and its base name; the pattern is
-  skipped there, and for a name check, when the name itself matches),
+  globs matched against the whole repo-relative path, never the base name
+  alone, so one file's exclusion can't cover same-named files elsewhere;
+  the pattern is skipped there, and for a name check, when the name itself
+  matches),
   `disabled`. `patterns edit` writes only the changed fields, which for a
   built-in means an override entry the merge applies.
 - **`allowed_emails`** is a top-level list the email check ignores,
