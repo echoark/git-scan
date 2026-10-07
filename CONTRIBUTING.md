@@ -23,6 +23,19 @@ All behavior lives in `git_scan/sdk/`. The CLI and MCP layers parse input,
 call the SDK, and format output. Logic found in `cli/` or `mcp/` moves to
 the SDK.
 
+## Development setup
+
+```bash
+git clone https://github.com/krisrowe/git-scan.git && cd git-scan
+make setup                      # python3 -m venv .venv; pip install -e ".[dev]"
+.venv/bin/python -m pytest -q
+.venv/bin/git-scan run          # the editable install, against this repository
+```
+
+The editable install is for development only. A machine's hook should run
+a pinned release (`pipx install git+...@vX.Y.Z`), so that edits in a
+working tree never change what the hook does.
+
 ## Scanning model
 
 **One input, many checks.** `sources.collect()` builds a `ScanInput` once
@@ -63,6 +76,17 @@ tuned for prose and misfire on names like `vendor-tasks/`.
 `run_checks(repo_path, config=None, scan_input=None, **kwargs)` function is
 discovered and run. A step returns `CheckResult`s and never raises; the
 runner converts an exception into a failing check.
+
+### Adding a check
+
+1. Add `sdk/steps/<name>.py` with `run_checks(...)`. Read lines from
+   `scan_input.content` (and `scan_input.names` if the check belongs on
+   names; see the rule above). Start every finding with `line.where()`.
+2. Return one `CheckResult` per thing the output should report, with a
+   short `info` string (counts, thresholds) for the pass line.
+3. Add `tests/unit/test_scan_<name>.py`: real repositories, staged content,
+   both a hit and a miss, and the removed-line case if it applies.
+4. Add the check to the table in the README.
 
 ## Configuration
 
@@ -120,7 +144,7 @@ make test                       # creates .venv and runs the unit tests
 Sociable unit tests only: real temporary git repositories, real config
 files, real `git` subprocesses, the real CLI through Click's `CliRunner`,
 and for the hook, a real `git commit` that runs the installed hook. Nothing
-is mocked. The suite is around 125 tests in under 10 seconds; any single
+is mocked. The suite is about 130 tests in under 10 seconds; any single
 test over half a second is suspect (the end-to-end hook test, which spawns
 git twice, is the slowest).
 
