@@ -14,14 +14,16 @@ dependencies = [
 
 [project.optional-dependencies]
 mcp = [
-    "mcp[cli]>=1.0",
+    "mcp[cli]>=1.0,<2",
 ]
 dev = [
     "pytest>=7.0",
+    "mcp[cli]>=1.0,<2",
 ]
 
 [project.scripts]
 git-scan = "git_scan.cli.main:cli"
+git-scan-mcp = "git_scan.mcp.server:main"
 
 [tool.setuptools.packages.find]
 include = ["git_scan*"]

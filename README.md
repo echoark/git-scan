@@ -49,8 +49,8 @@ git-scan hook install
 
 `hook install` writes a one-line `pre-commit` hook to `~/.config/git/hooks`
 and points git's global `core.hooksPath` there, so every repository on the
-machine is covered. Use `--hooks-dir` to choose another directory, and
-`--force` to replace a pre-commit hook that already exists.
+machine is covered, including ones cloned later. See
+[Hook installation](#hook-installation) for the other levels.
 
 ## Quick start
 
@@ -226,6 +226,64 @@ configured.
 `~/.config/git-scan/git-scan.yaml` holds everything that makes the scanner
 yours. Keep it in whatever private place you back up dotfiles to; it is
 not something to commit to a shared repository.
+
+## Hook installation
+
+Three ways to run git-scan on every commit:
+
+| Level | Command | Covers |
+|---|---|---|
+| Global | `git-scan hook install` | every repository on the machine, via git's global `core.hooksPath` |
+| Local | `git-scan hook install --local` | one repository, via its own `.git/hooks` |
+| pre-commit framework | add this repository to `.pre-commit-config.yaml` (see `.pre-commit-hooks.yaml`) | a team's repository, through `pre-commit install` |
+
+Git ignores a repository's own `.git/hooks` while `core.hooksPath` is set
+at any level, so a local install warns when that is the case.
+
+The hook script is a fixed three lines, identical on every machine (it
+adds `~/.local/bin` to `PATH` so GUI git clients find `git-scan`). Install
+and uninstall decide what to do by exact match against the scripts git-scan
+has shipped, and nothing else:
+
+| Existing file | `install` | `uninstall` |
+|---|---|---|
+| none | writes the hook | nothing to do |
+| the current git-scan script | already installed | removes it |
+| an earlier git-scan script | upgrades it | removes it |
+| anything else | refuses unless `--force` | refuses; remove it yourself |
+
+"Anything else" includes an edited git-scan script: git-scan cannot tell a
+deliberate edit from another tool's hook, so it leaves both alone.
+
+```bash
+git-scan hook status            # what is installed at each level, and which one git runs
+git-scan hook uninstall         # or --local
+```
+
+```
+  global  ~/.config/git/hooks/pre-commit  (installed)
+  local   .git/hooks/pre-commit  (absent)
+  core.hooksPath = ~/.config/git/hooks
+  git runs:  ~/.config/git/hooks/pre-commit  (installed)
+```
+
+The last line is where git will actually run a pre-commit hook for the
+current repository, and what is there. Uninstalling leaves
+`core.hooksPath` as it is, since other hooks may live in that directory.
+
+## MCP server
+
+An agent can run the same scan through a stdio MCP server, `git-scan-mcp`,
+installed with the `mcp` extra:
+
+```bash
+pipx install "git-scan[mcp] @ git+https://github.com/krisrowe/git-scan.git@v0.2.0"
+claude mcp add --scope user git-scan -- git-scan-mcp
+```
+
+It exposes `scan_repo`, `hook_status`, and `list_steps`. Registration for
+other clients, the tools' arguments and results, and notes for agents are
+in [MCP server](docs/MCP.md).
 
 ## Git identity
 

@@ -1,0 +1,16 @@
+# Hook definition for the pre-commit framework (https://pre-commit.com).
+# In a repository's .pre-commit-config.yaml:
+#
+#   repos:
+#     - repo: https://github.com/krisrowe/git-scan
+#       rev: v0.2.0
+#       hooks:
+#         - id: git-scan
+#
+- id: git-scan
+  name: git-scan
+  description: Scan the staged change and repository names for sensitive data.
+  entry: git-scan run
+  language: python
+  pass_filenames: false
+  always_run: true

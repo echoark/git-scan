@@ -7,7 +7,7 @@ import click
 from git_scan.sdk.scanner import run_scan, InvalidStepError
 from git_scan.sdk.steps import get_step_names
 from git_scan.sdk import user_patterns as up
-from git_scan.sdk.hooks import install_hook, HookError
+from git_scan.sdk.hooks import install_hook, uninstall_hook, status, format_status, HookError
 
 
 @click.group(invoke_without_command=True)
@@ -256,15 +256,44 @@ for _name in up.SETTINGS:
 
 @cli.group()
 def hook():
-    """Git hook installation."""
+    """The pre-commit hook: install for every repository, or for one."""
+
+
+_LOCAL = click.option("--local", is_flag=True,
+                      help="This repository's .git/hooks instead of the global hooks directory.")
+_DIR = click.option("--hooks-dir", default=None,
+                    help="Global hooks directory (default: ~/.config/git/hooks).")
 
 
 @hook.command("install")
-@click.option("--hooks-dir", default=None, help="Directory for the hook (default: ~/.config/git/hooks).")
-@click.option("--force", is_flag=True, help="Replace an existing pre-commit hook.")
-def hook_install(hooks_dir, force):
-    """Install 'git-scan run' as the pre-commit hook for every repository."""
+@_LOCAL
+@_DIR
+@click.option("--force", is_flag=True, help="Replace a pre-commit hook that is not a git-scan script.")
+def hook_install(local, hooks_dir, force):
+    """Install 'git-scan run' as the pre-commit hook.
+
+    An earlier git-scan script is upgraded. Anything else already there is
+    left alone unless --force.
+    """
     try:
-        click.echo(install_hook(hooks_dir, force=force))
+        click.echo(install_hook(hooks_dir, force=force, local=local))
     except HookError as e:
         _fail(e)
+
+
+@hook.command("uninstall")
+@_LOCAL
+@_DIR
+def hook_uninstall(local, hooks_dir):
+    """Remove the git-scan pre-commit hook. Any other hook is left alone."""
+    try:
+        click.echo(uninstall_hook(hooks_dir, local=local))
+    except HookError as e:
+        _fail(e)
+
+
+@hook.command("status")
+@_DIR
+def hook_status(hooks_dir):
+    """What is installed at each level, and which one git runs."""
+    click.echo(format_status(status(hooks_dir)))

@@ -14,9 +14,10 @@ git_scan/
     yaml_merge.py       # layer merge (managed snippet; see below)
     steps/              # one module per check; exposes run_checks(...)
   cli/main.py           # thin Click wrapper over the SDK
-  mcp/server.py         # thin MCP wrapper over the SDK
+  mcp/server.py         # thin MCP wrapper over the SDK (git-scan-mcp, stdio)
   data/git-scan.yaml    # built-in patterns, thresholds, exclusions
 tests/unit/             # sociable unit tests
+docs/MCP.md             # MCP server: install, registration, tools
 ```
 
 All behavior lives in `git_scan/sdk/`. The CLI and MCP layers parse input,
@@ -28,6 +29,7 @@ the SDK.
 ```bash
 git clone https://github.com/krisrowe/git-scan.git && cd git-scan
 make setup                      # python3 -m venv .venv; pip install -e ".[dev]"
+                                # dev extras include mcp (<2, the FastMCP API) so the server is tested
 .venv/bin/python -m pytest -q
 .venv/bin/git-scan run          # the editable install, against this repository
 ```
@@ -133,6 +135,28 @@ Rules:
   rewrites it from its parsed form, so hand-written comments are lost;
   that is accepted.
 
+## The hook script is a contract
+
+`sdk/hooks.py` classifies a pre-commit file by exact byte match against the
+scripts git-scan has shipped (`SCRIPTS`), and nothing else: `installed`,
+`outdated`, `other`, `absent`. Rules:
+
+- **The script is machine-independent.** No absolute paths, nothing
+  derived from the installing machine. It adds `~/.local/bin` to `PATH` at
+  run time instead of embedding an executable path.
+- **Append to `SCRIPTS`, never edit an entry.** A changed script is a new
+  entry; earlier ones stay so existing installs classify as `outdated` and
+  upgrade cleanly. Changing the script is rare and deliberate.
+- **Never inspect a hook's content.** An `other` file may be another tool's
+  hook, a wrapper that calls git-scan, or an edited copy; git-scan can't
+  tell and doesn't guess, so it reports `other`, refuses to replace it
+  without `--force`, and never deletes it. No marker lines, no substring
+  checks, no provenance records.
+- **Status reports facts:** the state at each level and the location git
+  will actually use (`core.hooksPath` if set at any level, else the
+  repository's `.git/hooks`). The MCP `hook_status` tool returns the same
+  structure.
+
 ## Testing
 
 ```bash
@@ -143,8 +167,8 @@ make test                       # creates .venv and runs the unit tests
 
 Sociable unit tests only: real temporary git repositories, real config
 files, real `git` subprocesses, the real CLI through Click's `CliRunner`,
-and for the hook, a real `git commit` that runs the installed hook. Nothing
-is mocked. The suite is about 130 tests in under 10 seconds; any single
+and for the hook, a real `git commit` that runs the installed hook. The MCP
+tools are called in-process (`tests/unit/test_mcp.py`). Nothing is mocked. The suite is about 150 tests in under 10 seconds; any single
 test over half a second is suspect (the end-to-end hook test, which spawns
 git twice, is the slowest).
 
