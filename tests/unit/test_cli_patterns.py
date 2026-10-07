@@ -180,3 +180,25 @@ def test_edit_with_empty_value_clears_a_list_field(tmp_path, monkeypatch):
     assert _run("patterns", "edit", "co", "--exclude-file", "").exit_code == 0
     entry = next(e for e in yaml.safe_load(_user_file().read_text())["patterns"] if e["id"] == "co")
     assert "exclude_files" not in entry
+
+
+def test_project_remove_turns_off_a_user_pattern_for_that_repo_only(tmp_path, monkeypatch):
+    repo = _repo(tmp_path, monkeypatch)
+    _run("patterns", "add", "co", "--pattern", "Vendorco", "--category", "employer")
+    r = _run("patterns", "remove", "co", "--project")
+    assert r.exit_code == 0 and "off for this repository" in r.output, r.output
+    assert yaml.safe_load((repo / "git-scan.yaml").read_text()) == {
+        "patterns": [{"id": "co", "disabled": True}]}
+    # still in the user layer, still active elsewhere
+    assert any(e["id"] == "co" and "disabled" not in e
+               for e in yaml.safe_load(_user_file().read_text())["patterns"])
+    (repo / "notes.md").write_text("Vendorco\n")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    assert _run("run", str(repo), "--step", "patterns").exit_code == 0
+    other = tmp_path / "other"
+    other.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(other)], check=True)
+    (other / "notes.md").write_text("Vendorco\n")
+    subprocess.run(["git", "-C", str(other), "add", "."], check=True)
+    assert _run("run", str(other), "--step", "patterns").exit_code == 1
+    assert "restore" in _run("patterns", "list", "--all").output   # how to undo is shown

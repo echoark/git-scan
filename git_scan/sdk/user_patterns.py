@@ -166,13 +166,20 @@ def remove_pattern(id: str, repo_path: str = ".", project: bool = False) -> str:
         raise PatternError(f"no pattern '{id}'{hint}")
 
     remaining = [e for e in entries if e.get("id") != id]
-    if origin == "built-in":
+    target_layer = "project" if project else "user"
+    # A pattern defined in a lower layer can't be deleted from here; it is
+    # turned off for this layer's scope with an override entry.
+    inherited = origin is not None and origin != target_layer and (
+        origin == "built-in" or (origin == "user" and project))
+    if inherited:
         remaining.append({"id": id, "disabled": True})
         data["patterns"] = remaining
         _write(path, data)
+        where = "built in" if origin == "built-in" else "from your user config"
+        scope = "this repository" if project else path
         if mine:
-            return f"removed your version of '{id}' and turned off the built-in"
-        return f"'{id}' is built in; it is now off in {path}"
+            return f"removed your version of '{id}' and turned off the {origin} pattern for {scope}"
+        return f"'{id}' is {where}; it is now off for {scope}"
     if not mine:
         raise PatternError(f"'{id}' is defined in the {origin} layer, not in {path}; "
                            f"remove it there{' (use --project)' if origin == 'project' else ''}")

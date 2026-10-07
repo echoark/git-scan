@@ -43,7 +43,7 @@ through the MCP server.
 Requires Python 3.11+ and git.
 
 ```bash
-pipx install git+https://github.com/echoark/git-scan.git@v0.2.0
+pipx install git+https://github.com/echoark/git-scan.git@v0.2.1
 git-scan hook install
 ```
 
@@ -153,8 +153,10 @@ git-scan patterns restore ID         # turns a built-in back on
 git-scan patterns clear              # declare that you have no personal patterns
 ```
 
-`remove` on a built-in writes an override into your layer rather than
-touching the package; `restore` drops it. `edit` with an empty value
+`remove` on a pattern you don't own writes an override rather than touching
+its source: a built-in is turned off in your layer, and with `--project` any
+pattern, yours included, is turned off for that repository only. `restore`
+(with the same `--project` if used) drops the override. `edit` with an empty value
 (`--exclude-file ''`) clears that field.
 
 ### Allowed emails
@@ -277,7 +279,7 @@ An agent can run the same scan through a stdio MCP server, `git-scan-mcp`,
 installed with the `mcp` extra:
 
 ```bash
-pipx install "git-scan[mcp] @ git+https://github.com/echoark/git-scan.git@v0.2.0"
+pipx install "git-scan[mcp] @ git+https://github.com/echoark/git-scan.git@v0.2.1"
 claude mcp add --scope user git-scan -- git-scan-mcp
 ```
 

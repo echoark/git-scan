@@ -112,11 +112,12 @@ Rules:
   Absent: the scan fails with instructions. Present, even as `[]`: the
   user has decided. `patterns add` creates the key; `patterns remove` on the
   last entry or `patterns clear` leaves `[]`.
-- **`patterns remove` means "stop applying this"**, whatever layer the
-  entry lives in: it deletes the user's own entry, or writes
-  `disabled: true` for a built-in (built-ins cannot be deleted).
-  `patterns restore` drops that override. Users never choose between
-  deleting and disabling.
+- **`patterns remove` means "stop applying this" for the layer being
+  written.** It deletes an entry that layer defines; for a pattern inherited
+  from a lower layer (a built-in, or with `--project` one of the user's own)
+  it writes `disabled: true` into the target layer, which turns the pattern
+  off for that layer's scope only. `patterns restore` drops that override.
+  Users never choose between deleting and disabling.
 - **A pattern entry's fields:** `id`, `pattern`, `category`,
   `word_boundary`, `not_followed_by` (list), `exclude_files` (list of
   globs matched against the whole repo-relative path, never the base name
