@@ -7,6 +7,6 @@ build/
 .eggs/
 temp/
 .claude/
-.gemini/
+.gemini/*
 !.gemini/settings.json
 .pytest_cache/
