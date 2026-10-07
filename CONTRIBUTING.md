@@ -27,7 +27,7 @@ the SDK.
 ## Development setup
 
 ```bash
-git clone https://github.com/krisrowe/git-scan.git && cd git-scan
+git clone https://github.com/echoark/git-scan.git && cd git-scan
 make setup                      # python3 -m venv .venv; pip install -e ".[dev]"
                                 # dev extras include mcp (<2, the FastMCP API) so the server is tested
 .venv/bin/python -m pytest -q

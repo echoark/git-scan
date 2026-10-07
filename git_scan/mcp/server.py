@@ -7,7 +7,7 @@ try:
 except ImportError:  # the mcp extra is optional so the hook stays lean
     raise SystemExit(
         "git-scan-mcp needs the 'mcp' extra: "
-        'pipx install "git-scan[mcp] @ git+https://github.com/krisrowe/git-scan.git@<tag>" --force'
+        'pipx install "git-scan[mcp] @ git+https://github.com/echoark/git-scan.git@<tag>" --force'
     )
 
 from git_scan.sdk.scanner import run_scan as sdk_run_scan
