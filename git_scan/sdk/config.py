@@ -36,7 +36,7 @@ CONFIG_FILENAME = "git-scan.yaml"
 
 LAYERS = ("built-in", "user", "project")
 
-TOP_LEVEL_KEYS = {"entropy", "thresholds", "patterns", "allowed_emails"}
+TOP_LEVEL_KEYS = {"entropy", "thresholds", "patterns", "allowed_emails", "identity"}
 PATTERN_FIELDS = {"id", "pattern", "category", "word_boundary",
                   "not_followed_by", "exclude_files", "disabled"}
 THRESHOLD_KEYS = {"large_amount", "suspicious_nonround", "suspicious_any",
@@ -175,6 +175,24 @@ def validate_layer(data, path) -> None:
     allowed = data.get("allowed_emails", [])
     if not isinstance(allowed, list) or not all(isinstance(x, str) for x in allowed):
         errors.append("allowed_emails: must be a list of addresses")
+
+    identity = data.get("identity", [])
+    if not isinstance(identity, list):
+        errors.append("identity: must be a list of rules")
+    else:
+        for i, r in enumerate(identity):
+            loc = f"identity[{i}]"
+            if not isinstance(r, dict):
+                errors.append(f"{loc}: must be a mapping with remote and emails")
+                continue
+            for f in r:
+                if f not in ("remote", "emails"):
+                    errors.append(f"{loc}: unknown field '{f}' (known: emails, remote)")
+            if not isinstance(r.get("remote"), str) or not r.get("remote"):
+                errors.append(f"{loc}: 'remote' is required (host, optional owner and repo)")
+            em = r.get("emails")
+            if not isinstance(em, list) or not em or not all(isinstance(x, str) and x for x in em):
+                errors.append(f"{loc}: 'emails' must be a non-empty list of addresses")
 
     if errors:
         lines = [f"Invalid config: {path}"] + [f"  {e}" for e in errors] + [

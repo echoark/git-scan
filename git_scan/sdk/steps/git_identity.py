@@ -1,36 +1,40 @@
-"""Git identity check - the commit email must be safe for the repo's remote.
+"""Git identity check: the commit email must be allowed for the remote.
 
-Rules, in order (all local, no network):
+Rules live in the config (``identity:`` list, managed by ``git-scan
+identity``). Each rule names a remote prefix and the emails allowed to commit
+there:
 
-1. The repo sets its own ``user.email``: trusted. The commit must use it.
-2. Inherited email, github.com remote: the email must be the noreply
-   address of an account the GitHub CLI is logged into for github.com.
-3. Inherited email, any other host: the email's domain must be the host's
-   domain or a parent of it (``work@example.com`` for
-   ``git.example.com``), or the noreply address of an account the GitHub
-   CLI is logged into for that host.
-4. Otherwise: fail, with what to set.
+    identity:
+      - remote: github.com/octo-dev          # host, optional owner, optional repo
+        emails: ["*+octo-dev@users.noreply.github.com"]
+      - remote: git.example-corp.example
+        emails: ["*@example-corp.example"]
 
-"Inherited" means the email comes from global/system config (or the
-environment), not from the repo's own ``.git/config``. A repo with no
-remote passes: nothing leaves the machine.
+Matching, in order:
+
+1. A repo-level ``user.email`` is trusted: the commit must use it.
+2. The remote is normalized to ``host/owner/repo`` and compared to each
+   rule's ``remote`` segment by segment, so ``github.com/echo`` matches
+   ``github.com/echo/app`` but never ``github.com/echoes/app``. Every
+   matching rule contributes its emails; the commit email must match one
+   (``*`` in a rule email matches any characters).
+3. No rule matches: the check is skipped and the output says how to add one.
+   Identity is enforced only where the user has said what is allowed.
+
+A repo with no remote, or a filesystem-path remote, passes: nothing leaves
+the machine. No network calls.
 """
 
-import os
+import fnmatch
 import re
 import subprocess
 from pathlib import Path
-from typing import List, Optional, Set
-
-import yaml
+from typing import List, Optional
 
 from ..utils import CheckResult
 
 NAME = "Git identity"
-GITHUB = "github.com"
 SET_REPO_EMAIL = "git config user.email <address for this repo>"
-
-_NOREPLY = re.compile(r"^(?:\d+\+)?([A-Za-z0-9-]+)@users\.noreply\.(.+)$", re.I)
 
 
 def _git(path: Path, *args: str) -> Optional[str]:
@@ -43,14 +47,94 @@ def is_local_remote(url: str) -> bool:
     return url.startswith(("/", "./", "../", "~", "file://")) or bool(re.match(r"^[A-Za-z]:[\\/]", url))
 
 
-def remote_host(url: str) -> Optional[str]:
-    """Host of a git remote URL (https, ssh://, or scp-style)."""
+def normalize_remote(url: str) -> Optional[str]:
+    """``host/owner/repo`` for any remote URL form; ``None`` if unreadable.
+
+    Handles ``https://host/o/r.git``, ``ssh://git@host:port/o/r``, and the
+    scp form ``git@host:o/r.git``. Host is lowercased; the path keeps its
+    case; a trailing ``.git`` is dropped.
+    """
     if is_local_remote(url):
         return None
-    m = re.match(r"^[a-z][a-z0-9+.-]*://(?:[^@/]+@)?([^/:]+)", url, re.I)
+    m = re.match(r"^[a-z][a-z0-9+.-]*://(?:[^@/]+@)?([^/:]+)(?::\d+)?/(.*)$", url, re.I)
     if not m:
-        m = re.match(r"^(?:[^@/]+@)?([^/:]+):", url)
-    return m.group(1).lower() if m else None
+        m = re.match(r"^(?:[^@/]+@)?([^/:]+):(.*)$", url)
+    if not m:
+        return None
+    host, path = m.group(1).lower(), m.group(2).strip("/")
+    if path.endswith(".git"):
+        path = path[:-4]
+    return f"{host}/{path}" if path else host
+
+
+def remote_matches(rule_remote: str, remote: str) -> bool:
+    """Segment-wise prefix: the rule must be followed by ``/`` or the end."""
+    rule = [s for s in rule_remote.strip("/").split("/") if s]
+    parts = remote.split("/")
+    if not rule or len(rule) > len(parts):
+        return False
+    if rule[0].lower() != parts[0].lower():
+        return False
+    return rule[1:] == parts[1:len(rule)]
+
+
+def email_matches(rule_email: str, email: str) -> bool:
+    """Exact, or with ``*`` standing for any characters."""
+    return fnmatch.fnmatchcase(email.lower(), rule_email.lower())
+
+
+def allowed_emails(rules: List[dict], remote: str) -> tuple:
+    """(emails allowed for this remote, the rules that matched)."""
+    matched = [r for r in rules if remote_matches(str(r.get("remote", "")), remote)]
+    emails = [e for r in matched for e in (r.get("emails") or [])]
+    return emails, matched
+
+
+def check_git_identity(repo_path: str, rules: Optional[List[dict]] = None) -> CheckResult:
+    path = Path(repo_path)
+    rules = rules or []
+    try:
+        ident = _git(path, "var", "GIT_AUTHOR_IDENT")
+        m = re.search(r"<(.*)>", ident or "")
+        if not m:
+            return CheckResult(NAME, True, [], skipped=True,
+                               info="Not a git repo or can't determine identity")
+        email = m.group(1).strip()
+
+        repo_email = _git(path, "config", "--local", "--get", "user.email")
+        if repo_email:
+            if email != repo_email:
+                return CheckResult(NAME, False, [
+                    f"Commit email '{email}' differs from the repo's user.email '{repo_email}'",
+                    "Something in the environment (e.g. GIT_AUTHOR_EMAIL) overrides it",
+                ], info=f"Conflict: {email} vs {repo_email}")
+            return CheckResult(NAME, True, info=f"Repo setting: {email}")
+
+        url = _remote_url(path)
+        if not url or is_local_remote(url):
+            return CheckResult(NAME, True, info=f"No network remote: {email}")
+        remote = normalize_remote(url)
+        if not remote:
+            return CheckResult(NAME, False, [
+                f"Can't read the remote '{url}'",
+                f"Fix: {SET_REPO_EMAIL}",
+            ], info="Unreadable remote")
+
+        emails, matched = allowed_emails(rules, remote)
+        if not matched:
+            return CheckResult(NAME, True, [], skipped=True, info=(
+                f"no identity rule for {remote}; add one with: "
+                f"git-scan identity allow {remote.split('/')[0]}/<owner> <email>"))
+        if any(email_matches(e, email) for e in emails):
+            return CheckResult(NAME, True, info=f"{email} allowed for {matched[0]['remote']}")
+        return CheckResult(NAME, False, [
+            f"Commit email '{email}' is not allowed for {remote}",
+            f"Allowed by rule '{matched[0]['remote']}': {', '.join(emails)}",
+            f"Fix: {SET_REPO_EMAIL}, or: git-scan identity allow {matched[0]['remote']} {email}",
+        ], info="Email not allowed for this remote")
+
+    except Exception as e:
+        return CheckResult(NAME, True, [], skipped=True, info=f"Check failed: {e}")
 
 
 def _remote_url(path: Path) -> Optional[str]:
@@ -65,109 +149,6 @@ def _remote_url(path: Path) -> Optional[str]:
     return _git(path, "remote", "get-url", remote) if remote else None
 
 
-def gh_logins(host: str) -> Set[str]:
-    """Accounts the GitHub CLI is logged into for ``host``, from its local file."""
-    if os.environ.get("GH_CONFIG_DIR"):
-        base = Path(os.environ["GH_CONFIG_DIR"])
-    else:
-        xdg = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
-        base = Path(xdg) / "gh"
-    try:
-        data = yaml.safe_load((base / "hosts.yml").read_text()) or {}
-    except (OSError, yaml.YAMLError):
-        return set()
-    entry = data.get(host) or {}
-    logins = set((entry.get("users") or {}).keys())
-    if entry.get("user"):
-        logins.add(entry["user"])
-    return {str(login).lower() for login in logins}
-
-
-def noreply_login(email: str, host: str) -> Optional[str]:
-    """The login in a ``users.noreply.<host>`` address, else ``None``."""
-    m = _NOREPLY.match(email)
-    if m and m.group(2).lower() == host:
-        return m.group(1).lower()
-    return None
-
-
-def domain_matches(email: str, host: str) -> bool:
-    domain = email.rsplit("@", 1)[-1].lower()
-    return "." in domain and (host == domain or host.endswith("." + domain))
-
-
-def check_git_identity(repo_path: str) -> CheckResult:
-    path = Path(repo_path)
-    try:
-        ident = _git(path, "var", "GIT_AUTHOR_IDENT")
-        m = re.search(r"<(.*)>", ident or "")
-        if not m:
-            return CheckResult(NAME, True, [], skipped=True,
-                               info="Not a git repo or can't determine identity")
-        email = m.group(1).strip()
-
-        # Rule 1: the repo's own setting is trusted.
-        repo_email = _git(path, "config", "--local", "--get", "user.email")
-        if repo_email:
-            if email != repo_email:
-                return CheckResult(NAME, False, [
-                    f"Commit email '{email}' differs from the repo's user.email '{repo_email}'",
-                    "Something in the environment (e.g. GIT_AUTHOR_EMAIL) overrides it",
-                ], info=f"Conflict: {email} vs {repo_email}")
-            return CheckResult(NAME, True, info=f"Repo setting: {email}")
-
-        url = _remote_url(path)
-        if not url or is_local_remote(url):
-            return CheckResult(NAME, True, info=f"No network remote: {email}")
-        host = remote_host(url)
-        if not host:
-            return CheckResult(NAME, False, [
-                f"Can't read the host from remote '{url}'",
-                f"Fix: {SET_REPO_EMAIL}",
-            ], info="Unknown remote host")
-
-        logins = gh_logins(host)
-        login = noreply_login(email, host)
-        if login and login in logins:
-            return CheckResult(NAME, True, info=f"Noreply of {login}@{host}")
-
-        if host == GITHUB:
-            # Rule 2.
-            if not logins:
-                findings = [
-                    f"Inherited email '{email}' on {host}, and the GitHub CLI "
-                    f"isn't logged into {host}",
-                    f"Fix: gh auth login --hostname {host}",
-                    f"Or: {SET_REPO_EMAIL}",
-                ]
-            elif login:
-                findings = [
-                    f"'{email}' is the noreply address of '{login}', which the "
-                    f"GitHub CLI isn't logged into ({', '.join(sorted(logins))} are)",
-                    f"Fix: gh auth login --hostname {host}",
-                    f"Or: {SET_REPO_EMAIL}",
-                ]
-            else:
-                findings = [
-                    f"Inherited email '{email}' on {host}: only a noreply address "
-                    f"of a logged-in account ({', '.join(sorted(logins))}) is "
-                    "allowed without a repo setting",
-                    f"Fix: {SET_REPO_EMAIL}",
-                ]
-            return CheckResult(NAME, False, findings, info="Unverified email")
-
-        # Rule 3.
-        if domain_matches(email, host):
-            return CheckResult(NAME, True, info=f"Domain matches {host}: {email}")
-        return CheckResult(NAME, False, [
-            f"Inherited email '{email}' doesn't match the remote host {host}",
-            f"Fix: {SET_REPO_EMAIL}",
-        ], info="Domain mismatch")
-
-    except Exception as e:
-        return CheckResult(NAME, True, [], skipped=True, info=f"Check failed: {e}")
-
-
-def run_checks(repo_path: str, config=None, deep: bool = False, **kwargs) -> List[CheckResult]:
-    """Run git identity check. Standard step interface."""
-    return [check_git_identity(repo_path)]
+def run_checks(repo_path: str, config=None, **kwargs) -> List[CheckResult]:
+    rules = config.raw.get("identity") or [] if config else []
+    return [check_git_identity(repo_path, rules)]

@@ -128,6 +128,12 @@ Rules:
   built-in means an override entry the merge applies.
 - **`allowed_emails`** is a top-level list the email check ignores,
   managed by `git-scan emails allow / disallow / list`.
+- **`identity`** is a top-level list of `{remote, emails}` rules, managed by
+  `git-scan identity allow / remove / list`. `remote` is a `host/owner/repo`
+  prefix matched segment by segment (never a glob); `emails` may use `*`.
+  With no matching rule the identity check is *skipped*, never failed:
+  enforcement exists only where the user has said what is allowed. The
+  check makes no network calls and reads no CLI login state.
 - **Single settings are named `config` subcommands** with their own
   validation (`large-amount`, `entropy-enabled`, …); lists of things
   (`patterns`) are a command group with `add` / `remove` / `list`. Don't

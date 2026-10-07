@@ -13,7 +13,19 @@ from git_scan.sdk.hooks import install_hook, uninstall_hook, status, format_stat
 @click.group(invoke_without_command=True)
 @click.pass_context
 def cli(ctx):
-    """Scan git repositories for sensitive data."""
+    """Scan git repositories for sensitive data.
+
+    \b
+    Setup, in order:
+      git-scan hook install                      run on every commit, machine-wide
+      git-scan patterns add ID --pattern REGEX   strings that must never be committed
+      git-scan identity allow REMOTE EMAIL...    who may commit where (optional)
+      git-scan emails allow ADDRESS              addresses the email check ignores
+      git-scan config path                       where the config files live
+
+    Each group's --help lists its commands; each command's --help has
+    examples. 'git-scan run' is what the hook runs; use it to pre-check.
+    """
     if ctx.invoked_subcommand is None:
         ctx.invoke(run)
 
@@ -97,7 +109,18 @@ def patterns():
               help="Don't apply in files matching this glob (repeatable).")
 @click.option("--project", is_flag=True, help="Write the repo's git-scan.yaml instead of yours.")
 def patterns_add(id, pattern, category, word_boundary, not_followed_by, exclude_file, project):
-    """Add a pattern to your personal patterns (or the project's)."""
+    """Add a pattern: a regex that must never appear in a commit.
+
+    \b
+    Examples:
+      git-scan patterns add my-name --pattern 'Jane Doe' --category name
+      git-scan patterns add cust-acme --pattern 'Acme Corporation' --category customer
+      git-scan patterns add my-co --pattern 'Example Corp' --category employer --not-followed-by ' Cloud'
+
+    ID is a handle for later edits (letters, digits, '.', '_', '-'); keep it
+    free of the pattern text, since ids can appear in a repository's
+    git-scan.yaml.
+    """
     try:
         up.add_pattern(id, pattern, category, word_boundary, list(not_followed_by),
                        list(exclude_file), project=project)
@@ -116,7 +139,17 @@ def patterns_add(id, pattern, category, word_boundary, not_followed_by, exclude_
               help="Replaces the list of file globs the pattern skips (repeatable).")
 @click.option("--project", is_flag=True, help="Act on the repo's git-scan.yaml.")
 def patterns_edit(id, pattern, category, word_boundary, not_followed_by, exclude_file, project):
-    """Change a pattern's fields; a built-in gets an override in your layer."""
+    """Change a pattern's fields.
+
+    \b
+    Examples:
+      git-scan patterns edit my-co --not-followed-by ' Cloud' --not-followed-by '-sdk'
+      git-scan patterns edit my-co --exclude-file 'docs/vendors.md'
+      git-scan patterns edit my-co --exclude-file ''      (clears the list)
+
+    Lists replace the previous value. Editing a built-in writes an override
+    into your layer rather than touching the package.
+    """
     try:
         up.edit_pattern(id, project=project, pattern=pattern, category=category,
                         word_boundary=word_boundary,
@@ -131,7 +164,12 @@ def patterns_edit(id, pattern, category, word_boundary, not_followed_by, exclude
 @click.argument("id")
 @click.option("--project", is_flag=True, help="Act on the repo's git-scan.yaml.")
 def patterns_remove(id, project):
-    """Stop applying a pattern: deletes yours, or turns off a built-in."""
+    """Stop applying a pattern.
+
+    Deletes an entry you own; a built-in (or, with --project, one of yours)
+    is turned off for that layer's scope instead. 'patterns restore' undoes
+    the latter.
+    """
     try:
         click.echo(up.remove_pattern(id, project=project))
     except (up.PatternError, up.ConfigError) as e:
@@ -152,7 +190,11 @@ def patterns_restore(id, project):
 @patterns.command("clear")
 @click.option("--project", is_flag=True, help="Act on the repo's git-scan.yaml.")
 def patterns_clear(project):
-    """Declare that you have no personal patterns (opts out of that check)."""
+    """Declare that you have no personal patterns.
+
+    Writes an empty list to your config so the personal-patterns check
+    passes without any entries. Use 'patterns add' to start adding later.
+    """
     try:
         click.echo(up.clear_patterns(project=project))
     except up.ConfigError as e:
@@ -213,6 +255,68 @@ def emails_list():
             click.echo(f"  {a}")
     except up.ConfigError as e:
         _fail(e)
+
+
+# --- identity ---------------------------------------------------------------
+
+@cli.group()
+def identity():
+    """Emails allowed per remote (a host/owner/repo prefix).
+
+    A rule names a remote prefix and the emails allowed to commit there.
+    Prefixes match whole segments: github.com/octo covers github.com/octo/*
+    and nothing else. With no matching rule the check is skipped (shown in
+    the scan output), so nothing is enforced until you add rules.
+    """
+
+
+@identity.command("allow")
+@click.argument("remote")
+@click.argument("emails", nargs=-1, required=True)
+@click.option("--project", is_flag=True, help="Write the repo's git-scan.yaml instead of yours.")
+def identity_allow_cmd(remote, emails, project):
+    """Allow EMAILS for every remote under REMOTE.
+
+    \b
+    Examples:
+      git-scan identity allow github.com/octo '*+octo@users.noreply.github.com'
+      git-scan identity allow git.example.com '*@example.com'
+      git-scan identity allow github.com/acme-corp/billing you@example.org
+
+    REMOTE is a host, optionally followed by an owner and a repository.
+    '*' in an email matches anything. Repeating the command adds emails
+    to the same rule.
+    """
+    try:
+        rule = up.identity_allow(remote, list(emails), project=project)
+    except (up.PatternError, up.ConfigError) as e:
+        _fail(e)
+    click.echo(f"{rule['remote']}: {', '.join(rule['emails'])}")
+
+
+@identity.command("remove")
+@click.argument("remote")
+@click.argument("email", required=False)
+@click.option("--project", is_flag=True, help="Act on the repo's git-scan.yaml.")
+def identity_remove_cmd(remote, email, project):
+    """Remove one email from a rule, or the whole rule."""
+    try:
+        click.echo(up.identity_remove(remote, email, project=project))
+    except (up.PatternError, up.ConfigError) as e:
+        _fail(e)
+
+
+@identity.command("list")
+def identity_list_cmd():
+    """Show every identity rule after merging all layers."""
+    try:
+        rules = up.identity_list()
+    except up.ConfigError as e:
+        _fail(e)
+    if not rules:
+        click.echo("  no identity rules (the git identity check is skipped everywhere)")
+    for r in rules:
+        click.echo(f"  {r.get('remote')}: {', '.join(r.get('emails') or [])}")
 
 
 # --- config -----------------------------------------------------------------

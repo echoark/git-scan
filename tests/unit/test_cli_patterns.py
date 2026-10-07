@@ -147,7 +147,7 @@ def test_edit_overrides_a_builtin_and_updates_own_entry(tmp_path, monkeypatch):
 
 def test_allowed_emails_round_trip_and_scan(tmp_path, monkeypatch):
     repo = _repo(tmp_path, monkeypatch)
-    addr = "bot@" + "sample.invalid"
+    addr = "bot@" + "sample-corp.org"
     (repo / "f.txt").write_text(f"{addr}\n")
     subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
     assert _run("run", str(repo), "--step", "emails").exit_code == 1
@@ -202,3 +202,29 @@ def test_project_remove_turns_off_a_user_pattern_for_that_repo_only(tmp_path, mo
     subprocess.run(["git", "-C", str(other), "add", "."], check=True)
     assert _run("run", str(other), "--step", "patterns").exit_code == 1
     assert "restore" in _run("patterns", "list", "--all").output   # how to undo is shown
+
+
+def test_identity_allow_remove_list(tmp_path, monkeypatch):
+    repo = _repo(tmp_path, monkeypatch)
+    assert "no identity rules" in _run("identity", "list").output
+    r = _run("identity", "allow", "github.com/octo", "*+octo@users.noreply.github.com")
+    assert r.exit_code == 0, r.output
+    r = _run("identity", "allow", "github.com/octo/", "me@example.com")        # appends, same rule
+    assert r.exit_code == 0 and "me@example.com" in r.output
+    data = yaml.safe_load(_user_file().read_text())
+    assert data["identity"] == [{"remote": "github.com/octo",
+                                 "emails": ["*+octo@users.noreply.github.com", "me@example.com"]}]
+    assert "github.com/octo:" in _run("identity", "list").output
+    assert _run("identity", "allow", "https://github.com/octo", "x@example.com").exit_code == 1
+    assert _run("identity", "remove", "github.com/octo", "me@example.com").exit_code == 0
+    assert _run("identity", "remove", "github.com/octo", "me@example.com").exit_code == 1
+    assert _run("identity", "remove", "github.com/octo").exit_code == 0
+    assert yaml.safe_load(_user_file().read_text())["identity"] == []
+    assert _run("identity", "remove", "github.com/nope").exit_code == 1
+
+
+def test_invalid_identity_rule_fails_the_scan(tmp_path, monkeypatch):
+    repo = _repo(tmp_path, monkeypatch)
+    _user_file().write_text("patterns: []\nidentity:\n  - remote: github.com/octo\n")
+    r = _run("run", str(repo))
+    assert r.exit_code == 1 and "emails" in r.output

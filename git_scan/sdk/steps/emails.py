@@ -21,12 +21,17 @@ DECORATOR_MODULES = [
 ]
 
 
+RESERVED_TLDS = ("example", "test", "invalid", "localhost")   # RFC 2606: documentation only
+
+
 def _is_ignored(email: str, allowed: set) -> bool:
     if email in allowed:
         return True
     if any(d in email for d in DEFAULT_ACCEPTABLE_DOMAINS):
         return True
     domain = email.split("@", 1)[-1]
+    if domain.rsplit(".", 1)[-1] in RESERVED_TLDS:
+        return True
     return any(domain.startswith(mod) for mod in DECORATOR_MODULES)
 
 

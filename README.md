@@ -21,7 +21,7 @@ through the MCP server.
 - **One command for every repository.** The hook is installed once per
   machine.
 - **No network.** Every check runs locally, including the git identity
-  check.
+  check, which enforces only the rules you set.
 
 ## Checks
 
@@ -36,14 +36,14 @@ through the MCP server.
 | Google Drive IDs | document and folder IDs in Drive URLs |
 | Dollar amounts | large, non-round, or cents-precise figures, with thresholds you can set |
 | Names | patterns, usernames, emails, and SSN/EINs in file, branch, and tag names |
-| Git identity | the commit's author email fits the remote host (see [Git identity](#git-identity)) |
+| Git identity | the commit's author email is one you allowed for the remote (see [Git identity](#git-identity)) |
 
 ## Installation
 
 Requires Python 3.11+ and git.
 
 ```bash
-pipx install git+https://github.com/echoark/git-scan.git@v0.2.1
+pipx install git+https://github.com/echoark/git-scan.git@v0.3.0
 git-scan hook install
 ```
 
@@ -98,7 +98,7 @@ Settings merge from three layers; later layers win:
 | Layer | Where | Holds |
 |---|---|---|
 | built-in | shipped with the package | token patterns, entropy settings, thresholds |
-| user | `~/.config/git-scan/git-scan.yaml` | your patterns, allowed emails, overrides |
+| user | `~/.config/git-scan/git-scan.yaml` | your patterns, allowed emails, identity rules, overrides |
 | project | `git-scan.yaml` in a repository root | per-repository additions and overrides |
 
 Change them with the commands below rather than editing the files. Every
@@ -169,6 +169,9 @@ accounts. Reserved example domains (`example.com`, `example.org`,
 git-scan emails allow bot@example.org
 git-scan emails disallow bot@example.org
 git-scan emails list
+git-scan identity allow REMOTE EMAIL...   # who may commit to remotes under REMOTE (see Git identity)
+git-scan identity remove REMOTE [EMAIL]
+git-scan identity list
 ```
 
 ### Thresholds and entropy
@@ -279,7 +282,7 @@ An agent can run the same scan through a stdio MCP server, `git-scan-mcp`,
 installed with the `mcp` extra:
 
 ```bash
-pipx install "git-scan[mcp] @ git+https://github.com/echoark/git-scan.git@v0.2.1"
+pipx install "git-scan[mcp] @ git+https://github.com/echoark/git-scan.git@v0.3.0"
 claude mcp add --scope user git-scan -- git-scan-mcp
 ```
 
@@ -289,19 +292,70 @@ in [MCP server](docs/MCP.md).
 
 ## Git identity
 
-The commit's author email must be safe for where the repository pushes.
-No network calls are made:
+The commit's author email must be one you have allowed for the remote. You
+say which emails may commit where; nothing is inferred and no network call
+is made:
+
+```bash
+git-scan identity allow github.com/octo-dev   '*+octo-dev@users.noreply.github.com'
+git-scan identity allow github.com/octo-tools '*+octo-dev@users.noreply.github.com'
+git-scan identity allow git.example-corp.example '*@example-corp.example'
+git-scan identity allow github.com/acme-corp you@example.org
+git-scan identity list
+git-scan identity remove github.com/acme-corp [you@example.org]
+```
+
+How a commit is judged:
 
 1. A repository-level `user.email` is trusted.
-2. Otherwise, for a github.com remote, the email must be the noreply
-   address of an account the GitHub CLI is logged into
-   (`<id>+<login>@users.noreply.github.com`).
-3. For any other host, the email's domain must be the host's domain or a
-   parent of it (`you@example.com` for `git.example.com`).
+2. Otherwise the remote is normalized to `host/owner/repo` and compared to
+   each rule, segment by segment: `github.com/octo-dev` covers every
+   repository of that owner, `github.com/octo-dev/app` one repository, and
+   `git.example-corp.example` a whole host. (`github.com/echo` never
+   matches `github.com/echoes/app`.) The email must match one of the
+   emails of a matching rule; `*` in a rule email matches anything, so
+   `*@example-corp.example` is any address at that domain and
+   `*+octo-dev@users.noreply.github.com` is that account's GitHub noreply
+   address with or without its numeric id.
+3. No rule matches: the check is **skipped**, and the output says so with
+   the command to add a rule. A fresh install enforces nothing until you
+   decide what to enforce.
 
 A repository with no remote, or a remote that is a filesystem path, passes.
-A failure says which rule applied and how to fix it: set the repository's
-email, or `gh auth login`.
+A failure names the rule and the allowed emails, and how to fix it.
+
+### Optional setup: identity rules
+
+Two example setups; adapt the owners, hosts, and addresses to your own.
+
+**A personal machine.** One GitHub account, `octo-dev`, two orgs you own,
+and your global git email already set to the account's noreply address:
+
+```bash
+git-scan identity allow github.com/octo-dev   '*+octo-dev@users.noreply.github.com'
+git-scan identity allow github.com/octo-tools '*+octo-dev@users.noreply.github.com'
+git-scan identity allow github.com/octo-labs  '*+octo-dev@users.noreply.github.com'
+```
+
+Every commit to your own repositories now has to carry that address; a
+work or customer address inherited by mistake is refused.
+
+**A work laptop.** The global git email is your employer address; your
+employer's own git host should take it, your personal repositories must
+use your personal noreply, and a customer's organization gave you an
+address of its own:
+
+```bash
+git-scan identity allow git.example-corp.example '*@example-corp.example'
+git-scan identity allow github.com/octo-dev      '*+octo-dev@users.noreply.github.com'
+git-scan identity allow github.com/acme-corp     you@example.org
+```
+
+With these, committing to a personal repository with the inherited work
+address is refused until that repository sets its own `user.email` (or the
+commit uses the noreply address), and the same for the customer's
+organization. Repositories under owners with no rule are reported as
+skipped, so you can add rules as you meet them.
 
 ## Contributing
 

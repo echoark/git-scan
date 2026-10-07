@@ -43,3 +43,13 @@ def test_python_decorator_not_flagged(tmp_path):
     report = run_scan(str(repo), only_step="emails")
     check = next(c for c in report.checks if c.name == "Email addresses")
     assert check.passed
+
+
+def test_reserved_documentation_tlds_are_ignored(tmp_path):
+    repo = _init_repo(tmp_path)
+    # Assembled at run time so no address-shaped text sits in this source file.
+    text = "contact " + "you@" + "acme.example" + " or " + "ops@" + "corp.test" + "\n"
+    (repo / "docs.md").write_text(text)
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    report = run_scan(str(repo), only_step="emails")
+    assert next(c for c in report.checks if c.name == "Email addresses").passed

@@ -228,6 +228,69 @@ def list_patterns(repo_path: str = ".", include_disabled: bool = False) -> List[
     return rows
 
 
+# --- identity rules ---------------------------------------------------------
+
+def _norm_remote(remote: str) -> str:
+    return remote.strip().strip("/")
+
+
+def identity_allow(remote: str, emails: List[str], repo_path: str = ".",
+                   project: bool = False) -> dict:
+    """Allow emails for a remote prefix; appends to an existing rule."""
+    remote = _norm_remote(remote)
+    if not remote or "://" in remote or "@" in remote:
+        raise PatternError(f"'{remote}' is not a host/owner/repo prefix (e.g. github.com/octo)")
+    emails = [e.strip() for e in emails if e and e.strip()]
+    if not emails:
+        raise PatternError("at least one email is required")
+    path = target_path(repo_path, project)
+    data = _read(path)
+    rules = [r for r in (data.get("identity") or []) if isinstance(r, dict)]
+    rule = next((r for r in rules if _norm_remote(str(r.get("remote", ""))) == remote), None)
+    if rule is None:
+        rule = {"remote": remote, "emails": []}
+        rules.append(rule)
+    for e in emails:
+        if e.lower() not in (x.lower() for x in rule["emails"]):
+            rule["emails"].append(e)
+    data["identity"] = rules
+    _write(path, data)
+    return rule
+
+
+def identity_remove(remote: str, email: Optional[str] = None, repo_path: str = ".",
+                    project: bool = False) -> str:
+    """Drop one email from a rule, or the whole rule when no email is given."""
+    remote = _norm_remote(remote)
+    path = target_path(repo_path, project)
+    data = _read(path)
+    rules = [r for r in (data.get("identity") or []) if isinstance(r, dict)]
+    rule = next((r for r in rules if _norm_remote(str(r.get("remote", ""))) == remote), None)
+    if rule is None:
+        raise PatternError(f"no identity rule for '{remote}' in {path}")
+    if email is None:
+        rules.remove(rule)
+        msg = f"removed the rule for {remote}"
+    else:
+        kept = [x for x in rule["emails"] if x.lower() != email.lower()]
+        if len(kept) == len(rule["emails"]):
+            raise PatternError(f"'{email}' is not in the rule for {remote}")
+        if kept:
+            rule["emails"] = kept
+            msg = f"removed {email} from the rule for {remote}"
+        else:
+            rules.remove(rule)
+            msg = f"removed {email}; the rule for {remote} had no other emails and is gone"
+    data["identity"] = rules
+    _write(path, data)
+    return msg
+
+
+def identity_list(repo_path: str = ".") -> List[dict]:
+    """Rules after merging all layers."""
+    return [r for r in (load_config(repo_path).raw.get("identity") or []) if isinstance(r, dict)]
+
+
 # --- single settings -------------------------------------------------------
 
 SETTINGS = {
