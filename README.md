@@ -1,9 +1,11 @@
 # git-scan
 
-A pre-commit scanner for sensitive data. It reads the change you are about
-to commit, plus every file, branch, and tag name, and blocks the commit when
-something matches: credentials, personal identifiers, or any string you
-decide must never reach a repository.
+A scanner for sensitive data in git repositories: credentials, personal
+identifiers, or any string you decide must never reach a repository. It
+reads the change you are about to commit, plus every file, branch, and tag
+name, and reports what matches. Install it as a pre-commit hook to block
+such commits, run it by hand on work in progress, or let an agent run it
+through the MCP server.
 
 ## Features
 
