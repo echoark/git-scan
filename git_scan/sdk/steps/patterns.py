@@ -7,6 +7,7 @@ Pattern sources:
      name, git user name (and its parts), git email, ``.env`` values.
 """
 
+import fnmatch
 import os
 import re
 import subprocess
@@ -81,8 +82,28 @@ def identity_patterns(repo_path: str = ".") -> Dict[str, str]:
                              "Git Name Part"))}
 
 
-def compile_patterns(patterns: List[dict]) -> List[Tuple[str, re.Pattern]]:
-    """Compile pattern entries, applying word_boundary and not_followed_by."""
+class Compiled:
+    """A compiled pattern entry: label, regex, and the file globs it skips."""
+
+    __slots__ = ("label", "regex", "exclude_files")
+
+    def __init__(self, label, regex, exclude_files):
+        self.label, self.regex, self.exclude_files = label, regex, exclude_files
+
+    def __iter__(self):            # (label, regex) unpacking
+        yield self.label
+        yield self.regex
+
+    def applies_to(self, file_path: str) -> bool:
+        return not any(fnmatch.fnmatch(file_path, g) or fnmatch.fnmatch(
+            file_path.rsplit("/", 1)[-1], g) for g in self.exclude_files)
+
+    def search(self, text: str):
+        return self.regex.search(text)
+
+
+def compile_patterns(patterns: List[dict]) -> List[Compiled]:
+    """Compile pattern entries, applying word_boundary, not_followed_by, exclude_files."""
     result = []
     for p in patterns:
         pattern_str = p.get("pattern", "")
@@ -100,7 +121,7 @@ def compile_patterns(patterns: List[dict]) -> List[Tuple[str, re.Pattern]]:
         try:
             compiled = re.compile(regex_str)
             label = p.get("category", p.get("id", pattern_str))
-            result.append((label, compiled))
+            result.append(Compiled(label, compiled, list(p.get("exclude_files") or [])))
         except re.error:
             pass
 
@@ -146,10 +167,12 @@ def run_checks(repo_path: str, config=None, scan_input=None, **kwargs) -> List[C
             except re.error:
                 pass
 
-        for label, compiled in config_compiled:
-            match = compiled.search(ln.text)
+        for entry in config_compiled:
+            if not entry.applies_to(ln.file):
+                continue
+            match = entry.search(ln.text)
             if match:
-                findings.append(f"{ln.where()} [{label}] {match.group(0)[:40]}")
+                findings.append(f"{ln.where()} [{entry.label}] {match.group(0)[:40]}")
 
     counts = config.pattern_counts if config else {}
     info = (f"{counts.get('personal', 0)} personal, {counts.get('built-in', 0)} built-in, "

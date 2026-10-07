@@ -93,15 +93,38 @@ def patterns():
 @click.option("--word-boundary", is_flag=True, help="Match whole words only.")
 @click.option("--not-followed-by", multiple=True, metavar="TEXT",
               help="Don't match when this text follows (repeatable).")
+@click.option("--exclude-file", multiple=True, metavar="GLOB",
+              help="Don't apply in files matching this glob (repeatable).")
 @click.option("--project", is_flag=True, help="Write the repo's git-scan.yaml instead of yours.")
-def patterns_add(id, pattern, category, word_boundary, not_followed_by, project):
+def patterns_add(id, pattern, category, word_boundary, not_followed_by, exclude_file, project):
     """Add a pattern to your personal patterns (or the project's)."""
     try:
         up.add_pattern(id, pattern, category, word_boundary, list(not_followed_by),
-                       project=project)
+                       list(exclude_file), project=project)
     except (up.PatternError, up.ConfigError) as e:
         _fail(e)
     click.echo(f"added '{id}'")
+
+
+@patterns.command("edit")
+@click.argument("id")
+@click.option("--pattern", default=None, help="New regex.")
+@click.option("--category", default=None)
+@click.option("--word-boundary/--no-word-boundary", default=None)
+@click.option("--not-followed-by", multiple=True, metavar="TEXT", help="Replaces the list (repeatable).")
+@click.option("--exclude-file", multiple=True, metavar="GLOB",
+              help="Replaces the list of file globs the pattern skips (repeatable).")
+@click.option("--project", is_flag=True, help="Act on the repo's git-scan.yaml.")
+def patterns_edit(id, pattern, category, word_boundary, not_followed_by, exclude_file, project):
+    """Change a pattern's fields; a built-in gets an override in your layer."""
+    try:
+        up.edit_pattern(id, project=project, pattern=pattern, category=category,
+                        word_boundary=word_boundary,
+                        not_followed_by=list(not_followed_by) or None,
+                        exclude_files=list(exclude_file) or None)
+    except (up.PatternError, up.ConfigError) as e:
+        _fail(e)
+    click.echo(f"updated '{id}'")
 
 
 @patterns.command("remove")
@@ -149,6 +172,47 @@ def patterns_list(include_disabled):
         state = "  (off; restore with: git-scan patterns restore " + r["id"] + ")" if r["disabled"] else ""
         cat = f" [{r['category']}]" if r["category"] else ""
         click.echo(f"  {r['id']:<{width}}  {r['layer']:<8} {r['pattern']}{cat}{state}")
+
+
+# --- emails -----------------------------------------------------------------
+
+@cli.group()
+def emails():
+    """Addresses the email check may ignore (test fixtures, bots)."""
+
+
+@emails.command("allow")
+@click.argument("address")
+@click.option("--project", is_flag=True, help="Write the repo's git-scan.yaml instead of yours.")
+def emails_allow(address, project):
+    """Allow an address."""
+    try:
+        up.allow_email(address, project=project)
+    except (up.PatternError, up.ConfigError) as e:
+        _fail(e)
+    click.echo(f"allowed {address}")
+
+
+@emails.command("disallow")
+@click.argument("address")
+@click.option("--project", is_flag=True, help="Act on the repo's git-scan.yaml.")
+def emails_disallow(address, project):
+    """Stop allowing an address."""
+    try:
+        up.disallow_email(address, project=project)
+    except (up.PatternError, up.ConfigError) as e:
+        _fail(e)
+    click.echo(f"disallowed {address}")
+
+
+@emails.command("list")
+def emails_list():
+    """Show allowed addresses after merging all layers."""
+    try:
+        for a in up.list_allowed_emails():
+            click.echo(f"  {a}")
+    except up.ConfigError as e:
+        _fail(e)
 
 
 # --- config -----------------------------------------------------------------

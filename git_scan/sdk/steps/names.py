@@ -26,9 +26,9 @@ MAX_FINDINGS = 10
 def _check(title: str, lines, compiled) -> CheckResult:
     findings = []
     for ln in lines:
-        for label, regex in compiled:
-            if regex.search(ln.text):
-                findings.append(f"{ln.where()} [{label}]")
+        for entry in compiled:
+            if entry.applies_to(ln.text) and entry.search(ln.text):
+                findings.append(f"{ln.where()} [{entry.label}]")
                 break
     return CheckResult(title, not findings, findings[:MAX_FINDINGS],
                        info=f"{len(lines)} names")
@@ -39,7 +39,8 @@ def run_checks(repo_path: str, config=None, scan_input=None, **kwargs) -> List[C
                 if p.get("category") not in CONTENT_ONLY_CATEGORIES
                 and not p.get("word_boundary") and not p.get("not_followed_by")]
     compiled = compile_patterns(personal)
-    compiled += [(label, re.compile(rx)) for label, rx in identity_patterns(repo_path).items()]
+    from .patterns import Compiled
+    compiled += [Compiled(label, re.compile(rx), []) for label, rx in identity_patterns(repo_path).items()]
     if not compiled:
         return [CheckResult("Patterns in names", True, [], skipped=True,
                             info="No personal patterns configured")]

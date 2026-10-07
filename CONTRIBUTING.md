@@ -91,6 +91,14 @@ Rules:
   `disabled: true` for a built-in (built-ins cannot be deleted).
   `patterns restore` drops that override. Users never choose between
   deleting and disabling.
+- **A pattern entry's fields:** `id`, `pattern`, `category`,
+  `word_boundary`, `not_followed_by` (list), `exclude_files` (list of
+  globs matched against the file path and its base name; the pattern is
+  skipped there, and for a name check, when the name itself matches),
+  `disabled`. `patterns edit` writes only the changed fields, which for a
+  built-in means an override entry the merge applies.
+- **`allowed_emails`** is a top-level list the email check ignores,
+  managed by `git-scan emails allow / disallow / list`.
 - **Single settings are named `config` subcommands** with their own
   validation (`large-amount`, `entropy-enabled`, …); lists of things
   (`patterns`) are a command group with `add` / `remove` / `list`. Don't

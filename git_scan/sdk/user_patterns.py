@@ -53,6 +53,7 @@ def _entries(data: dict) -> List[dict]:
 
 def add_pattern(id: str, pattern: str, category: Optional[str] = None,
                 word_boundary: bool = False, not_followed_by: Optional[List[str]] = None,
+                exclude_files: Optional[List[str]] = None,
                 repo_path: str = ".", project: bool = False) -> dict:
     """Add a pattern to the user (or project) layer. Fails on a duplicate id."""
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", id):
@@ -75,10 +76,77 @@ def add_pattern(id: str, pattern: str, category: Optional[str] = None,
         entry["word_boundary"] = True
     if not_followed_by:
         entry["not_followed_by"] = list(not_followed_by)
+    if exclude_files:
+        entry["exclude_files"] = list(exclude_files)
     entries.append(entry)
     data["patterns"] = entries
     _write(path, data)
     return entry
+
+
+EDITABLE = ("pattern", "category", "word_boundary", "not_followed_by", "exclude_files")
+
+
+def edit_pattern(id: str, repo_path: str = ".", project: bool = False, **changes) -> dict:
+    """Change fields of a pattern. For an entry in another layer (e.g. a
+    built-in), writes an override entry holding only the changed fields;
+    the merge applies them on top. Lists replace, they don't append."""
+    changes = {k: v for k, v in changes.items() if k in EDITABLE and v is not None}
+    if not changes:
+        raise PatternError("nothing to change")
+    if "pattern" in changes:
+        try:
+            re.compile(changes["pattern"])
+        except re.error as e:
+            raise PatternError(f"'{changes['pattern']}' is not a valid regex: {e}")
+    config = load_config(repo_path)
+    if id not in config.pattern_sources:
+        raise PatternError(f"no pattern '{id}'")
+    path = target_path(repo_path, project)
+    data = _read(path)
+    entries = _entries(data)
+    mine = next((e for e in entries if e.get("id") == id), None)
+    if mine is None:
+        mine = {"id": id}
+        entries.append(mine)
+    for k, v in changes.items():
+        if v in ([], False) and k != "pattern":
+            mine.pop(k, None)
+        else:
+            mine[k] = list(v) if isinstance(v, (list, tuple)) else v
+    data["patterns"] = entries
+    _write(path, data)
+    return mine
+
+
+# --- allowed emails ---------------------------------------------------------
+
+def allow_email(address: str, repo_path: str = ".", project: bool = False) -> None:
+    if "@" not in address or " " in address:
+        raise PatternError(f"'{address}' is not an email address")
+    path = target_path(repo_path, project)
+    data = _read(path)
+    allowed = [a for a in (data.get("allowed_emails") or [])]
+    if address.lower() in (a.lower() for a in allowed):
+        raise PatternError(f"'{address}' is already allowed in {path}")
+    allowed.append(address)
+    data["allowed_emails"] = allowed
+    _write(path, data)
+
+
+def disallow_email(address: str, repo_path: str = ".", project: bool = False) -> None:
+    path = target_path(repo_path, project)
+    data = _read(path)
+    allowed = data.get("allowed_emails") or []
+    kept = [a for a in allowed if a.lower() != address.lower()]
+    if len(kept) == len(allowed):
+        raise PatternError(f"'{address}' is not in the allowed list in {path}")
+    data["allowed_emails"] = kept
+    _write(path, data)
+
+
+def list_allowed_emails(repo_path: str = ".") -> List[str]:
+    return list(load_config(repo_path).raw.get("allowed_emails") or [])
 
 
 def remove_pattern(id: str, repo_path: str = ".", project: bool = False) -> str:

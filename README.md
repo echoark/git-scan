@@ -94,15 +94,24 @@ Settings merge from three layers, later ones winning:
 Manage them with the CLI rather than editing files:
 
 ```bash
-git-scan patterns add ID --pattern REGEX [--category C] [--word-boundary] [--not-followed-by TEXT]...
+git-scan patterns add ID --pattern REGEX [--category C] [--word-boundary] [--not-followed-by TEXT]... [--exclude-file GLOB]...
+git-scan patterns edit ID [--exclude-file GLOB]... [--not-followed-by TEXT]... [--category C]
 git-scan patterns remove ID          # deletes yours, or turns off a built-in
 git-scan patterns restore ID         # turns a built-in back on
 git-scan patterns list [--all]       # merged view, with each entry's layer
 git-scan patterns clear              # declare you have no personal patterns
+git-scan emails allow ADDRESS        # addresses the email check ignores (fixtures, bots)
+git-scan emails disallow ADDRESS
+git-scan emails list
 git-scan config path                 # where each layer lives
 git-scan config large-amount 500000  # thresholds and entropy settings
 git-scan config entropy-enabled off
 ```
+
+`--exclude-file` keeps a pattern from applying in files matching a glob,
+for the one place a word legitimately appears (a vendor's name in a list
+of that vendor's token formats, say). `patterns edit` on a built-in writes
+an override into your layer rather than touching the package.
 
 Add `--project` to write the repository's `git-scan.yaml` instead of
 yours. Every layer is validated when loaded; a broken file fails the scan

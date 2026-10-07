@@ -38,7 +38,7 @@ LAYERS = ("built-in", "user", "project")
 
 TOP_LEVEL_KEYS = {"entropy", "thresholds", "patterns", "allowed_emails"}
 PATTERN_FIELDS = {"id", "pattern", "category", "word_boundary",
-                  "not_followed_by", "disabled"}
+                  "not_followed_by", "exclude_files", "disabled"}
 THRESHOLD_KEYS = {"large_amount", "suspicious_nonround", "suspicious_any",
                   "cents_review"}
 ENTROPY_KEYS = {"enabled", "threshold", "min_len", "exclusions"}
@@ -127,10 +127,11 @@ def validate_layer(data, path) -> None:
             for flag in ("word_boundary", "disabled"):
                 if flag in p and not isinstance(p[flag], bool):
                     errors.append(f"{loc}: '{flag}' must be true or false")
-            nf = p.get("not_followed_by")
-            if nf is not None and (not isinstance(nf, list)
-                                   or not all(isinstance(x, str) for x in nf)):
-                errors.append(f"{loc}: 'not_followed_by' must be a list of text")
+            for field in ("not_followed_by", "exclude_files"):
+                val = p.get(field)
+                if val is not None and (not isinstance(val, list)
+                                        or not all(isinstance(x, str) for x in val)):
+                    errors.append(f"{loc}: '{field}' must be a list of text")
 
     thresholds = data.get("thresholds", {})
     if not isinstance(thresholds, dict):

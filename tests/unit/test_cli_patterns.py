@@ -116,3 +116,45 @@ def test_hook_install_writes_script(tmp_path, monkeypatch):
     script.write_text("#!/bin/sh\necho mine\n")
     assert _run("hook", "install", "--hooks-dir", str(hooks)).exit_code == 1
     assert _run("hook", "install", "--hooks-dir", str(hooks), "--force").exit_code == 0
+
+
+def test_exclude_files_skips_matching_paths(tmp_path, monkeypatch):
+    repo = _repo(tmp_path, monkeypatch)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "--allow-empty", "-m", "init"], check=True)
+    _run("patterns", "add", "co", "--pattern", "Vendorco", "--category", "employer",
+         "--exclude-file", "data/*.yaml")
+    (repo / "data").mkdir()
+    (repo / "data" / "defaults.yaml").write_text("id: Vendorco-oauth\n")
+    (repo / "notes.md").write_text("Vendorco\n")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    r = _run("run", str(repo), "--step", "patterns")
+    assert r.exit_code == 1
+    assert "notes.md:1" in r.output and "defaults.yaml" not in r.output
+
+
+def test_edit_overrides_a_builtin_and_updates_own_entry(tmp_path, monkeypatch):
+    _repo(tmp_path, monkeypatch)
+    r = _run("patterns", "edit", "github-pat", "--exclude-file", "tests/**")
+    assert r.exit_code == 0, r.output
+    data = yaml.safe_load(_user_file().read_text())
+    assert {"id": "github-pat", "exclude_files": ["tests/**"]} in data["patterns"]
+    _run("patterns", "add", "me", "--pattern", "Jane")
+    assert _run("patterns", "edit", "me", "--category", "name", "--word-boundary").exit_code == 0
+    entry = next(e for e in yaml.safe_load(_user_file().read_text())["patterns"] if e["id"] == "me")
+    assert entry["category"] == "name" and entry["word_boundary"] is True
+    assert _run("patterns", "edit", "nope", "--category", "x").exit_code == 1
+
+
+def test_allowed_emails_round_trip_and_scan(tmp_path, monkeypatch):
+    repo = _repo(tmp_path, monkeypatch)
+    addr = "bot@" + "sample.invalid"
+    (repo / "f.txt").write_text(f"{addr}\n")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    assert _run("run", str(repo), "--step", "emails").exit_code == 1
+    assert _run("emails", "allow", addr).exit_code == 0
+    assert _run("emails", "allow", addr).exit_code == 1          # duplicate
+    assert addr in _run("emails", "list").output
+    assert _run("run", str(repo), "--step", "emails").exit_code == 0
+    assert _run("emails", "disallow", addr).exit_code == 0
+    assert _run("emails", "disallow", addr).exit_code == 1
+    assert _run("emails", "allow", "not-an-address").exit_code == 1
