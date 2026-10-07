@@ -23,7 +23,7 @@ def discover_steps() -> List[tuple]:
     return steps
 
 
-def run_all_steps(repo_path: str, config, deep: bool = False,
+def run_all_steps(repo_path: str, config, scan_input=None, deep: bool = False,
                   only_step: str = None,
                   include_untracked: bool = False) -> List[CheckResult]:
     """Run all discovered steps and collect results."""
@@ -33,7 +33,7 @@ def run_all_steps(repo_path: str, config, deep: bool = False,
             continue
         try:
             step_results = run_checks(
-                repo_path, config=config, deep=deep,
+                repo_path, config=config, scan_input=scan_input, deep=deep,
                 include_untracked=include_untracked,
             )
             results.extend(step_results)

@@ -6,3 +6,7 @@ build/
 *.pyc
 .eggs/
 temp/
+.claude/
+.gemini/
+!.gemini/settings.json
+.pytest_cache/

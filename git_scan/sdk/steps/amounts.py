@@ -1,9 +1,9 @@
-"""Dollar amount checks for sensitive financial data on staged content."""
+"""Dollar amount checks for sensitive financial data in changed lines."""
 
 import re
 from typing import List
 
-from ..utils import CheckResult, get_staged_files, get_staged_content
+from ..utils import CheckResult
 
 DOLLAR_PATTERN = re.compile(r"\$[0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]{2})?")
 
@@ -33,46 +33,33 @@ def is_round(amount: float) -> bool:
     return amount % 100 == 0
 
 
-def run_checks(repo_path: str, config=None, deep: bool = False, **kwargs) -> List[CheckResult]:
-    """Run dollar amount checks on staged files."""
+def run_checks(repo_path: str, config=None, scan_input=None, **kwargs) -> List[CheckResult]:
     thresholds = config.thresholds if config else {}
     large_threshold = thresholds.get("large_amount", 300000)
     nonround_threshold = thresholds.get("suspicious_nonround", 10000)
     cents_threshold = thresholds.get("cents_review", 500)
 
-    files = get_staged_files(repo_path)
-    if not files:
-        return [CheckResult("Dollar amounts", True, info="No staged files")]
+    large_findings, nonround_findings, cents_findings = [], [], []
 
-    large_findings = []
-    nonround_findings = []
-    cents_findings = []
-
-    for file_path in files:
-        content = get_staged_content(repo_path, file_path)
-        if content is None:
-            continue
-        for line_num, line in enumerate(content.splitlines(), 1):
-            for m in DOLLAR_PATTERN.finditer(line):
-                amount_str = m.group(0)
-                amount = parse_amount(amount_str)
-                if is_acceptable(amount_str):
-                    continue
-
-                if amount >= large_threshold:
-                    large_findings.append(f"{file_path}:{line_num} {amount_str}")
-                if amount >= nonround_threshold and not is_round(amount):
-                    nonround_findings.append(f"{file_path}:{line_num} {amount_str}")
-
-                cents = round((amount % 1) * 100)
-                if cents != 0 and amount >= cents_threshold:
-                    cents_findings.append(f"{file_path}:{line_num} {amount_str}")
+    for ln in (scan_input.content if scan_input else []):
+        for m in DOLLAR_PATTERN.finditer(ln.text):
+            amount_str = m.group(0)
+            amount = parse_amount(amount_str)
+            if is_acceptable(amount_str):
+                continue
+            if amount >= large_threshold:
+                large_findings.append(f"{ln.where()} {amount_str}")
+            if amount >= nonround_threshold and not is_round(amount):
+                nonround_findings.append(f"{ln.where()} {amount_str}")
+            cents = round((amount % 1) * 100)
+            if cents != 0 and amount >= cents_threshold:
+                cents_findings.append(f"{ln.where()} {amount_str}")
 
     return [
         CheckResult(f"Large amounts (>= ${large_threshold:,})",
-                    len(large_findings) == 0, large_findings[:10]),
+                    not large_findings, large_findings[:10]),
         CheckResult("Non-round suspicious amounts",
-                    len(nonround_findings) == 0, nonround_findings[:10]),
+                    not nonround_findings, nonround_findings[:10]),
         CheckResult("Amounts with cents",
-                    len(cents_findings) == 0, cents_findings[:10]),
+                    not cents_findings, cents_findings[:10]),
     ]

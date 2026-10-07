@@ -4,50 +4,48 @@ Names are checked across the whole repo on every scan, not only the
 staged change: a branch or tag name is published with every push, and a
 tracked file's name is visible to anyone who can see the repo.
 
-Only plain patterns apply to names. Built-in secret patterns (categories
-token, key, identifier) target content and would misfire on hex-like file
-names. Patterns with word_boundary or not_followed_by are tuned for prose
-(e.g. a company name that is fine inside product names) and would misfire
-on names like ``vendor-tasks/``.
+Only literal-string patterns apply to names: the user's plain personal
+patterns (no ``word_boundary`` / ``not_followed_by``, which are tuned for
+prose and misfire on names like ``vendor-tasks/``), plus the user's own
+names from the environment (username, home directory, git name parts).
+Built-in secret patterns (categories token, key, identifier) target content
+and would misfire on hex-like file names; the email and SSN/EIN checks
+cover names themselves.
 """
 
+import re
 from typing import List
 
-from ..utils import CheckResult, run_cmd
-from .patterns import compile_patterns
+from ..utils import CheckResult
+from .patterns import compile_patterns, identity_patterns
 
 CONTENT_ONLY_CATEGORIES = {"token", "key", "identifier"}
 MAX_FINDINGS = 10
 
 
-def _names(repo_path: str, cmd: str) -> List[str]:
-    rc, stdout, _ = run_cmd(cmd, repo_path)
-    return [n for n in stdout.splitlines() if n.strip()] if rc == 0 else []
-
-
-def _check(title: str, names: List[str], compiled) -> CheckResult:
+def _check(title: str, lines, compiled) -> CheckResult:
     findings = []
-    for name in names:
+    for ln in lines:
         for label, regex in compiled:
-            if regex.search(name):
-                findings.append(f"{name} [{label}]")
+            if regex.search(ln.text):
+                findings.append(f"{ln.where()} [{label}]")
                 break
-    info = f"{len(names)} names"
-    return CheckResult(title, not findings, findings[:MAX_FINDINGS], info=info)
+    return CheckResult(title, not findings, findings[:MAX_FINDINGS],
+                       info=f"{len(lines)} names")
 
 
-def run_checks(repo_path: str, config=None, deep: bool = False, **kwargs) -> List[CheckResult]:
-    patterns = [p for p in (config.patterns if config else [])
+def run_checks(repo_path: str, config=None, scan_input=None, **kwargs) -> List[CheckResult]:
+    personal = [p for p in (config.patterns if config else [])
                 if p.get("category") not in CONTENT_ONLY_CATEGORIES
                 and not p.get("word_boundary") and not p.get("not_followed_by")]
-    if not patterns:
+    compiled = compile_patterns(personal)
+    compiled += [(label, re.compile(rx)) for label, rx in identity_patterns(repo_path).items()]
+    if not compiled:
         return [CheckResult("Patterns in names", True, [], skipped=True,
                             info="No personal patterns configured")]
-    compiled = compile_patterns(patterns)
+    names = scan_input.names if scan_input else []
     return [
-        _check("Patterns in file names", _names(repo_path, "git ls-files"), compiled),
-        _check("Patterns in branch names", _names(
-            repo_path, "git for-each-ref --format='%(refname:short)' refs/heads refs/remotes"), compiled),
-        _check("Patterns in tag names", _names(
-            repo_path, "git for-each-ref --format='%(refname:short)' refs/tags"), compiled),
+        _check("Patterns in file names", [n for n in names if n.source == "file"], compiled),
+        _check("Patterns in branch names", [n for n in names if n.source == "branch"], compiled),
+        _check("Patterns in tag names", [n for n in names if n.source == "tag"], compiled),
     ]

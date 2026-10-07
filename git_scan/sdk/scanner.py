@@ -7,7 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
-from .config import load_config, MergedConfig
+from .config import load_config, ConfigError
+from .sources import collect, ScanInput
 from .utils import CheckResult
 from .steps import run_all_steps, get_step_names
 
@@ -57,20 +58,35 @@ def _check_git_repo(repo_path: str) -> CheckResult:
     return CheckResult("Git repository", False, ["Not a git repository"])
 
 
+def _check_personal_patterns(config) -> CheckResult:
+    """The user layer must define ``patterns`` (even empty) — see config."""
+    if config.user_patterns_defined:
+        return CheckResult("Personal patterns", True,
+                           info=f"{config.pattern_counts['personal']} configured")
+    return CheckResult("Personal patterns", False, [
+        "No personal patterns are configured, so names, employers, and other",
+        "personal identifiers would not be checked.",
+        "Add one:   git-scan patterns add my-name --pattern 'Jane Doe' --category name",
+        "Or opt out: git-scan patterns clear",
+    ], info="not configured")
+
+
 def run_scan(
     repo_path: str = ".",
     deep: bool = False,
     only_step: Optional[str] = None,
     include_untracked: bool = False,
+    include_unstaged: bool = False,
     on_check_complete: Optional[callable] = None,
 ) -> ScanReport:
     """Run all checks on a repository.
 
     Args:
         repo_path: Path to git repository
-        deep: If True, also scan git history (slower)
+        deep: Reserved for history scanning (not implemented in ``run``)
         only_step: If specified, run only this step
-        include_untracked: If True, also scan untracked files
+        include_untracked: Also scan untracked files
+        include_unstaged: Also scan unstaged changes
         on_check_complete: Optional callback(check_result, current, total)
     """
     if only_step is not None and only_step not in set(get_step_names()):
@@ -78,26 +94,39 @@ def run_scan(
             f"Invalid step: '{only_step}'. Valid: {sorted(get_step_names())}"
         )
 
-    config = load_config(repo_path)
     report = ScanReport(repo_path=repo_path)
 
-    # Check it's a git repo first
     result = _check_git_repo(repo_path)
     report.checks.append(result)
     if not result.passed:
         return report
 
-    # Run all steps
+    try:
+        config = load_config(repo_path)
+    except ConfigError as e:
+        report.checks.append(CheckResult("Configuration", False, str(e).splitlines()))
+        return report
+
+    if only_step is None:
+        report.checks.append(_check_personal_patterns(config))
+
+    scan_input: ScanInput = collect(
+        repo_path, include_unstaged=include_unstaged,
+        include_untracked=include_untracked,
+    )
+
     step_results = run_all_steps(
-        repo_path, config=config, deep=deep,
+        repo_path, config=config, scan_input=scan_input, deep=deep,
         only_step=only_step, include_untracked=include_untracked,
     )
 
-    total = 1 + len(step_results)
+    first = len(report.checks)
+    total = first + len(step_results)
     if on_check_complete:
-        on_check_complete(result, 1, total)
+        for i, c in enumerate(report.checks, start=1):
+            on_check_complete(c, i, total)
 
-    for i, result in enumerate(step_results, start=2):
+    for i, result in enumerate(step_results, start=first + 1):
         report.checks.append(result)
         if on_check_complete:
             on_check_complete(result, i, total)

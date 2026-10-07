@@ -73,14 +73,26 @@ def test_builtin_secret_categories_not_applied_to_names(tmp_path):
     repo = _repo(tmp_path, pattern="[0-9a-f]{8}", category="token")
     (repo / "deadbeef.txt").write_text("x")
     _git(repo, "add", ".")
-    assert _checks(repo)["Patterns in names"].skipped
+    assert _checks(repo)["Patterns in file names"].passed
 
 
-def test_no_personal_patterns_skips(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _git(repo, "init", "-b", "main")
-    assert _checks(repo)["Patterns in names"].skipped
+def test_username_and_git_name_parts_apply_to_names(tmp_path):
+    repo = _repo(tmp_path)
+    (repo / "testuser-notes.md").write_text("x")
+    _git(repo, "add", ".")
+    _git(repo, "branch", "Test-experiment")
+    checks = _checks(repo)
+    assert not checks["Patterns in file names"].passed
+    assert not checks["Patterns in branch names"].passed
+
+
+def test_non_ascii_file_name_is_matched(tmp_path):
+    repo = _repo(tmp_path, pattern="caf\u00e9")
+    (repo / "caf\u00e9-notes.md").write_text("x")
+    _git(repo, "add", ".")
+    check = _checks(repo)["Patterns in file names"]
+    assert not check.passed
+    assert "caf\u00e9-notes.md" in check.findings[0]
 
 
 def test_prose_tuned_patterns_not_applied_to_names(tmp_path):
@@ -92,4 +104,4 @@ def test_prose_tuned_patterns_not_applied_to_names(tmp_path):
     )
     (repo / "bigco-tasks.txt").write_text("x")
     _git(repo, "add", ".")
-    assert _checks(repo)["Patterns in names"].skipped
+    assert _checks(repo)["Patterns in file names"].passed

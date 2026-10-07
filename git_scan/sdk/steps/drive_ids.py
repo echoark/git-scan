@@ -1,9 +1,9 @@
-"""Google Drive/Doc/Sheet ID checks on staged content."""
+"""Google Drive/Doc/Sheet ID checks in changed lines."""
 
 import re
 from typing import List
 
-from ..utils import CheckResult, get_staged_files, get_staged_content
+from ..utils import CheckResult
 
 DRIVE_PATTERNS = [
     re.compile(r"/d/[A-Za-z0-9_-]{20,50}"),
@@ -12,21 +12,10 @@ DRIVE_PATTERNS = [
 ]
 
 
-def run_checks(repo_path: str, config=None, deep: bool = False, **kwargs) -> List[CheckResult]:
-    """Run Google Drive ID checks on staged files."""
-    files = get_staged_files(repo_path)
-    if not files:
-        return [CheckResult("Google Drive IDs", True, info="No staged files")]
-
+def run_checks(repo_path: str, config=None, scan_input=None, **kwargs) -> List[CheckResult]:
     findings = []
-    for file_path in files:
-        content = get_staged_content(repo_path, file_path)
-        if content is None:
-            continue
-        for line_num, line in enumerate(content.splitlines(), 1):
-            for pattern in DRIVE_PATTERNS:
-                for m in pattern.finditer(line):
-                    findings.append(f"{file_path}:{line_num} {m.group(0)[:50]}")
-
-    passed = len(findings) == 0
-    return [CheckResult("Google Drive IDs", passed, findings[:10])]
+    for ln in (scan_input.content if scan_input else []):
+        for pattern in DRIVE_PATTERNS:
+            for m in pattern.finditer(ln.text):
+                findings.append(f"{ln.where()} {m.group(0)[:50]}")
+    return [CheckResult("Google Drive IDs", not findings, findings[:10])]

@@ -82,6 +82,7 @@ def test_cli_exit_zero_on_clean_repo(tmp_path):
     assert result.exit_code == 0
 
 
+@pytest.mark.xfail(strict=True, reason="history scanning is planned for 'git-scan audit'")
 def test_deep_mode_finds_secrets_in_history(tmp_path):
     """deep=True should detect sensitive content that was committed then removed."""
     repo = _init_repo(tmp_path)

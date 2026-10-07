@@ -1,10 +1,10 @@
-"""Unified pattern scanning — all regex-based checks in one pass.
+"""Pattern scanning of changed lines — one pass over every pattern.
 
 Pattern sources:
-  1. Config patterns (package defaults + user + project, merged by id)
-     Includes built-in token/key/identifier patterns shipped in git-scan.yaml
-     and any user-added patterns at user or project scope.
-  2. Dynamic patterns from environment (username, git identity, .env values)
+  1. Config patterns (package defaults + user + project, merged by id):
+     the built-in token/key/identifier patterns and the user's own.
+  2. Dynamic patterns from the environment: OS username, home directory
+     name, git user name (and its parts), git email, ``.env`` values.
 """
 
 import os
@@ -13,11 +13,11 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-from ..utils import CheckResult, get_staged_files, get_staged_content
+from ..utils import CheckResult
 
 
-def _gather_dynamic_patterns(repo_path: str = ".") -> Dict[str, str]:
-    """Gather sensitive patterns from environment and git config."""
+def gather_dynamic_patterns(repo_path: str = ".") -> Dict[str, str]:
+    """Sensitive strings from the environment and git config, as regexes."""
     patterns = {}
 
     username = os.environ.get("USER") or os.environ.get("USERNAME")
@@ -34,8 +34,7 @@ def _gather_dynamic_patterns(repo_path: str = ".") -> Dict[str, str]:
     try:
         result = subprocess.run(
             ["git", "config", "user.name"],
-            capture_output=True, text=True, timeout=5,
-            cwd=repo_path,
+            capture_output=True, text=True, timeout=5, cwd=repo_path,
         )
         git_name = result.stdout.strip()
         if git_name:
@@ -49,8 +48,7 @@ def _gather_dynamic_patterns(repo_path: str = ".") -> Dict[str, str]:
     try:
         result = subprocess.run(
             ["git", "config", "user.email"],
-            capture_output=True, text=True, timeout=5,
-            cwd=repo_path,
+            capture_output=True, text=True, timeout=5, cwd=repo_path,
         )
         git_email = result.stdout.strip()
         if git_email:
@@ -75,11 +73,12 @@ def _gather_dynamic_patterns(repo_path: str = ".") -> Dict[str, str]:
     return patterns
 
 
-def _compile_config_patterns(config) -> List[Tuple[str, re.Pattern]]:
-    """Build compiled regex patterns from merged config."""
-    if config is None:
-        return []
-    return compile_patterns(config.patterns)
+def identity_patterns(repo_path: str = ".") -> Dict[str, str]:
+    """The dynamic patterns that are names of the user: username, home
+    directory, git name and its parts. (Not the email or ``.env`` values.)"""
+    return {k: v for k, v in gather_dynamic_patterns(repo_path).items()
+            if k.startswith(("Local username", "Home dir name", "Git Full Name",
+                             "Git Name Part"))}
 
 
 def compile_patterns(patterns: List[dict]) -> List[Tuple[str, re.Pattern]]:
@@ -120,62 +119,41 @@ def _is_known_false_positive(file_path: str, match_type: str, line_content: str)
     return False
 
 
-def run_checks(repo_path: str, config=None, deep: bool = False,
-               include_untracked: bool = False, **kwargs) -> List[CheckResult]:
-    """Run all pattern-based scanning in one pass over staged files."""
-
-    # Dynamic patterns from environment
-    dynamic: Dict[str, str] = _gather_dynamic_patterns(repo_path)
-
-    # Config patterns (built-in defaults + user + project, already merged)
-    config_compiled = _compile_config_patterns(config)
+def run_checks(repo_path: str, config=None, scan_input=None, **kwargs) -> List[CheckResult]:
+    dynamic: Dict[str, str] = gather_dynamic_patterns(repo_path)
+    config_compiled = compile_patterns(config.patterns) if config else []
 
     total = len(dynamic) + len(config_compiled)
     if total == 0:
         return [CheckResult("Patterns", True, [], skipped=True)]
 
-    files = get_staged_files(repo_path)
-    if not files:
-        return [CheckResult("Patterns", True, info="No staged files")]
-
     findings = []
     ignored_count = 0
+    lines = scan_input.content if scan_input else []
 
-    for file_path in files:
-        content = get_staged_content(repo_path, file_path)
-        if content is None:
+    for ln in lines:
+        stripped = ln.text.strip()
+        if not stripped or stripped.startswith("#"):
             continue
 
-        for line_num, line in enumerate(content.splitlines(), 1):
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#"):
-                continue
+        for name, pattern in dynamic.items():
+            try:
+                if re.search(pattern, ln.text):
+                    if _is_known_false_positive(ln.file, name, stripped):
+                        ignored_count += 1
+                    else:
+                        findings.append(f"{ln.where()} [{name}] {stripped[:60]}")
+            except re.error:
+                pass
 
-            # Dynamic patterns (plain regex strings)
-            for name, pattern in dynamic.items():
-                try:
-                    if re.search(pattern, line):
-                        if _is_known_false_positive(file_path, name, stripped):
-                            ignored_count += 1
-                        else:
-                            findings.append(
-                                f"{file_path}:{line_num} [{name}] "
-                                f"{stripped[:60]}"
-                            )
-                except re.error:
-                    pass
+        for label, compiled in config_compiled:
+            match = compiled.search(ln.text)
+            if match:
+                findings.append(f"{ln.where()} [{label}] {match.group(0)[:40]}")
 
-            # Config patterns (pre-compiled)
-            for label, compiled in config_compiled:
-                match = compiled.search(line)
-                if match:
-                    findings.append(
-                        f"{file_path}:{line_num} [{label}] "
-                        f"{match.group(0)[:40]}"
-                    )
-
-    passed = len(findings) == 0
-    info = f"{total} patterns, {len(files)} files"
+    counts = config.pattern_counts if config else {}
+    info = (f"{counts.get('personal', 0)} personal, {counts.get('built-in', 0)} built-in, "
+            f"{len(dynamic)} environment; {len(scan_input.files) if scan_input else 0} files")
     if ignored_count:
         info += f", {ignored_count} ignored"
-    return [CheckResult("Patterns", passed, findings[:20], info=info)]
+    return [CheckResult("Patterns", not findings, findings[:20], info=info)]
