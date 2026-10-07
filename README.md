@@ -43,7 +43,7 @@ through the MCP server.
 Requires Python 3.11+ and git.
 
 ```bash
-pipx install git+https://github.com/echoark/git-scan.git@v0.3.0
+pipx install git+https://github.com/echoark/git-scan.git@v0.3.1
 git-scan hook install
 ```
 
@@ -76,7 +76,8 @@ git-scan run [PATH]            # scan the staged change (what the hook runs)
 git-scan run --unstaged        # also scan changes not yet staged
 git-scan run --untracked       # also scan files git does not track yet
 git-scan run --step patterns   # run one check
-git-scan run -v                # show skipped checks
+git-scan run -v                # show every finding, not just the first ten per check
+git-scan run --hide-skipped    # omit checks that were skipped (shown by default)
 git-scan steps                 # list the checks
 ```
 
@@ -282,7 +283,7 @@ An agent can run the same scan through a stdio MCP server, `git-scan-mcp`,
 installed with the `mcp` extra:
 
 ```bash
-pipx install "git-scan[mcp] @ git+https://github.com/echoark/git-scan.git@v0.3.0"
+pipx install "git-scan[mcp] @ git+https://github.com/echoark/git-scan.git@v0.3.1"
 claude mcp add --scope user git-scan -- git-scan-mcp
 ```
 

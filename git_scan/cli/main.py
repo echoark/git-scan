@@ -36,8 +36,9 @@ def cli(ctx):
 @click.option("--step", default=None, help="Run only this step.")
 @click.option("--unstaged", is_flag=True, help="Also scan unstaged changes.")
 @click.option("--untracked", is_flag=True, help="Also scan untracked files.")
-@click.option("--verbose", "-v", is_flag=True, help="Show skipped checks and details.")
-def run(path, deep, step, unstaged, untracked, verbose):
+@click.option("--verbose", "-v", is_flag=True, help="Show every finding, not just the first ten per check.")
+@click.option("--hide-skipped", is_flag=True, help="Don't list checks that were skipped.")
+def run(path, deep, step, unstaged, untracked, verbose, hide_skipped):
     """Scan staged changes for sensitive data.
 
     Reads the staged diff (added and removed lines) plus every file, branch,
@@ -57,7 +58,7 @@ def run(path, deep, step, unstaged, untracked, verbose):
         sys.exit(2)
 
     for check in report.checks:
-        if check.skipped and not verbose:
+        if check.skipped and hide_skipped:
             continue
         if check.passed:
             status, style = ("PASS", "green") if not check.skipped else ("SKIP", "yellow")
@@ -66,10 +67,11 @@ def run(path, deep, step, unstaged, untracked, verbose):
         info = f" ({check.info})" if check.info else ""
         click.echo(click.style(f"  [{status}] ", fg=style) + check.name + info)
         if not check.passed and not check.skipped:
-            for finding in check.findings[:10]:
+            shown = check.findings if verbose else check.findings[:10]
+            for finding in shown:
                 click.echo(f"         {finding}")
-            if len(check.findings) > 10:
-                click.echo(f"         ... and {len(check.findings) - 10} more")
+            if len(check.findings) > len(shown):
+                click.echo(f"         ... and {len(check.findings) - len(shown)} more (-v shows all)")
 
     click.echo()
     if report.failed:

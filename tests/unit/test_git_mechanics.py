@@ -97,6 +97,9 @@ def test_installed_hook_blocks_a_commit_and_allows_a_clean_one(tmp_path, monkeyp
     """End to end through git: the hook git-scan installs runs git-scan on
     commit. Everything involved lives in the sandbox: the hooks directory,
     the global git config install_hook edits, and the repository."""
+    # The hook script prepends $HOME/.local/bin, so point HOME at the sandbox:
+    # the git-scan under test (this venv) must be the one the hook runs.
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("PATH", f"{Path(sys.executable).parent}{os.pathsep}{os.environ['PATH']}")
     install_hook(tmp_path / "hooks")
     repo = _repo(tmp_path)
@@ -113,3 +116,37 @@ def test_installed_hook_blocks_a_commit_and_allows_a_clean_one(tmp_path, monkeyp
     _git(repo, "add", ".")
     assert _git(repo, "commit", "-q", "-m", "ok").returncode == 0
     assert _git(repo, "log", "--oneline").stdout.count("\n") == 2
+
+
+def test_installed_hook_enforces_identity_rules(tmp_path, monkeypatch):
+    """A real git commit through the installed hook: an inherited email the
+    rules don't allow is refused; the allowed one commits; an owner with no
+    rule commits with the skip shown."""
+    # The hook script prepends $HOME/.local/bin, so point HOME at the sandbox:
+    # the git-scan under test (this venv) must be the one the hook runs.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", f"{Path(sys.executable).parent}{os.pathsep}{os.environ['PATH']}")
+    install_hook(tmp_path / "hooks")
+    (Path(os.environ["XDG_CONFIG_HOME"]) / "git-scan" / "git-scan.yaml").write_text(
+        "patterns: []\nidentity:\n  - remote: github.com/octo\n    emails: ['*@example.com']\n")
+    repo = _repo(tmp_path)
+    _git(repo, "remote", "add", "origin", "https://github.com/octo/app.git")
+
+    (repo / "a.txt").write_text("x\n")
+    _git(repo, "add", ".")
+    env = {**os.environ, "GIT_AUTHOR_EMAIL": "me@example.org", "GIT_COMMITTER_EMAIL": "me@example.org"}
+    blocked = subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "x"],
+                             capture_output=True, text=True, env=env)
+    assert blocked.returncode != 0
+    assert "not allowed for github.com/octo/app" in blocked.stderr
+    assert _git(repo, "log", "--oneline").stdout.count("\n") == 1          # still only "init"
+
+    ok = _git(repo, "commit", "-q", "-m", "x")                               # sandbox email: test@example.com
+    assert ok.returncode == 0 and "allowed for github.com/octo" in ok.stderr
+
+    _git(repo, "remote", "set-url", "origin", "https://github.com/nobody/app.git")
+    (repo / "a.txt").write_text("y\n")
+    _git(repo, "add", ".")
+    skipped = _git(repo, "commit", "-q", "-m", "y")
+    assert skipped.returncode == 0
+    assert "[SKIP] Git identity (no identity rule for github.com/nobody/app" in skipped.stderr
