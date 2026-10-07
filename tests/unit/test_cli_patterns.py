@@ -172,3 +172,11 @@ def test_exclude_files_matches_the_full_path_not_the_base_name(tmp_path, monkeyp
     r = _run("run", str(repo), "--step", "patterns")
     assert r.exit_code == 1
     assert "other/defaults.yaml:1" in r.output and "data/defaults.yaml" not in r.output
+
+
+def test_edit_with_empty_value_clears_a_list_field(tmp_path, monkeypatch):
+    _repo(tmp_path, monkeypatch)
+    _run("patterns", "add", "co", "--pattern", "Vendorco", "--exclude-file", "data/*.yaml")
+    assert _run("patterns", "edit", "co", "--exclude-file", "").exit_code == 0
+    entry = next(e for e in yaml.safe_load(_user_file().read_text())["patterns"] if e["id"] == "co")
+    assert "exclude_files" not in entry

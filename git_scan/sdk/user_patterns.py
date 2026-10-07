@@ -110,6 +110,8 @@ def edit_pattern(id: str, repo_path: str = ".", project: bool = False, **changes
         mine = {"id": id}
         entries.append(mine)
     for k, v in changes.items():
+        if isinstance(v, (list, tuple)):
+            v = [x for x in v if x]          # an empty value clears the list
         if v in ([], False) and k != "pattern":
             mine.pop(k, None)
         else:
