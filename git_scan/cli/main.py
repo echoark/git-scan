@@ -261,7 +261,14 @@ def emails_list():
 
 @cli.group()
 def identity():
-    """Emails allowed per remote (a host/owner/repo prefix).
+    """Emails allowed per remote (a host/owner/repo prefix). Optional.
+
+    Git config says which address to use; it can't refuse the wrong one. If
+    one account and one address serve every repository on this machine, set
+    it once in your global git config and skip this. Rules matter when the
+    right address depends on the repository (personal vs employer vs a
+    customer organization): a new clone inherits the global address, and a
+    rule refuses the commit instead of letting it into history.
 
     A rule names a remote prefix and the emails allowed to commit there.
     Prefixes match whole segments: github.com/octo covers github.com/octo/*

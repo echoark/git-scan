@@ -292,9 +292,20 @@ in [MCP server](docs/MCP.md).
 
 ## Git identity
 
-The commit's author email must be one you have allowed for the remote. You
-say which emails may commit where; nothing is inferred and no network call
-is made:
+Optional. The commit's author email must be one you have allowed for the
+remote. You say which emails may commit where; nothing is inferred and no
+network call is made.
+
+**Why this exists when git already has `user.email`.** Git's config answers
+"which address do I use here"; it can't say "this address must never be used
+there". If you use one GitHub account and one author address in every
+repository on the machine, set it once in your global git config and skip
+this section. The rules earn their keep when the right address depends on
+the repository: a personal account plus an employer address, or a customer
+organization that issued you an address of its own. Then every new clone
+starts with the inherited global address, and nothing stops a commit under
+the wrong one until someone notices, possibly much later, when the fix is a
+history rewrite. A rule turns that into a refused commit.
 
 ```bash
 git-scan identity allow github.com/octo-dev   '*+octo-dev@users.noreply.github.com'
