@@ -155,6 +155,14 @@ Consequences, each pinned by a test in `tests/unit/test_isolation.py`:
 Tests that need a logged-in GitHub CLI write their own `hosts.yml` under a
 temp `GH_CONFIG_DIR`. No test reads the network.
 
+**Test fixtures never contain the strings the scanner exists to catch.**
+Use an obviously fake form (`"ghp_" + "a" * 36`, `example.com`,
+`Vendorco`) or assemble the value at runtime (`"-".join(["123", "45",
+"6789"])`) so no token-, address-, or ID-shaped text sits in the source.
+The same applies to code comments and docstrings. A real-looking value in
+a test is a leak the scanner would rightly block, and this repository's
+own commits are scanned.
+
 One test is marked `xfail`: history scanning (see below) is not built.
 
 ## Planned
