@@ -142,6 +142,13 @@ def test_no_remote_passes(tmp_path):
     assert check_git_identity(repo).passed
 
 
+@pytest.mark.parametrize("url", ["/srv/git/app.git", "../app.git", "file:///srv/git/app.git"])
+def test_local_path_remote_passes(tmp_path, url):
+    repo = make_repo(tmp_path, url, global_email="anyone@example.com")
+    result = check_git_identity(repo)
+    assert result.passed and "No network remote" in result.info
+
+
 # --- Helpers ---
 
 @pytest.mark.parametrize("url,host", [

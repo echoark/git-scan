@@ -38,8 +38,15 @@ def _git(path: Path, *args: str) -> Optional[str]:
     return res.stdout.strip() if res.returncode == 0 else None
 
 
+def is_local_remote(url: str) -> bool:
+    """A filesystem path (or file:// URL): nothing leaves the machine."""
+    return url.startswith(("/", "./", "../", "~", "file://")) or bool(re.match(r"^[A-Za-z]:[\\/]", url))
+
+
 def remote_host(url: str) -> Optional[str]:
     """Host of a git remote URL (https, ssh://, or scp-style)."""
+    if is_local_remote(url):
+        return None
     m = re.match(r"^[a-z][a-z0-9+.-]*://(?:[^@/]+@)?([^/:]+)", url, re.I)
     if not m:
         m = re.match(r"^(?:[^@/]+@)?([^/:]+):", url)
@@ -110,8 +117,8 @@ def check_git_identity(repo_path: str) -> CheckResult:
             return CheckResult(NAME, True, info=f"Repo setting: {email}")
 
         url = _remote_url(path)
-        if not url:
-            return CheckResult(NAME, True, info=f"No remote: {email}")
+        if not url or is_local_remote(url):
+            return CheckResult(NAME, True, info=f"No network remote: {email}")
         host = remote_host(url)
         if not host:
             return CheckResult(NAME, False, [
