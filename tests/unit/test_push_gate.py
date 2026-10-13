@@ -184,3 +184,17 @@ def test_deleting_a_remote_branch_is_not_checked(gate):
     assert _push(gate).returncode == 0
     _git(gate, "push", "-q", "origin", "main:side")
     assert _git(gate, "push", "-q", "origin", "--delete", "side", check=False).returncode == 0
+
+
+def test_install_records_missing_config_help_and_a_real_commit_shows_it(gate, tmp_path):
+    r = _run("hook", "install", "--hooks-dir", str(tmp_path / "hooks"), "--pre-push",
+             "--missing-config-help", "Commits go through the review tool, which also sets this up.")
+    assert r.exit_code == 0 and "missing-config help:" in r.output
+    (Path(os.environ["XDG_CONFIG_HOME"]) / "git-scan" / "git-scan.yaml").unlink()
+    (gate / "a.txt").write_text("clean\n")
+    _git(gate, "add", "a.txt")
+    blocked = _git(gate, "commit", "-q", "-m", "x", check=False)
+    assert blocked.returncode != 0
+    assert "Commit refused" in blocked.stderr
+    assert "Commits go through the review tool, which also sets this up." in blocked.stderr
+    assert "patterns clear" not in blocked.stderr and "[PASS]" not in blocked.stderr

@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
-from .config import load_config, ConfigError
+from .config import load_config, ConfigError, read_missing_config_help, user_config_path
 from .sources import collect, ScanInput
 from .utils import CheckResult
 from .steps import run_all_steps, get_step_names
@@ -24,10 +24,11 @@ class ScanReport:
     """Complete scan report with all check results."""
     repo_path: str
     checks: List[CheckResult] = field(default_factory=list)
+    refusal: List[str] = field(default_factory=list)   # set: no checks ran
 
     @property
     def failed(self) -> bool:
-        return any(not c.passed and not c.skipped for c in self.checks)
+        return bool(self.refusal) or any(not c.passed and not c.skipped for c in self.checks)
 
     @property
     def passed_count(self) -> int:
@@ -61,16 +62,26 @@ def _check_git_repo(repo_path: str) -> CheckResult:
 
 
 def _check_personal_patterns(config) -> CheckResult:
-    """The user layer must define ``patterns`` (even empty) — see config."""
-    if config.user_patterns_defined:
-        return CheckResult("Personal patterns", True,
-                           info=f"{config.pattern_counts['personal']} configured")
-    return CheckResult("Personal patterns", False, [
-        "No personal patterns are configured, so names, employers, and other",
-        "personal identifiers would not be checked.",
-        "Add one:   git-scan patterns add my-name --pattern 'Jane Doe' --category name",
-        "Or opt out: git-scan patterns clear",
-    ], info="not configured")
+    """Reached only when the user layer defines ``patterns`` (even empty)."""
+    return CheckResult("Personal patterns", True,
+                       info=f"{config.pattern_counts['personal']} configured")
+
+
+def _not_configured_refusal(config) -> List[str]:
+    """Why a full scan won't run without the user layer, and what to do."""
+    path = user_config_path()
+    if config.layers.get("user") is None:
+        first = f"git-scan: no user config on this machine ({path}), so"
+    else:
+        first = f"git-scan: the user config ({path}) has no personal patterns, so"
+    lines = [first, "nothing personal can be checked. Commit refused."]
+    help_text = read_missing_config_help()
+    if help_text:
+        lines += help_text.splitlines()
+    else:
+        lines += ["To set it up: git-scan patterns add ID --pattern REGEX",
+                  "To declare you have none: git-scan patterns clear"]
+    return lines
 
 
 def run_scan(
@@ -116,6 +127,10 @@ def run_scan(
         return report
 
     if only_step is None:
+        if not config.user_patterns_defined:
+            report.checks = []
+            report.refusal = _not_configured_refusal(config)
+            return report
         report.checks.append(_check_personal_patterns(config))
 
     commit_sha = None

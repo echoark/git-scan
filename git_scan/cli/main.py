@@ -9,7 +9,7 @@ from git_scan.sdk.steps import get_step_names
 from git_scan.sdk import user_patterns as up
 from git_scan.sdk.hooks import install_hook, uninstall_hook, status, format_status, HookError
 from git_scan.sdk import marks
-from git_scan.sdk.config import load_config, ConfigError
+from git_scan.sdk.config import load_config, ConfigError, write_missing_config_help
 
 
 @click.group(invoke_without_command=True)
@@ -64,6 +64,10 @@ def run(path, deep, step, unstaged, untracked, verbose, hide_skipped, commit):
     except InvalidStepError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(2)
+
+    if report.refusal:
+        click.echo("\n".join(report.refusal))
+        sys.exit(1)
 
     for check in report.checks:
         if check.skipped and hide_skipped:
@@ -435,7 +439,10 @@ _DIR = click.option("--hooks-dir", default=None,
               help="Also refuse pushes of commits that were not scanned (the push gate).")
 @click.option("--require-mark", "require_mark", multiple=True, metavar="LABEL",
               help="With --pre-push: also require this mark (repeatable).")
-def hook_install(local, hooks_dir, force, pre_push, require_mark):
+@click.option("--missing-config-help", "missing_config_help", default=None, metavar="TEXT",
+              help="Shown instead of setup instructions when a commit is refused "
+                   "because the user config is missing.")
+def hook_install(local, hooks_dir, force, pre_push, require_mark, missing_config_help):
     """Install 'git-scan run' as the pre-commit hook.
 
     An earlier git-scan script is upgraded. Anything else already there is
@@ -451,6 +458,8 @@ def hook_install(local, hooks_dir, force, pre_push, require_mark):
         _fail(click.UsageError("--require-mark needs --pre-push"))
     try:
         click.echo(install_hook(hooks_dir, force=force, local=local, pre_push=pre_push))
+        if missing_config_help:
+            click.echo(f"missing-config help: {write_missing_config_help(missing_config_help)}")
         if require_mark:
             labels = up.require_marks(list(require_mark))
             click.echo(f"push requires: scanned, {', '.join(labels)}")

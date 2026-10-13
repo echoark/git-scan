@@ -15,8 +15,13 @@ file, the spot, and the command that fixes it, rather than silently
 scanning with a half-loaded config.
 
 The ``patterns`` key of the user layer is the switch for personal patterns:
-absent means "not configured" (the scan fails and says how to add one or
-opt out); present, even as an empty list, means configured.
+absent (or no user layer at all) means "not configured", and a full scan is
+refused before any check runs, since nothing personal could be checked;
+present, even as an empty list, means configured. The refusal ends with
+setup instructions, or with the text in ``missing-config-help`` beside the
+user layer when that file exists (written by ``hook install
+--missing-config-help``). That text lives outside the user layer because the
+user layer is what's missing when it's needed.
 """
 
 from __future__ import annotations
@@ -53,6 +58,27 @@ def user_config_path() -> Path:
     xdg = os.environ.get("XDG_CONFIG_HOME", "")
     base = Path(xdg) if xdg else Path.home() / ".config"
     return base / "git-scan" / CONFIG_FILENAME
+
+
+def missing_config_help_path() -> Path:
+    """Optional text shown, instead of setup instructions, when the user layer is missing."""
+    return user_config_path().parent / "missing-config-help"
+
+
+def read_missing_config_help() -> Optional[str]:
+    path = missing_config_help_path()
+    try:
+        text = path.read_text().strip()
+    except OSError:
+        return None
+    return text or None
+
+
+def write_missing_config_help(text: str) -> Path:
+    path = missing_config_help_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text.strip() + "\n")
+    return path
 
 
 def project_config_path(repo_path: str) -> Optional[Path]:

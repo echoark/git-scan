@@ -188,6 +188,16 @@ scripts git-scan has shipped (`SCRIPTS`), and nothing else: `installed`,
   project layer can't drop a requirement the user layer sets.
 - **Opt-in.** Without `--pre-push` nothing about pushing changes.
 
+## No user config
+
+A full scan without the user layer's `patterns` key runs no checks and
+returns a refusal (`ScanReport.refusal`) instead: listing passes from checks
+that had nothing personal to check would mislead. The refusal ends with setup
+instructions, or with the text in `missing-config-help` beside the user layer
+(`hook install --missing-config-help`). That text is kept outside the user
+layer because the user layer is what's missing; it never appears in other
+output. A `--step` run is not refused.
+
 ## Testing
 
 ```bash

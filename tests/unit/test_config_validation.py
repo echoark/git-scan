@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from git_scan.sdk.config import load_config, ConfigError
+from git_scan.sdk.config import load_config, ConfigError, write_missing_config_help
 from git_scan.sdk.scanner import run_scan
 
 
@@ -21,19 +21,41 @@ def _repo(tmp_path):
     return repo
 
 
-def test_missing_user_config_fails_scan_with_instructions(tmp_path):
+def test_missing_user_config_refuses_before_any_check(tmp_path):
     _user_file().unlink()
     report = run_scan(str(_repo(tmp_path)))
-    check = next(c for c in report.checks if c.name == "Personal patterns")
-    assert not check.passed
-    assert any("git-scan patterns add" in f for f in check.findings)
-    assert any("git-scan patterns clear" in f for f in check.findings)
+    assert report.failed and report.checks == []
+    text = "\n".join(report.refusal)
+    assert "no user config on this machine" in text and "Commit refused" in text
+    assert "git-scan patterns add" in text and "git-scan patterns clear" in text
 
 
-def test_user_config_without_patterns_key_fails(tmp_path):
+def test_user_config_without_patterns_key_refuses(tmp_path):
     _user_file().write_text("thresholds:\n  cents_review: 100\n")
     report = run_scan(str(_repo(tmp_path)))
-    assert not next(c for c in report.checks if c.name == "Personal patterns").passed
+    assert report.failed and report.checks == []
+    assert "has no personal patterns" in "\n".join(report.refusal)
+
+
+def test_missing_config_help_replaces_the_setup_instructions(tmp_path):
+    _user_file().unlink()
+    write_missing_config_help("Commits go through the review tool, which also sets this up.")
+    text = "\n".join(run_scan(str(_repo(tmp_path))).refusal)
+    assert "Commits go through the review tool, which also sets this up." in text
+    assert "patterns clear" not in text and "patterns add" not in text
+
+
+def test_missing_config_help_is_not_shown_when_configured(tmp_path):
+    write_missing_config_help("Commits go through the review tool.")
+    report = run_scan(str(_repo(tmp_path)))
+    assert report.refusal == []
+    assert next(c for c in report.checks if c.name == "Personal patterns").passed
+
+
+def test_a_step_only_run_is_not_refused(tmp_path):
+    _user_file().unlink()
+    report = run_scan(str(_repo(tmp_path)), only_step="amounts")
+    assert report.refusal == []
 
 
 def test_empty_patterns_list_is_an_explicit_opt_out(tmp_path):

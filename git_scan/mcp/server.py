@@ -64,6 +64,9 @@ async def scan_repo(
             entry["info"] = c.info
         checks.append(entry)
 
+    if report.refusal:
+        return {"passed": False, "refusal": "\n".join(report.refusal), "checks": []}
+
     return {
         "passed": not report.failed,
         "passed_count": report.passed_count,

@@ -246,6 +246,19 @@ Three ways to run git-scan on every commit:
 Git ignores a repository's own `.git/hooks` while `core.hooksPath` is set
 at any level, so a local install warns when that is the case.
 
+**When the user config is missing.** A full scan with no user config (or one
+without a `patterns` key) runs no checks: it refuses the commit and says how
+to set up. Where the config is restored some other way, replace those setup
+instructions with your own text:
+
+```bash
+git-scan hook install --missing-config-help "Restore the config with your team's setup tool."
+```
+
+The text is kept in `missing-config-help` beside the user config file, since
+the config itself is what's missing when the text is needed. Commits blocked
+by findings and refused pushes are unaffected.
+
 The hook script is a fixed three lines, identical on every machine (it
 adds `~/.local/bin` to `PATH` so GUI git clients find `git-scan`). Install
 and uninstall decide what to do by exact match against the scripts git-scan
