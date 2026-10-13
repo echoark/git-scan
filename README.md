@@ -277,6 +277,57 @@ The last line is where git will actually run a pre-commit hook for the
 current repository, and what is there. Uninstalling leaves
 `core.hooksPath` as it is, since other hooks may live in that directory.
 
+### Push gate (optional)
+
+The pre-commit hook can be skipped: `git commit --no-verify`, a rebase or
+cherry-pick, a commit made on another machine. The push gate refuses to push
+any commit that was not scanned:
+
+```bash
+git-scan hook install --pre-push
+```
+
+This adds two hooks beside `pre-commit` in the same directory:
+
+- `post-commit` marks each commit whose scan passed `scanned`;
+- `pre-push` runs `git-scan push-check`, which refuses the push if any commit
+  the remote doesn't have yet lacks its mark, and says what to run.
+
+A commit made without the hook is scanned afterwards, and marked if clean:
+
+```bash
+git-scan run --commit <rev>
+```
+
+`scanned` is per commit: a later commit's scan says nothing about an
+earlier one, and an amended or rebased commit is a new commit that needs
+its own.
+
+**Requiring another check.** Any other check (a manual review, an automated
+one) can require its own mark:
+
+```bash
+git-scan hook install --pre-push --require-mark review
+git-scan mark review              # once the review has passed
+```
+
+`mark` marks the current commit. A required mark covers that commit and
+every unpushed commit before it, so marking the newest commit covers the
+batch. Required labels are kept in the user config (`push.require_marks`);
+a project's `git-scan.yaml` can add a requirement but not remove one.
+
+`git-scan push-check` run by hand checks the current branch against its
+upstream: would a push be accepted?
+
+Marks are git notes under `refs/notes/git-scan`. Notes are not pushed by
+default, so marks stay on the machine that wrote them. A mark shows that
+the step ran, not how well; the gate catches a forgotten step.
+
+**Limitation:** the check is made against the remote being pushed to. With
+several remotes, commits marked relative to one may be pushed to another
+that is further behind; only the remote's own tracking refs and the tips
+git reports are treated as already present.
+
 ## MCP server
 
 An agent can run the same scan through a stdio MCP server, `git-scan-mcp`,

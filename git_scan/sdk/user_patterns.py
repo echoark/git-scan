@@ -335,6 +335,41 @@ def set_setting(name: str, value, repo_path: str = ".", project: bool = False) -
     _write(path, data)
 
 
+def require_marks(labels: List[str], repo_path: str = ".", project: bool = False) -> List[str]:
+    """Add mark labels a push must carry. Returns the layer's full list."""
+    for n in labels:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", n):
+            raise PatternError(f"'{n}' is not a valid mark label: use letters, digits, "
+                               "'.', '_' or '-'")
+    path = target_path(repo_path, project)
+    data = _read(path)
+    push = data.setdefault("push", {})
+    current = list(push.get("require_marks", []))
+    for n in labels:
+        if n not in current:
+            current.append(n)
+    push["require_marks"] = current
+    _write(path, data)
+    return current
+
+
+def unrequire_marks(labels: List[str], repo_path: str = ".", project: bool = False) -> List[str]:
+    """Stop requiring mark labels in a layer. Returns the layer's remaining list."""
+    path = target_path(repo_path, project)
+    data = _read(path)
+    push = data.get("push") or {}
+    current = [n for n in push.get("require_marks", []) if n not in labels]
+    if push:
+        if current:
+            push["require_marks"] = current
+        else:
+            push.pop("require_marks", None)
+        if not push:
+            data.pop("push", None)
+        _write(path, data)
+    return current
+
+
 def layer_status(repo_path: str = ".") -> List[dict]:
     """Each layer's path and whether its file exists."""
     return [{"layer": name, "path": str(path), "exists": path.is_file()}

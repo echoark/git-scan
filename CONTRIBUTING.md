@@ -9,7 +9,8 @@ git_scan/
     scanner.py          # orchestration: config check, input collection, steps
     config.py           # three-layer config, validation, pattern provenance
     user_patterns.py    # patterns add/remove/restore/clear/list, settings
-    hooks.py            # pre-commit hook installation
+    hooks.py            # hook installation: pre-commit, and the push gate's two
+    marks.py           # marks on commits (git notes) and the push check
     entropy.py          # Shannon-entropy detector and exclusions
     yaml_merge.py       # layer merge (managed snippet; see below)
     steps/              # one module per check; exposes run_checks(...)
@@ -163,6 +164,29 @@ scripts git-scan has shipped (`SCRIPTS`), and nothing else: `installed`,
   will actually use (`core.hooksPath` if set at any level, else the
   repository's `.git/hooks`). The MCP `hook_status` tool returns the same
   structure.
+
+## The push gate
+
+`sdk/marks.py` owns marks and the push check. Rules:
+
+- **Hooks stay one-line calls into the CLI.** `pre-push` runs `git-scan
+  push-check "$@"`, `post-commit` runs `git-scan hook post-commit`; their
+  scripts follow the same contract as pre-commit (`GATE_SCRIPTS` in
+  `hooks.py`, append never edit). All behavior is in Python.
+- **The notes are internal.** Only `add_mark` writes `refs/notes/git-scan`
+  and only `push_check` reads it; callers use `git-scan mark LABEL`. One label
+  per line.
+- **`scanned` is per commit; other marks cover history.** A scan reads one
+  commit's changes, so its mark can't vouch for an ancestor. A required
+  mark is written after a check of the whole unpushed range, so it covers
+  the marked commit and every unpushed commit before it.
+- **A pre-commit hook runs before the commit exists.** A passing staged scan
+  records the staged tree in the git directory; the post-commit hook marks
+  HEAD only if its tree is that one, and consumes the record either way.
+- **Requirements only accumulate.** `required_marks` is read per layer and
+  combined, never from the merged view (merging replaces lists), so a
+  project layer can't drop a requirement the user layer sets.
+- **Opt-in.** Without `--pre-push` nothing about pushing changes.
 
 ## Testing
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
@@ -11,6 +12,7 @@ from .config import load_config, ConfigError
 from .sources import collect, ScanInput
 from .utils import CheckResult
 from .steps import run_all_steps, get_step_names
+from . import marks
 
 
 class InvalidStepError(ValueError):
@@ -78,6 +80,7 @@ def run_scan(
     include_untracked: bool = False,
     include_unstaged: bool = False,
     on_check_complete: Optional[callable] = None,
+    commit: Optional[str] = None,
 ) -> ScanReport:
     """Run all checks on a repository.
 
@@ -88,6 +91,11 @@ def run_scan(
         include_untracked: Also scan untracked files
         include_unstaged: Also scan unstaged changes
         on_check_complete: Optional callback(check_result, current, total)
+        commit: Scan this commit's own changes instead of the staged diff
+
+    A full scan that passes is remembered for the push gate: a staged scan
+    records the staged tree (the post-commit hook marks the commit made
+    from it), and a commit scan marks that commit ``scanned``.
     """
     if only_step is not None and only_step not in set(get_step_names()):
         raise InvalidStepError(
@@ -110,9 +118,18 @@ def run_scan(
     if only_step is None:
         report.checks.append(_check_personal_patterns(config))
 
+    commit_sha = None
+    if commit:
+        res = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}"],
+                             cwd=repo_path, capture_output=True, text=True)
+        commit_sha = res.stdout.strip()
+        if not commit_sha:
+            report.checks.append(CheckResult("Commit", False, [f"'{commit}' is not a commit"]))
+            return report
+
     scan_input: ScanInput = collect(
         repo_path, include_unstaged=include_unstaged,
-        include_untracked=include_untracked,
+        include_untracked=include_untracked, commit=commit_sha,
     )
 
     step_results = run_all_steps(
@@ -130,5 +147,11 @@ def run_scan(
         report.checks.append(result)
         if on_check_complete:
             on_check_complete(result, i, total)
+
+    if only_step is None and not report.failed:
+        if commit_sha:
+            marks.add_mark(marks.SCANNED, commit_sha, repo_path)
+        else:
+            marks.record_passed_scan(repo_path)
 
     return report

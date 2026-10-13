@@ -10,6 +10,9 @@ Sources:
 - ``staged``: ``git diff --cached`` (what the commit will contain).
 - ``unstaged``: ``git diff`` (changes on disk not yet staged). Optional.
 - ``untracked``: whole untracked files, read from disk. Optional.
+- ``commit``: one commit's own changes (``git diff <first parent> <commit>``,
+  or against the empty tree for a root commit), in place of the staged diff.
+  Used to scan a commit made without the hook.
 - names: every tracked file path, branch, and tag. Always; a bad name is
   published with every push regardless of what the commit touches.
 
@@ -38,7 +41,7 @@ class Line:
 
     text: str
     file: str
-    source: str            # staged | unstaged | untracked | file | branch | tag
+    source: str            # staged | unstaged | untracked | commit | file | branch | tag
     kind: str              # added | removed | name
     line: Optional[int] = None
 
@@ -128,6 +131,14 @@ def unstaged_lines(repo_path: str) -> List[Line]:
     return parse_diff(_git(repo_path, *DIFF_ARGS), "unstaged")
 
 
+def commit_lines(repo_path: str, commit: str) -> List[Line]:
+    parent = _git(repo_path, "rev-parse", "--verify", "--quiet", f"{commit}^1").strip()
+    if not parent:   # root commit: compare with the empty tree
+        parent = subprocess.run(["git", "hash-object", "-t", "tree", "--stdin"], cwd=repo_path,
+                                input="", capture_output=True, text=True).stdout.strip()
+    return parse_diff(_git(repo_path, *DIFF_ARGS, parent, commit), "commit")
+
+
 def untracked_lines(repo_path: str) -> List[Line]:
     out = _git(repo_path, "-c", "core.quotepath=false", "ls-files", "--others",
                "--exclude-standard")
@@ -154,8 +165,8 @@ def name_lines(repo_path: str) -> List[Line]:
 
 
 def collect(repo_path: str, include_unstaged: bool = False,
-            include_untracked: bool = False) -> ScanInput:
-    content = staged_lines(repo_path)
+            include_untracked: bool = False, commit: Optional[str] = None) -> ScanInput:
+    content = commit_lines(repo_path, commit) if commit else staged_lines(repo_path)
     if include_unstaged:
         content += unstaged_lines(repo_path)
     if include_untracked:

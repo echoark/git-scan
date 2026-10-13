@@ -36,7 +36,7 @@ CONFIG_FILENAME = "git-scan.yaml"
 
 LAYERS = ("built-in", "user", "project")
 
-TOP_LEVEL_KEYS = {"entropy", "thresholds", "patterns", "allowed_emails", "identity"}
+TOP_LEVEL_KEYS = {"entropy", "thresholds", "patterns", "allowed_emails", "identity", "push"}
 PATTERN_FIELDS = {"id", "pattern", "category", "word_boundary",
                   "not_followed_by", "exclude_files", "disabled"}
 THRESHOLD_KEYS = {"large_amount", "suspicious_nonround", "suspicious_any",
@@ -194,6 +194,20 @@ def validate_layer(data, path) -> None:
             if not isinstance(em, list) or not em or not all(isinstance(x, str) and x for x in em):
                 errors.append(f"{loc}: 'emails' must be a non-empty list of addresses")
 
+    push = data.get("push", {})
+    if not isinstance(push, dict):
+        errors.append("push: must be a mapping (require_marks: [labels])")
+    else:
+        for f in push:
+            if f != "require_marks":
+                errors.append(f"push: unknown field '{f}' (known: require_marks)")
+        marks = push.get("require_marks", [])
+        if (not isinstance(marks, list)
+                or not all(isinstance(m, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", m)
+                           for m in marks)):
+            errors.append("push.require_marks: must be a list of mark labels "
+                          "(letters, digits, '.', '_', '-')")
+
     if errors:
         lines = [f"Invalid config: {path}"] + [f"  {e}" for e in errors] + [
             "Fix the file, or remove the entry with 'git-scan patterns remove <id>' "
@@ -277,6 +291,20 @@ class MergedConfig:
     @property
     def entropy_min_len(self) -> int:
         return self._entropy.get("min_len", 20)
+
+    @property
+    def required_marks(self) -> list[str]:
+        """Marks a push requires, from every layer combined.
+
+        Read per layer rather than from the merged view: merging replaces a
+        list, so a project layer could otherwise drop a requirement the user
+        layer sets. A layer can add a requirement, never remove one.
+        """
+        labels: dict = {}
+        for layer in self.layers.values():
+            for n in ((layer or {}).get("push") or {}).get("require_marks", []):
+                labels.setdefault(n, None)
+        return list(labels)
 
 
 def load_config(repo_path: str = ".") -> MergedConfig:

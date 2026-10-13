@@ -8,6 +8,8 @@ from git_scan.sdk.scanner import run_scan, InvalidStepError
 from git_scan.sdk.steps import get_step_names
 from git_scan.sdk import user_patterns as up
 from git_scan.sdk.hooks import install_hook, uninstall_hook, status, format_status, HookError
+from git_scan.sdk import marks
+from git_scan.sdk.config import load_config, ConfigError
 
 
 @click.group(invoke_without_command=True)
@@ -38,12 +40,17 @@ def cli(ctx):
 @click.option("--untracked", is_flag=True, help="Also scan untracked files.")
 @click.option("--verbose", "-v", is_flag=True, help="Show every finding, not just the first ten per check.")
 @click.option("--hide-skipped", is_flag=True, help="Don't list checks that were skipped.")
-def run(path, deep, step, unstaged, untracked, verbose, hide_skipped):
+@click.option("--commit", "commit", default=None, metavar="REV",
+              help="Scan one commit's changes instead of the staged diff; marks it 'scanned' if clean.")
+def run(path, deep, step, unstaged, untracked, verbose, hide_skipped, commit):
     """Scan staged changes for sensitive data.
 
     Reads the staged diff (added and removed lines) plus every file, branch,
     and tag name, and runs the configured checks. Exit code 1 on findings,
     so it serves as a pre-commit hook (see 'git-scan hook install').
+
+    --commit scans a commit that was made without the hook (--no-verify, a
+    rebase, another machine) so the push gate accepts it.
     """
     try:
         report = run_scan(
@@ -52,6 +59,7 @@ def run(path, deep, step, unstaged, untracked, verbose, hide_skipped):
             only_step=step,
             include_untracked=untracked,
             include_unstaged=unstaged,
+            commit=commit,
         )
     except InvalidStepError as e:
         click.echo(f"Error: {e}", err=True)
@@ -79,6 +87,47 @@ def run(path, deep, step, unstaged, untracked, verbose, hide_skipped):
                                fg="red", bold=True))
         sys.exit(1)
     click.echo(click.style(f"PASSED: {report.passed_count} check(s) clean", fg="green"))
+
+
+@cli.command("mark")
+@click.argument("label")
+def mark(label):
+    """Mark the current commit with LABEL.
+
+    Run it after a check the push gate requires has passed (see
+    'git-scan hook install --pre-push --require-mark LABEL'). One mark on
+    the newest commit covers every unpushed commit before it.
+    """
+    try:
+        sha = marks.add_mark(label)
+    except marks.MarkError as e:
+        _fail(e)
+    click.echo(f"marked {sha[:12]} '{label}'")
+
+
+@cli.command("push-check")
+@click.argument("remote", required=False)
+@click.argument("url", required=False)
+def push_check(remote, url):
+    """Refuse a push that includes commits missing a required mark.
+
+    This is what the pre-push hook runs; git passes REMOTE and URL and the
+    refs being pushed on standard input. Run by hand, it checks the current
+    branch against its upstream: would a push be accepted?
+    """
+    stdin = click.get_text_stream("stdin")
+    if remote is None or stdin.isatty():
+        lines, remote = marks.current_branch_push(remote)
+    else:
+        lines = stdin.read().splitlines()
+    try:
+        required = load_config(".").required_marks
+    except ConfigError as e:
+        _fail(e)
+    result = marks.push_check(lines, remote=remote, required=required)
+    click.echo(marks.format_push_result(result), err=not result.ok)
+    if not result.ok:
+        sys.exit(1)
 
 
 @cli.command("steps")
@@ -381,17 +430,39 @@ _DIR = click.option("--hooks-dir", default=None,
 @hook.command("install")
 @_LOCAL
 @_DIR
-@click.option("--force", is_flag=True, help="Replace a pre-commit hook that is not a git-scan script.")
-def hook_install(local, hooks_dir, force):
+@click.option("--force", is_flag=True, help="Replace hooks that are not git-scan scripts.")
+@click.option("--pre-push", "pre_push", is_flag=True,
+              help="Also refuse pushes of commits that were not scanned (the push gate).")
+@click.option("--require-mark", "require_mark", multiple=True, metavar="LABEL",
+              help="With --pre-push: also require this mark (repeatable).")
+def hook_install(local, hooks_dir, force, pre_push, require_mark):
     """Install 'git-scan run' as the pre-commit hook.
 
     An earlier git-scan script is upgraded. Anything else already there is
     left alone unless --force.
+
+    \b
+    --pre-push adds the push gate: a pre-push hook that refuses any commit
+    not marked 'scanned' (a post-commit hook marks commits whose scan
+    passed), plus any mark named with --require-mark, which a separate
+    check writes with 'git-scan mark LABEL'.
     """
+    if require_mark and not pre_push:
+        _fail(click.UsageError("--require-mark needs --pre-push"))
     try:
-        click.echo(install_hook(hooks_dir, force=force, local=local))
-    except HookError as e:
+        click.echo(install_hook(hooks_dir, force=force, local=local, pre_push=pre_push))
+        if require_mark:
+            labels = up.require_marks(list(require_mark))
+            click.echo(f"push requires: scanned, {', '.join(labels)}")
+    except (HookError, up.PatternError) as e:
         _fail(e)
+    if pre_push:
+        click.echo("\n".join([
+            "",
+            "Every pushed commit now needs the 'scanned' mark: committing through the",
+            "hook adds it. A commit made another way: git-scan run --commit <rev>.",
+        ] + ([f"Marks a separate check must add: {', '.join(require_mark)} "
+              "(git-scan mark <label> once it passes)."] if require_mark else [])))
 
 
 @hook.command("uninstall")
@@ -403,6 +474,12 @@ def hook_uninstall(local, hooks_dir):
         click.echo(uninstall_hook(hooks_dir, local=local))
     except HookError as e:
         _fail(e)
+
+
+@hook.command("post-commit", hidden=True)
+def hook_post_commit():
+    """What the post-commit hook runs: mark the commit if its scan passed."""
+    marks.mark_if_scanned(".")
 
 
 @hook.command("status")
