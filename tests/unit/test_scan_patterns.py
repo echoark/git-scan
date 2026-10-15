@@ -155,6 +155,55 @@ def test_local_username_absent_from_content_passes(tmp_path, monkeypatch):
     assert check.passed
 
 
+def test_system_account_names_are_not_personal(tmp_path, monkeypatch):
+    """A container or CI runner logged in as root (USER unset, HOME=/root)
+    must not turn the word "root" into a personal pattern."""
+    monkeypatch.delenv("USER", raising=False)
+    monkeypatch.delenv("USERNAME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "root"))
+    repo = _init_repo(tmp_path)
+    (repo / "docs.md").write_text("Run it from the repo root; the MCP endpoint is the root path.")
+    subprocess.run(["git", "-C", str(repo), "add", "docs.md"], check=True)
+
+    report = run_scan(str(repo), only_step="patterns")
+    check = next(c for c in report.checks if c.name == "Patterns")
+    assert check.passed, check.findings
+
+
+def test_personal_home_dir_name_still_detected(tmp_path, monkeypatch):
+    monkeypatch.delenv("USER", raising=False)
+    monkeypatch.delenv("USERNAME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "jdevtester"))
+    repo = _init_repo(tmp_path)
+    (repo / "config.txt").write_text("cache: /Users/jdevtester/.cache")
+    subprocess.run(["git", "-C", str(repo), "add", "config.txt"], check=True)
+
+    report = run_scan(str(repo), only_step="patterns")
+    check = next(c for c in report.checks if c.name == "Patterns")
+    assert not check.passed
+
+
+def test_git_name_comes_from_commit_identity_not_global_config(tmp_path, monkeypatch):
+    """GIT_AUTHOR_NAME decides who commits, so it, not the global config's
+    user.name, is the name to protect. A hosted environment that writes a
+    placeholder name into the global config must not make that placeholder
+    a personal pattern."""
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "Jane Devtester")
+    repo = _init_repo(tmp_path)
+    # The sandbox's global config says "Test User"; the environment wins.
+    (repo / "notes.md").write_text("Test User guide.\n")
+    subprocess.run(["git", "-C", str(repo), "add", "notes.md"], check=True)
+    report = run_scan(str(repo), only_step="patterns")
+    check = next(c for c in report.checks if c.name == "Patterns")
+    assert check.passed, check.findings
+
+    (repo / "notes.md").write_text("Written by Jane Devtester.\n")
+    subprocess.run(["git", "-C", str(repo), "add", "notes.md"], check=True)
+    report = run_scan(str(repo), only_step="patterns")
+    check = next(c for c in report.checks if c.name == "Patterns")
+    assert not check.passed
+
+
 def test_disabled_pattern_not_detected(tmp_path):
     repo = _init_repo(tmp_path)
     (repo / "git-scan.yaml").write_text(

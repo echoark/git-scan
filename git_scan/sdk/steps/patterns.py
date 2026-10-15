@@ -4,7 +4,8 @@ Pattern sources:
   1. Config patterns (package defaults + user + project, merged by id):
      the built-in token/key/identifier patterns and the user's own.
   2. Dynamic patterns from the environment: OS username, home directory
-     name, git user name (and its parts), git email, ``.env`` values.
+     name (both skipped for shared system accounts such as ``root``), the
+     name (and its parts) and email git will commit with, ``.env`` values.
 """
 
 import fnmatch
@@ -16,46 +17,80 @@ from typing import Dict, List, Tuple
 
 from ..utils import CheckResult
 
+# Account names that machines, containers, and CI runners give everyone.
+# They identify no person, and most are ordinary words ("root", "node"),
+# so treating them as personal would flag prose like "the repo root".
+SYSTEM_ACCOUNT_NAMES = frozenset({
+    "root", "admin", "administrator", "runner", "ubuntu", "ec2-user",
+    "vscode", "codespace", "node", "user", "nobody",
+})
+
+_IDENT = re.compile(r"^(?P<name>.*?)\s*<(?P<email>[^>]*)>")
+
+
+def _personal_account_name(name):
+    """The account name, or None when it is a shared system account."""
+    if name and name.lower() not in SYSTEM_ACCOUNT_NAMES:
+        return name
+    return None
+
+
+def commit_identity(repo_path: str = "."):
+    """(name, email) git will author the next commit with.
+
+    ``git var GIT_AUTHOR_IDENT`` applies git's own precedence: the
+    ``GIT_AUTHOR_NAME`` / ``GIT_AUTHOR_EMAIL`` environment variables over
+    repository config over global config. Reading ``user.name`` alone would
+    take the global config's name even when the environment overrides it,
+    which is how a hosted environment's placeholder identity ends up treated
+    as the user's name. Falls back to config when ``git var`` fails (no
+    identity configured at all).
+    """
+    try:
+        result = subprocess.run(
+            ["git", "var", "GIT_AUTHOR_IDENT"],
+            capture_output=True, text=True, timeout=5, cwd=repo_path,
+        )
+        m = _IDENT.match(result.stdout.strip()) if result.returncode == 0 else None
+        if m:
+            return m.group("name").strip(), m.group("email").strip()
+    except Exception:
+        pass
+
+    def _config(key):
+        try:
+            r = subprocess.run(["git", "config", key], capture_output=True,
+                               text=True, timeout=5, cwd=repo_path)
+            return r.stdout.strip()
+        except Exception:
+            return ""
+    return _config("user.name"), _config("user.email")
+
 
 def gather_dynamic_patterns(repo_path: str = ".") -> Dict[str, str]:
     """Sensitive strings from the environment and git config, as regexes."""
     patterns = {}
 
-    username = os.environ.get("USER") or os.environ.get("USERNAME")
+    username = _personal_account_name(
+        os.environ.get("USER") or os.environ.get("USERNAME"))
     if username:
         patterns[f"Local username ('{username}')"] = re.escape(username)
 
     try:
-        home_name = Path.home().name
+        home_name = _personal_account_name(Path.home().name)
         if home_name and home_name != username:
             patterns[f"Home dir name ('{home_name}')"] = re.escape(home_name)
     except Exception:
         pass
 
-    try:
-        result = subprocess.run(
-            ["git", "config", "user.name"],
-            capture_output=True, text=True, timeout=5, cwd=repo_path,
-        )
-        git_name = result.stdout.strip()
-        if git_name:
-            patterns[f"Git Full Name ('{git_name}')"] = re.escape(git_name)
-            for part in git_name.split():
-                if len(part) > 2:
-                    patterns[f"Git Name Part ('{part}')"] = re.escape(part)
-    except Exception:
-        pass
-
-    try:
-        result = subprocess.run(
-            ["git", "config", "user.email"],
-            capture_output=True, text=True, timeout=5, cwd=repo_path,
-        )
-        git_email = result.stdout.strip()
-        if git_email:
-            patterns[f"Git Email ('{git_email}')"] = re.escape(git_email)
-    except Exception:
-        pass
+    git_name, git_email = commit_identity(repo_path)
+    if git_name:
+        patterns[f"Git Full Name ('{git_name}')"] = re.escape(git_name)
+        for part in git_name.split():
+            if len(part) > 2:
+                patterns[f"Git Name Part ('{part}')"] = re.escape(part)
+    if git_email:
+        patterns[f"Git Email ('{git_email}')"] = re.escape(git_email)
 
     env_path = Path(repo_path) / ".env"
     if env_path.is_file():

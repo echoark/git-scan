@@ -22,5 +22,6 @@ def isolate_config(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_git))
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     monkeypatch.setenv("USER", "testuser")
-    for var in ("GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL", "EMAIL"):
+    for var in ("GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME",
+                "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL", "EMAIL"):
         monkeypatch.delenv(var, raising=False)
