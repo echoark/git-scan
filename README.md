@@ -54,7 +54,7 @@ short SHA instead; 12 characters is plenty.
 Requires Python 3.11+ and git.
 
 ```bash
-pipx install git+https://github.com/echoark/git-scan.git@v0.5.1
+pipx install git+https://github.com/echoark/git-scan.git@v0.6.0
 git-scan hook install
 ```
 
@@ -405,7 +405,7 @@ An agent can run the same scan through a stdio MCP server, `git-scan-mcp`,
 installed with the `mcp` extra:
 
 ```bash
-pipx install "git-scan[mcp] @ git+https://github.com/echoark/git-scan.git@v0.5.1"
+pipx install "git-scan[mcp] @ git+https://github.com/echoark/git-scan.git@v0.6.0"
 claude mcp add --scope user git-scan -- git-scan-mcp
 ```
 
