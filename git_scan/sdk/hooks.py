@@ -1,9 +1,16 @@
 """Install, remove, and report the git-scan hooks.
 
-The pre-commit hook runs the scan. With the push gate (``pre_push=True``)
-two more hooks sit beside it: ``pre-push`` runs ``git-scan push-check`` and
-``post-commit`` marks a commit whose scan passed (see ``marks``). Each is a
-one-line script that calls the CLI; all behavior lives in Python.
+The pre-commit hook scans the staged change and the ``commit-msg`` hook
+scans the commit message; both are installed together. With the push gate
+(``pre_push=True``) two more sit beside them: ``pre-push`` runs ``git-scan
+push-check`` and ``post-commit`` marks a commit whose scan passed (see
+``marks``). Each is a one-line script that calls the CLI; all behavior
+lives in Python.
+
+A ``commit-msg`` hook that is not git-scan's (another tool's, such as a
+commit-message linter) is left in place without ``force``, and the
+install goes ahead without it: status then says commit messages are not
+scanned there. Any other hook in the way stops the install.
 
 Two levels:
 
@@ -43,6 +50,12 @@ SCRIPTS = [
 ]
 HOOK_SCRIPT = SCRIPTS[-1]
 
+# The commit-msg hook, installed with pre-commit; same rules.
+MESSAGE_SCRIPTS = [
+    '#!/bin/sh\n# Installed by git-scan\nPATH="$HOME/.local/bin:$PATH"\n'
+    'exec git-scan run --message "$1"\n',
+]
+
 # The push gate's hooks, same rules: append, never edit an entry.
 GATE_SCRIPTS = {
     "pre-push": [
@@ -54,7 +67,23 @@ GATE_SCRIPTS = {
         'exec git-scan hook post-commit\n',
     ],
 }
-ALL_SCRIPTS = {"pre-commit": SCRIPTS, **GATE_SCRIPTS}
+ALL_SCRIPTS = {"pre-commit": SCRIPTS, "commit-msg": MESSAGE_SCRIPTS, **GATE_SCRIPTS}
+HOOKS = ["pre-commit", "commit-msg", "post-commit", "pre-push"]
+
+# What each hook protects when it is git-scan's, and what is lost when it isn't.
+PROTECTS = {
+    "pre-commit": ("scans each commit's changes and every file, branch, and tag name",
+                   "commits are not scanned here"),
+    "commit-msg": ("scans each commit message", "commit messages are not scanned here"),
+    "post-commit": ("marks each commit whose scan passed, so a push can skip it",
+                    "commits are not marked; a push scans every unpushed commit"),
+    "pre-push": ("scans unpushed commits and checks required marks before a push",
+                 "pushes are not scanned"),
+}
+_FIX = {
+    "pre-commit": "git-scan hook install", "commit-msg": "git-scan hook install",
+    "post-commit": "git-scan hook install --pre-push", "pre-push": "git-scan hook install --pre-push",
+}
 
 
 class HookError(ValueError):
@@ -115,28 +144,33 @@ def _write_hook(hook: Path) -> str:
 
 def install_hook(hooks_dir: Optional[Path] = None, force: bool = False,
                  local: bool = False, repo_path: str = ".", pre_push: bool = False) -> str:
-    """Write the hook (and with ``pre_push``, the push gate's two hooks).
+    """Write pre-commit and commit-msg (and with ``pre_push``, the push
+    gate's two hooks).
 
-    Returns a sentence describing what was done. Nothing is written if any
-    target file is another tool's hook and ``force`` is not set.
+    Returns a sentence describing what was done. Without ``force``, another
+    tool's commit-msg hook is left alone (the sentence says so), and nothing
+    is written if any other target is another tool's hook.
     """
     hook = hook_path(local, hooks_dir, repo_path)
-    targets = [hook] + ([hook.parent / name for name in GATE_SCRIPTS] if pre_push else [])
+    targets = [hook, hook.parent / "commit-msg"]
+    targets += [hook.parent / name for name in GATE_SCRIPTS] if pre_push else []
+    kept = None
     if not force:
         for t in targets:
-            if hook_state(t) == "other":
-                raise HookError(f"{t} exists and is not a git-scan script (another tool's "
-                                "hook, or an edited one); re-run with --force to replace it")
-    done = [(t.name, _write_hook(t)) for t in targets]
+            if hook_state(t) != "other":
+                continue
+            if t.name == "commit-msg":
+                kept = t
+                continue
+            raise HookError(f"{t} exists and is not a git-scan script (another tool's "
+                            "hook, or an edited one); re-run with --force to replace it")
+    done = [(t.name, _write_hook(t)) for t in targets if t != kept]
     changed = [f"{v} {n}" for n, v in done if v != "already installed:"]
-    where = hook
-    if not changed:
-        verb = "already installed:"
-        where = hook if len(targets) == 1 else hook.parent
-    elif len(targets) == 1:
-        verb = done[0][1]
-    else:
-        verb, where = ", ".join(changed) + " in", hook.parent
+    verb = ", ".join(changed) + " in" if changed else "already installed:"
+    where = hook.parent
+    if kept:
+        verb = (f"left commit-msg alone (not a git-scan script, so commit messages are not "
+                f"scanned; --force replaces it); {verb}")
 
     if local:
         hp = _git("config", "--get", "core.hooksPath", cwd=repo_path)
@@ -164,7 +198,7 @@ def uninstall_hook(hooks_dir: Optional[Path] = None, local: bool = False,
     """
     hook = hook_path(local, hooks_dir, repo_path)
     removed = []
-    for name in GATE_SCRIPTS:
+    for name in ("commit-msg", *GATE_SCRIPTS):
         gate = hook.parent / name
         if hook_state(gate) in ("installed", "outdated"):
             gate.unlink()
@@ -179,12 +213,28 @@ def uninstall_hook(hooks_dir: Optional[Path] = None, local: bool = False,
     return f"removed {hook}{gate_note}"
 
 
-def status(hooks_dir: Optional[Path] = None, repo_path: str = ".") -> dict:
-    """Facts only: the state at each level, and which one git will use.
+def _row(directory: Path, name: str) -> dict:
+    state = hook_state(directory / name)
+    does, lost = PROTECTS[name]
+    if state == "installed":
+        text = does
+    elif state == "outdated":
+        text = f"{does} (an earlier git-scan script; {_FIX[name]} upgrades it)"
+    elif state == "other":
+        text = f"{lost}: not a git-scan script ({_FIX[name]} --force replaces it)"
+    else:
+        text = f"{lost} ({_FIX[name]})"
+    return {"hook": name, "path": str(directory / name), "state": state, "protects": text}
 
-    ``effective`` is where git runs pre-commit hooks from for ``repo_path``:
-    the ``core.hooksPath`` directory if that is set (at any level), else
-    the repository's own ``.git/hooks``.
+
+def status(hooks_dir: Optional[Path] = None, repo_path: str = ".") -> dict:
+    """Facts only: the state at each level, and what git will run.
+
+    ``effective`` is the pre-commit hook git runs for ``repo_path``: in the
+    ``core.hooksPath`` directory if that is set (at any level), else in the
+    repository's own ``.git/hooks``. ``hooks`` is one row per hook in that
+    directory: its state and, in words, what it protects or what is not
+    protected without it.
     """
     global_hook = hook_path(False, hooks_dir)
     info: dict = {
@@ -192,6 +242,7 @@ def status(hooks_dir: Optional[Path] = None, repo_path: str = ".") -> dict:
         "local": None,
         "hooks_path": _git("config", "--get", "core.hooksPath", cwd=repo_path) or None,
         "effective": None,
+        "hooks": None,
     }
     try:
         local_hook = hook_path(True, repo_path=repo_path)
@@ -205,9 +256,7 @@ def status(hooks_dir: Optional[Path] = None, repo_path: str = ".") -> dict:
         info["effective"] = dict(info["local"])
     if info["effective"]:
         d = Path(info["effective"]["path"]).parent
-        info["push_gate"] = {name: hook_state(d / name) for name in GATE_SCRIPTS}
-    else:
-        info["push_gate"] = None
+        info["hooks"] = [_row(d, name) for name in HOOKS]
     return info
 
 
@@ -217,14 +266,10 @@ def format_status(info: dict) -> str:
         lines.append(f"  local   {info['local']['path']}  ({info['local']['state']})")
     if info["hooks_path"]:
         lines.append(f"  core.hooksPath = {info['hooks_path']}")
+    for row in info.get("hooks") or []:
+        lines.append(f"  {row['hook']:<12} {row['state']:<10} {row['protects']}")
     if info["effective"]:
         lines.append(f"  git runs:  {info['effective']['path']}  ({info['effective']['state']})")
     elif not info["local"]:
         lines.append("  git runs:  each repository's own .git/hooks (core.hooksPath not set)")
-    gate = info.get("push_gate")
-    if gate:
-        if all(v == "absent" for v in gate.values()):
-            lines.append("  push gate: off (git-scan hook install --pre-push turns it on)")
-        else:
-            lines.append("  push gate: " + ", ".join(f"{k} ({v})" for k, v in gate.items()))
     return "\n".join(lines)

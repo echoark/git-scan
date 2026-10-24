@@ -6,10 +6,10 @@ import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import Iterable, List, Optional
 
 from .config import load_config, ConfigError, read_missing_config_help, user_config_path
-from .sources import collect, ScanInput
+from .sources import collect, ScanInput, RevisionError
 from .utils import CheckResult
 from .steps import run_all_steps, get_step_names
 from . import marks
@@ -19,12 +19,19 @@ class InvalidStepError(ValueError):
     pass
 
 
+class ScanUsageError(ValueError):
+    """Scan options that can't be combined; the message says which."""
+
+
 @dataclass
 class ScanReport:
     """Complete scan report with all check results."""
     repo_path: str
     checks: List[CheckResult] = field(default_factory=list)
     refusal: List[str] = field(default_factory=list)   # set: no checks ran
+    scope: str = "staged"                                # staged | message | commits
+    commits: List[str] = field(default_factory=list)     # commits read (commits scope)
+    marked: List[str] = field(default_factory=list)      # of those, marked 'scanned'
 
     @property
     def failed(self) -> bool:
@@ -84,6 +91,40 @@ def _not_configured_refusal(config) -> List[str]:
     return lines
 
 
+def _failing(results: Iterable[CheckResult]) -> bool:
+    return any(not c.passed and not c.skipped for c in results)
+
+
+def _clean_commits(repo_path: str, config, scan_input: ScanInput) -> List[str]:
+    """After a failed scan of commits: the ones whose own lines pass.
+
+    Names belong to no commit, so a names finding leaves none clean.
+    Otherwise failing groups are halved until each finding is pinned to
+    its commit, so a few bad commits among many cost a few extra passes
+    over small inputs, not one scan per commit.
+    """
+    names_only = ScanInput(content=[], names=scan_input.names, scope=scan_input.scope,
+                           remote=scan_input.remote)
+    if _failing(run_all_steps(repo_path, config=config, scan_input=names_only)):
+        return []
+    clean: List[str] = []
+
+    def visit(group: List[str]) -> None:
+        if not group:
+            return
+        if not _failing(run_all_steps(repo_path, config=config,
+                                      scan_input=scan_input.subset(group))):
+            clean.extend(group)
+        elif len(group) > 1:
+            visit(group[:len(group) // 2])
+            visit(group[len(group) // 2:])
+
+    commits = scan_input.commits
+    visit(commits[:len(commits) // 2])
+    visit(commits[len(commits) // 2:])
+    return clean
+
+
 def run_scan(
     repo_path: str = ".",
     deep: bool = False,
@@ -92,6 +133,10 @@ def run_scan(
     include_unstaged: bool = False,
     on_check_complete: Optional[callable] = None,
     commit: Optional[str] = None,
+    message: Optional[str] = None,
+    rev_range: Optional[str] = None,
+    commits: Optional[List[str]] = None,
+    remote: Optional[str] = None,
 ) -> ScanReport:
     """Run all checks on a repository.
 
@@ -102,16 +147,28 @@ def run_scan(
         include_untracked: Also scan untracked files
         include_unstaged: Also scan unstaged changes
         on_check_complete: Optional callback(check_result, current, total)
-        commit: Scan this commit's own changes instead of the staged diff
+        commit: Scan this commit (patch, message, identities) instead of the staged diff
+        message: Scan this commit message text instead of the staged diff
+        rev_range: Scan every commit in this range (``A..B``) instead of the staged diff
+        commits: Scan exactly these commits instead of the staged diff
+        remote: The remote the commits are for (identity rules), if known
 
     A full scan that passes is remembered for the push gate: a staged scan
     records the staged tree (the post-commit hook marks the commit made
-    from it), and a commit scan marks that commit ``scanned``.
+    from it), and a scan of commits marks each clean commit ``scanned``. A
+    refused message drops the staged record, so the commit it belongs to
+    can't be marked by a retry that skips the hooks.
     """
     if only_step is not None and only_step not in set(get_step_names()):
         raise InvalidStepError(
             f"Invalid step: '{only_step}'. Valid: {sorted(get_step_names())}"
         )
+    chosen = [n for n, v in (("commit", commit), ("message", message), ("range", rev_range),
+                             ("commits", commits)) if v is not None]
+    if len(chosen) > 1:
+        raise ScanUsageError(f"choose one of {', '.join(chosen)}: each replaces the staged diff")
+    if chosen and (include_unstaged or include_untracked):
+        raise ScanUsageError(f"unstaged and untracked apply to the staged diff, not to {chosen[0]}")
 
     report = ScanReport(repo_path=repo_path)
 
@@ -142,10 +199,17 @@ def run_scan(
             report.checks.append(CheckResult("Commit", False, [f"'{commit}' is not a commit"]))
             return report
 
-    scan_input: ScanInput = collect(
-        repo_path, include_unstaged=include_unstaged,
-        include_untracked=include_untracked, commit=commit_sha,
-    )
+    try:
+        scan_input: ScanInput = collect(
+            repo_path, include_unstaged=include_unstaged,
+            include_untracked=include_untracked, commit=commit_sha, message=message,
+            rev_range=rev_range, commits=commits, remote=remote,
+        )
+    except RevisionError as e:
+        report.checks.append(CheckResult("Range", False, str(e).splitlines()))
+        return report
+    report.scope = scan_input.scope
+    report.commits = scan_input.commits
 
     step_results = run_all_steps(
         repo_path, config=config, scan_input=scan_input, deep=deep,
@@ -163,10 +227,30 @@ def run_scan(
         if on_check_complete:
             on_check_complete(result, i, total)
 
-    if only_step is None and not report.failed:
-        if commit_sha:
-            marks.add_mark(marks.SCANNED, commit_sha, repo_path)
-        else:
+    if only_step is None:
+        if scan_input.scope == "commits":
+            report.marked = (report.commits if not report.failed
+                             else _clean_commits(repo_path, config, scan_input))
+            marks.add_marks(marks.SCANNED, report.marked, repo_path)
+        elif scan_input.scope == "message":
+            if report.failed:
+                marks.forget_passed_scan(repo_path)
+        elif not report.failed:
             marks.record_passed_scan(repo_path)
 
     return report
+
+
+def push_scan(push_lines: Iterable[str], remote: Optional[str] = None,
+              required: Iterable[str] = (), repo_path: str = ".") -> marks.PushResult:
+    """The push gate: scan what a push would send, and check required marks.
+
+    Every outgoing commit not yet marked ``scanned`` is scanned in one pass
+    (patch, message, author and committer); clean ones are marked, so the
+    next push skips them. Required marks are checked as ``marks.push_check``
+    always has.
+    """
+    result = marks.push_check(push_lines, remote=remote, required=required, repo_path=repo_path)
+    if result.unscanned:
+        result.scan = run_scan(repo_path, commits=result.unscanned, remote=remote)
+    return result

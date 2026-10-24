@@ -55,22 +55,30 @@ def _push(repo):
     return _git(repo, "push", "-q", "origin", "main", check=False)
 
 
-def test_install_writes_the_gate_hooks_beside_pre_commit(tmp_path):
+def _states(hooks, repo):
+    return {r["hook"]: r["state"] for r in status(hooks, repo_path=str(repo))["hooks"]}
+
+
+def test_install_writes_the_gate_hooks_beside_pre_commit(gate, tmp_path):
     hooks = tmp_path / "hooks"
-    install_hook(hooks, pre_push=True)
-    for name in ("pre-commit", "pre-push", "post-commit"):
+    for name in ("pre-commit", "commit-msg", "pre-push", "post-commit"):
         assert hook_state(hooks / name) == "installed", name
-    assert status(hooks)["push_gate"] == {"pre-push": "installed", "post-commit": "installed"}
+    assert _states(hooks, gate) == {"pre-commit": "installed", "commit-msg": "installed",
+                                    "post-commit": "installed", "pre-push": "installed"}
     assert "removed" in uninstall_hook(hooks)
-    assert not any((hooks / n).exists() for n in ("pre-commit", "pre-push", "post-commit"))
+    assert not any((hooks / n).exists()
+                   for n in ("pre-commit", "commit-msg", "pre-push", "post-commit"))
 
 
 def test_without_pre_push_nothing_changes_for_push(tmp_path, monkeypatch):
     hooks = tmp_path / "hooks"
     install_hook(hooks)
     assert not (hooks / "pre-push").exists() and not (hooks / "post-commit").exists()
-    assert status(hooks)["push_gate"] is None or all(
-        v == "absent" for v in status(hooks)["push_gate"].values())
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    rows = {r["hook"]: r for r in status(hooks, repo_path=str(repo))["hooks"]}
+    assert rows["pre-push"]["state"] == "absent"
+    assert "pushes are not scanned" in rows["pre-push"]["protects"]
 
 
 def test_a_foreign_pre_push_hook_blocks_install_until_forced(tmp_path):
@@ -90,39 +98,46 @@ def test_a_commit_through_the_hook_is_marked_and_pushes(gate):
     assert _push(gate).returncode == 0
 
 
-def test_a_commit_that_skipped_the_hook_is_refused_until_scanned(gate):
+def test_a_clean_commit_that_skipped_the_hook_is_scanned_at_push_and_marked(gate):
     sha = _commit(gate, "a.txt", "clean\n", "--no-verify")
     assert marks.marks_on(sha) == set()
+    pushed = _push(gate)
+    assert pushed.returncode == 0, pushed.stderr
+    assert "1 scanned now, 0 already scanned" in pushed.stdout + pushed.stderr
+    assert marks.marks_on(sha) == {"scanned"}
+
+
+def test_a_commit_that_skipped_the_hook_with_a_finding_is_refused(gate):
+    sha = _commit(gate, "token.txt", "ghp_" + "c" * 36 + "\n", "--no-verify")
     refused = _push(gate)
     assert refused.returncode != 0
-    assert "scanned" in refused.stderr and f"git-scan run --commit {sha[:12]}" in refused.stderr
-
-    r = _run("run", "--commit", sha)
-    assert r.exit_code == 0, r.output
-    assert marks.marks_on(sha) == {"scanned"}
-    assert _push(gate).returncode == 0
+    assert f"[commit {sha[:12]}] token.txt:1" in refused.stderr
+    assert "push refused" in refused.stderr
+    assert marks.marks_on(sha) == set()
 
 
 def test_scanning_a_commit_with_a_finding_does_not_mark_it(gate):
     sha = _commit(gate, "token.txt", "ghp_" + "c" * 36 + "\n", "--no-verify")
     r = _run("run", "--commit", sha)
-    assert r.exit_code == 1 and "[commit] token.txt:1" in r.output
+    assert r.exit_code == 1 and f"[commit {sha[:12]}] token.txt:1" in r.output
     assert marks.marks_on(sha) == set()
 
 
-def test_scanned_is_per_commit_not_inherited(gate):
-    skipped = _commit(gate, "a.txt", "clean\n", "--no-verify")
-    _commit(gate, "b.txt")                                  # scanned, on top
-    refused = _push(gate)
-    assert refused.returncode != 0 and skipped[:12] in refused.stderr
+def test_a_marked_commit_is_not_scanned_again(gate):
+    sha = _commit(gate, "a.txt")
+    assert marks.marks_on(sha) == {"scanned"}
+    pushed = _push(gate)
+    assert pushed.returncode == 0
+    assert "0 scanned now, 1 already scanned" in pushed.stdout + pushed.stderr
 
 
-def test_an_amended_commit_needs_its_own_mark(gate):
+def test_an_amended_commit_is_scanned_again_at_push(gate):
     _commit(gate, "a.txt")
-    (gate / "a.txt").write_text("changed\n")
+    (gate / "a.txt").write_text("ghp_" + "d" * 36 + "\n")
     _git(gate, "commit", "-q", "-a", "--amend", "--no-edit", "--no-verify")
     assert marks.marks_on("HEAD") == set()
-    assert _push(gate).returncode != 0
+    refused = _push(gate)
+    assert refused.returncode != 0 and "a.txt:1" in refused.stderr
 
 
 def test_a_required_mark_is_refused_until_marked_and_covers_the_batch(gate):
@@ -148,7 +163,8 @@ def test_only_unpushed_commits_are_checked(gate):
     newer = _commit(gate, "b.txt")
     refused = _push(gate)
     assert refused.returncode != 0 and newer[:12] in refused.stderr
-    assert refused.stderr.count("\n  ") >= 1 and "missing marks" in refused.stderr
+    assert "1 commit(s) to push" in refused.stderr
+    assert "1 commit(s) missing a required mark" in refused.stderr
     _run("mark", "review")
     assert _push(gate).returncode == 0
 
@@ -163,9 +179,9 @@ def test_push_check_by_hand_reports_against_the_upstream(gate):
     _commit(gate, "a.txt")
     assert _push(gate).returncode == 0
     _git(gate, "branch", "-q", "--set-upstream-to=origin/main")
-    _commit(gate, "b.txt", "clean\n", "--no-verify")
+    _commit(gate, "b.txt", "ghp_" + "e" * 36 + "\n", "--no-verify")
     r = _run("push-check")
-    assert r.exit_code == 1 and "1 commit(s) missing marks" in r.output
+    assert r.exit_code == 1 and "b.txt:1" in r.output and "push refused (1 commit(s)" in r.output
 
 
 def test_mark_rejects_a_bad_label(gate):

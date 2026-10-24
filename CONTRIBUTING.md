@@ -5,12 +5,12 @@
 ```
 git_scan/
   sdk/                  # all behavior
-    sources.py          # what a scan reads: diff parsing, names, optional scopes
-    scanner.py          # orchestration: config check, input collection, steps
+    sources.py          # what a scan reads: staged diff, message, commit log, names
+    scanner.py          # orchestration: config check, input, steps, marks, push scan
     config.py           # three-layer config, validation, pattern provenance
     user_patterns.py    # patterns add/remove/restore/clear/list, settings
-    hooks.py            # hook installation: pre-commit, and the push gate's two
-    marks.py           # marks on commits (git notes) and the push check
+    hooks.py            # hook installation and status: pre-commit, commit-msg, push gate
+    marks.py            # marks on commits (git notes) and outgoing commits for a push
     entropy.py          # Shannon-entropy detector and exclusions
     yaml_merge.py       # layer merge (managed snippet; see below)
     steps/              # one module per check; exposes run_checks(...)
@@ -42,15 +42,32 @@ working tree never change what the hook does.
 ## Scanning model
 
 **One input, many checks.** `sources.collect()` builds a `ScanInput` once
-per scan, and every check reads from it. A check never runs git itself.
+per scan, and every check reads from it. A check never reads git for the
+text it scans; only the text source differs between kinds of scan.
 
-- `ScanInput.content` is a list of `Line` items parsed from git's own diff
-  output: `git diff --cached -U0 -M` for the staged change, plus `git diff`
-  with `--unstaged` and whole untracked files with `--untracked`. Each item
-  carries its text, file, line number, kind (`added` / `removed`), and
-  source. `Line.where()` is the location label every finding starts with.
+- `ScanInput.content` is a list of `Line` items. Each carries its text,
+  file, line number, kind (`added` / `removed`), source, and for history
+  the commit it came from. `Line.where()` is the location label every
+  finding starts with. The sources, one per `ScanInput.scope`:
+  - `staged`: git's own diff output, `git diff --cached -U0 -M`, plus
+    `git diff` with `--unstaged` and whole untracked files with
+    `--untracked`.
+  - `message`: a commit message being written (`message_lines`). Comment
+    lines and everything from the scissors line on are dropped, as git's
+    cleanup drops them; the comment prefix is read from git config.
+  - `commits`: one `git log -p --diff-merges=first-parent -U0 -M` over a
+    range, one commit, or an explicit list (`range_lines`, `commit_lines`,
+    `commits_lines`). Each record is NUL-separated (id, author email,
+    committer email, message, patch), so no message text can be taken for
+    a field boundary. The patch goes through the same diff parser as the
+    staged diff; the message becomes `message` lines; the commit id and
+    dates are never scanned.
 - `ScanInput.names` is every tracked file path, branch, and tag, as `Line`
-  items of kind `name`.
+  items of kind `name`; empty for a message scan, whose commit has its own.
+- `ScanInput.identities` holds a history scan's author and committer
+  emails as `Line` items of kind `identity`. Only the git identity check
+  reads them, against the identity rules; they are not content, so the
+  email check never sees them.
 
 Design decisions behind this:
 
@@ -62,10 +79,22 @@ Design decisions behind this:
 - **Rename detection stays on (`-M`).** A pure move produces no content
   lines; an edited move shows its edits.
 - **Binary files produce no lines**, so they never reach the entropy check.
+- **History is scanned commit by commit, in one process.** Each commit's
+  own patch against its first parent, as a per-commit scan would read it,
+  but from a single `git log -p`. A net diff of the range would be one
+  process too, and would hide anything added and removed inside it.
+- **Messages get the content rules unchanged.** No message-only
+  exceptions: a full SHA is refused by `hex-40` like anywhere else, and the
+  docs tell people to cite short SHAs.
 - **`core.quotepath=false`** so non-ASCII file names arrive as text rather
   than octal escapes.
 - **Checks match one line at a time.** Multi-line secrets such as private
   keys are caught by their header line.
+
+**Which checks apply to identities and messages.** The git identity check
+is the only reader of `identities`, and reports nothing for a message scan
+(the commit's pre-commit scan checks the identity it will use). The names
+checks likewise report nothing for a message scan.
 
 **Which checks apply to names.** Literal-string and anchored-format checks
 do: personal patterns, the user's own names from the environment, emails,
@@ -145,9 +174,12 @@ Rules:
 
 ## The hook script is a contract
 
-`sdk/hooks.py` classifies a pre-commit file by exact byte match against the
-scripts git-scan has shipped (`SCRIPTS`), and nothing else: `installed`,
-`outdated`, `other`, `absent`. Rules:
+`sdk/hooks.py` classifies each hook file by exact byte match against the
+scripts git-scan has shipped for that hook name (`ALL_SCRIPTS`: `SCRIPTS`
+for pre-commit, `MESSAGE_SCRIPTS` for commit-msg, `GATE_SCRIPTS` for the
+push gate), and nothing else: `installed`, `outdated`, `other`, `absent`.
+`hook install` always writes pre-commit and commit-msg; `--pre-push` adds
+the gate's two. Rules:
 
 - **The script is machine-independent.** No absolute paths, nothing
   derived from the installing machine. It adds `~/.local/bin` to `PATH` at
@@ -160,29 +192,50 @@ scripts git-scan has shipped (`SCRIPTS`), and nothing else: `installed`,
   tell and doesn't guess, so it reports `other`, refuses to replace it
   without `--force`, and never deletes it. No marker lines, no substring
   checks, no provenance records.
-- **Status reports facts:** the state at each level and the location git
-  will actually use (`core.hooksPath` if set at any level, else the
-  repository's `.git/hooks`). The MCP `hook_status` tool returns the same
+- **Another tool's commit-msg hook is kept, not a blocker.** Commit-message
+  hooks are common (linters, ticket-id hooks), so an `other` commit-msg
+  is left in place and the rest installs; the install output and the
+  status row say commit messages are not scanned there. Any other `other`
+  hook stops the install. `--force` replaces either.
+- **Status reports facts:** the pre-commit state at each level, one row
+  per hook (`HOOKS`) in the directory git will actually use
+  (`core.hooksPath` if set at any level, else the repository's
+  `.git/hooks`) with what it protects or what goes unprotected, then the
+  pre-commit hook git runs. The MCP `hook_status` tool returns the same
   structure.
 
 ## The push gate
 
-`sdk/marks.py` owns marks and the push check. Rules:
+`sdk/marks.py` owns marks and finds the commits a push sends;
+`scanner.push_scan` scans them. Rules:
 
 - **Hooks stay one-line calls into the CLI.** `pre-push` runs `git-scan
-  push-check "$@"`, `post-commit` runs `git-scan hook post-commit`; their
-  scripts follow the same contract as pre-commit (`GATE_SCRIPTS` in
-  `hooks.py`, append never edit). All behavior is in Python.
-- **The notes are internal.** Only `add_mark` writes `refs/notes/git-scan`
-  and only `push_check` reads it; callers use `git-scan mark LABEL`. One label
-  per line.
-- **`scanned` is per commit; other marks cover history.** A scan reads one
-  commit's changes, so its mark can't vouch for an ancestor. A required
-  mark is written after a check of the whole unpushed range, so it covers
-  the marked commit and every unpushed commit before it.
+  push-check "$@"`, `post-commit` runs `git-scan hook post-commit`,
+  `commit-msg` runs `git-scan run --message "$1"`; their scripts follow the
+  same contract as pre-commit (append never edit). All behavior is in
+  Python.
+- **The notes are internal.** Only `add_mark` / `add_marks` write
+  `refs/notes/git-scan` and only `marks_on` / `marks_of` read it; callers
+  use `git-scan mark LABEL`. One label per line. Bulk reads and writes are
+  one git process each (`git log --notes`, `git fast-import`), so marking a
+  few hundred rewritten commits is not a few hundred processes.
+- **The gate scans; `scanned` is its cache.** Every outgoing commit without
+  `scanned` goes through one `commits` scan, and the clean ones are marked.
+  `scanned` is per commit: it says that commit's own changes, message, and
+  identities passed, and nothing about its ancestors. When a scan of many
+  commits fails, the failing groups are halved until each finding is
+  pinned to a commit, so the clean ones are still marked at a cost of a
+  few extra small passes; a finding in a name belongs to no commit and
+  leaves none marked.
+- **Other marks cover history.** A required mark is written after a check
+  of the whole unpushed range, so it covers the marked commit and every
+  unpushed commit before it. The scan never satisfies a required mark.
 - **A pre-commit hook runs before the commit exists.** A passing staged scan
-  records the staged tree in the git directory; the post-commit hook marks
-  HEAD only if its tree is that one, and consumes the record either way.
+  records the staged tree in the git directory; a refused commit message
+  deletes that record; the post-commit hook marks HEAD only if its tree is
+  the recorded one, and consumes the record either way. So a message
+  refused by the hook and then committed with `--no-verify` is unmarked,
+  and the gate scans it.
 - **Requirements only accumulate.** `required_marks` is read per layer and
   combined, never from the merged view (merging replaces lists), so a
   project layer can't drop a requirement the user layer sets.
@@ -208,10 +261,13 @@ make test                       # creates .venv and runs the unit tests
 
 Sociable unit tests only: real temporary git repositories, real config
 files, real `git` subprocesses, the real CLI through Click's `CliRunner`,
-and for the hook, a real `git commit` that runs the installed hook. The MCP
-tools are called in-process (`tests/unit/test_mcp.py`). Nothing is mocked. The suite is about 150 tests in under 10 seconds; any single
-test over half a second is suspect (the end-to-end hook test, which spawns
-git twice, is the slowest).
+and for the hooks, a real `git commit` or `git push` that runs the
+installed hooks. The MCP tools are called in-process
+(`tests/unit/test_mcp.py`). Nothing is mocked. The suite is about 200
+tests in about 30 seconds. The end-to-end hook tests are the slow ones:
+each commit through the hooks starts git-scan twice (pre-commit and
+commit-msg), so they take about a second each. Any other test over half a
+second is suspect.
 
 ### The sandbox
 
@@ -263,15 +319,9 @@ hook because it is slow on large repositories and reports content the
 current commit did not touch:
 
 - all tracked files, read from disk, through every check;
-- `--history`: every past commit's changed lines, commit messages, stash
-  entries, and reflog, by streaming `git log -p` through the same diff
-  parser `run` uses (commit messages arrive interleaved with each diff, so
-  they come free), plus `git stash list -p` and `git reflog`.
-
-**Commit messages at commit time** — git runs the pre-commit hook before
-the message exists, so no pre-commit scanner can see it. A `commit-msg`
-hook receives the final message file and can block; it would feed that
-file to the same checks as one more source.
+- `--history`: every past commit, through the same `commits` source
+  `run --range` uses, plus stash entries and the reflog (`git stash list
+  -p`, `git reflog`).
 
 **Table output** with per-check details and a `--summary` mode.
 

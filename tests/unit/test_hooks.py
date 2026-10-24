@@ -149,3 +149,60 @@ def test_status_outside_a_repository_has_no_local_line(tmp_path, monkeypatch):
     assert info["local"] is None and info["effective"] is None
     out = _run("hook", "status", "--hooks-dir", str(tmp_path / "hooks")).output
     assert "local" not in out and "each repository's own .git/hooks" in out
+
+
+def test_install_writes_commit_msg_beside_pre_commit_and_uninstall_removes_both(tmp_path):
+    hooks = tmp_path / "hooks"
+    r = _run("hook", "install", "--hooks-dir", str(hooks))
+    assert r.exit_code == 0 and "wrote pre-commit, wrote commit-msg" in r.output
+    assert hook_state(hooks / "commit-msg") == "installed"
+    assert 'git-scan run --message "$1"' in (hooks / "commit-msg").read_text()
+    r = _run("hook", "uninstall", "--hooks-dir", str(hooks))
+    assert r.exit_code == 0 and "commit-msg" in r.output
+    assert not (hooks / "commit-msg").exists() and not (hooks / "pre-commit").exists()
+
+
+def test_an_existing_install_gains_commit_msg_on_reinstall(tmp_path):
+    hooks = tmp_path / "hooks"
+    hooks.mkdir()
+    (hooks / "pre-commit").write_text(HOOK_SCRIPT)          # installed before commit-msg existed
+    r = _run("hook", "install", "--hooks-dir", str(hooks))
+    assert r.exit_code == 0 and "wrote commit-msg" in r.output and "pre-commit," not in r.output
+    assert hook_state(hooks / "commit-msg") == "installed"
+
+
+def test_a_foreign_commit_msg_hook_is_kept_and_status_says_messages_are_not_scanned(
+        tmp_path, monkeypatch):
+    repo = _repo(tmp_path, monkeypatch)
+    hooks = tmp_path / "hooks"
+    hooks.mkdir()
+    (hooks / "commit-msg").write_text("#!/bin/sh\nmessage-linter \"$1\"\n")
+    r = _run("hook", "install", "--hooks-dir", str(hooks))
+    assert r.exit_code == 0, r.output
+    assert "left commit-msg alone" in r.output and "commit messages are not scanned" in r.output
+    assert hook_state(hooks / "pre-commit") == "installed"
+    assert "message-linter" in (hooks / "commit-msg").read_text()
+
+    rows = {row["hook"]: row for row in status(hooks, repo_path=str(repo))["hooks"]}
+    assert rows["commit-msg"]["state"] == "other"
+    assert rows["commit-msg"]["protects"].startswith("commit messages are not scanned here")
+    out = _run("hook", "status", "--hooks-dir", str(hooks)).output
+    assert "commit-msg   other      commit messages are not scanned here" in out
+
+    r = _run("hook", "install", "--hooks-dir", str(hooks), "--force")
+    assert r.exit_code == 0 and hook_state(hooks / "commit-msg") == "installed"
+    assert "removed" in _run("hook", "uninstall", "--hooks-dir", str(hooks)).output
+    assert not (hooks / "commit-msg").exists()
+
+
+def test_status_has_one_row_per_hook_then_what_git_runs(tmp_path, monkeypatch):
+    _repo(tmp_path, monkeypatch)
+    hooks = tmp_path / "hooks"
+    _run("hook", "install", "--hooks-dir", str(hooks))
+    lines = _run("hook", "status", "--hooks-dir", str(hooks)).output.splitlines()
+    rows = [ln.split()[0] for ln in lines if ln.split()[0] in
+            ("pre-commit", "commit-msg", "post-commit", "pre-push")]
+    assert rows == ["pre-commit", "commit-msg", "post-commit", "pre-push"]
+    assert lines[-1].strip().startswith("git runs:") and "(installed)" in lines[-1]
+    assert any("pre-push" in ln and "pushes are not scanned" in ln for ln in lines)
+    assert _run("hook", "--help").output.count("The hooks") == 1

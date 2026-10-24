@@ -23,6 +23,13 @@ Matching, in order:
 
 A repo with no remote, or a filesystem-path remote, passes: nothing leaves
 the machine. No network calls.
+
+What is checked depends on the scan. Before a commit, the email git will
+author it with (``git var GIT_AUTHOR_IDENT``). For commits that already
+exist (a range, the push gate), every commit's author and committer email,
+each of which must be allowed by the same rules or equal the repo's own
+``user.email``; the remote is the one being pushed to when known. A commit
+message scan has no identity to check and reports nothing.
 """
 
 import fnmatch
@@ -137,18 +144,65 @@ def check_git_identity(repo_path: str, rules: Optional[List[dict]] = None) -> Ch
         return CheckResult(NAME, True, [], skipped=True, info=f"Check failed: {e}")
 
 
-def _remote_url(path: Path) -> Optional[str]:
-    """URL of the branch's upstream remote, else ``origin``, else the first."""
+def check_commit_identities(repo_path: str, rules: List[dict], identities: list,
+                            remote: Optional[str] = None) -> CheckResult:
+    """Every author and committer email of existing commits, against the rules."""
+    path = Path(repo_path)
+    try:
+        url = _remote_url(path, remote)
+        if not url or is_local_remote(url):
+            return CheckResult(NAME, True, info=f"No network remote; {len(identities)} identities")
+        normalized = normalize_remote(url)
+        if not normalized:
+            return CheckResult(NAME, False, [
+                f"Can't read the remote '{url}'",
+                f"Fix: {SET_REPO_EMAIL}",
+            ], info="Unreadable remote")
+        emails, matched = allowed_emails(rules, normalized)
+        repo_email = _git(path, "config", "--local", "--get", "user.email")
+        if not matched and not repo_email:
+            return CheckResult(NAME, True, [], skipped=True, info=(
+                f"no identity rule for {normalized}; add one with: "
+                f"git-scan identity allow {normalized.split('/')[0]}/<owner> <email>"))
+        allowed = emails + ([repo_email] if repo_email else [])
+        bad = [ln for ln in identities if not any(email_matches(e, ln.text) for e in allowed)]
+        rule = matched[0]["remote"] if matched else "the repo's user.email"
+        if not bad:
+            return CheckResult(NAME, True, info=f"{len(identities)} identities allowed by {rule}")
+        findings = [f"{ln.where()} is not allowed for {normalized}" for ln in bad]
+        findings.append(f"Allowed by {rule}: {', '.join(allowed)}")
+        findings.append("Fix: rewrite those commits with an allowed address "
+                        "(git commit --amend --reset-author, git rebase -i), or: "
+                        f"git-scan identity allow {matched[0]['remote'] if matched else normalized} "
+                        "<email>")
+        return CheckResult(NAME, False, findings, info="Email not allowed for this remote")
+    except Exception as e:
+        return CheckResult(NAME, True, [], skipped=True, info=f"Check failed: {e}")
+
+
+def _remote_url(path: Path, remote: Optional[str] = None) -> Optional[str]:
+    """URL of ``remote`` (a name or a URL, as git gives a pre-push hook) if
+    given, else of the branch's upstream remote, else ``origin``, else the first."""
+    remotes = (_git(path, "remote") or "").split()
+    if remote and remote in remotes:
+        return _git(path, "remote", "get-url", remote)
+    if remote and (is_local_remote(remote) or normalize_remote(remote)):
+        return remote
     remote = None
     branch = _git(path, "symbolic-ref", "--quiet", "--short", "HEAD")
     if branch:
         remote = _git(path, "config", "--get", f"branch.{branch}.remote")
-    remotes = (_git(path, "remote") or "").split()
     if remote not in remotes:
         remote = "origin" if "origin" in remotes else (remotes[0] if remotes else None)
     return _git(path, "remote", "get-url", remote) if remote else None
 
 
-def run_checks(repo_path: str, config=None, **kwargs) -> List[CheckResult]:
+def run_checks(repo_path: str, config=None, scan_input=None, **kwargs) -> List[CheckResult]:
     rules = config.raw.get("identity") or [] if config else []
+    scope = scan_input.scope if scan_input else "staged"
+    if scope == "message":
+        return []
+    if scope == "commits":
+        return [check_commit_identities(repo_path, rules, scan_input.identities,
+                                        scan_input.remote)]
     return [check_git_identity(repo_path, rules)]

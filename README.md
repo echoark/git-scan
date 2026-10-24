@@ -2,10 +2,11 @@
 
 A scanner for sensitive data in git repositories: credentials, personal
 identifiers, or any string you decide must never reach a repository. It
-reads the change you are about to commit, plus every file, branch, and tag
-name, and reports what matches. Install it as a pre-commit hook to block
-such commits, run it by hand on work in progress, or let an agent run it
-through the MCP server.
+reads the change you are about to commit, its commit message, and every
+file, branch, and tag name, and reports what matches. Install it as git
+hooks to block such commits (and, optionally, such pushes), run it by hand
+on work in progress or a range of commits, or let an agent run it through
+the MCP server.
 
 ## Features
 
@@ -13,8 +14,13 @@ through the MCP server.
   being deleted is still reported, because it stays in history. Unchanged
   lines are never re-scanned, so busy files don't block unrelated commits.
 - **Reports the file and line** of every finding.
+- **Checks commit messages.** A `commit-msg` hook runs the same content
+  checks on the message before git records it.
 - **Checks names too.** Tracked file paths, branches, and tags are checked
   on every commit, since they are published with every push.
+- **Scans commits already made.** `--range A..B` reads every commit in a
+  range in one pass: each commit's own changes, message, and author and
+  committer. The optional push gate does this for every push.
 - **Your own patterns.** Names, employers, customers, properties, account
   numbers: whatever must stay out of your repositories.
 - **Built-in detectors** for common credentials and identifiers.
@@ -36,7 +42,12 @@ through the MCP server.
 | Google Drive IDs | document and folder IDs in Drive URLs |
 | Dollar amounts | large, non-round, or cents-precise figures, with thresholds you can set |
 | Names | patterns, usernames, emails, and SSN/EINs in file, branch, and tag names |
-| Git identity | the commit's author email is one you allowed for the remote (see [Git identity](#git-identity)) |
+| Git identity | the commit's author email is one you allowed for the remote; for commits already made, every author and committer email (see [Git identity](#git-identity)) |
+
+Commit messages go through the same content checks as changed lines, with
+the same rules. One consequence: a full 40-character commit SHA in a
+message is refused like any long hex string (`hex-40`). Cite commits by a
+short SHA instead; 12 characters is plenty.
 
 ## Installation
 
@@ -47,10 +58,10 @@ pipx install git+https://github.com/echoark/git-scan.git@v0.5.1
 git-scan hook install
 ```
 
-`hook install` writes a one-line `pre-commit` hook to `~/.config/git/hooks`
-and points git's global `core.hooksPath` there, so every repository on the
-machine is covered, including ones cloned later. See
-[Hook installation](#hook-installation) for the other levels.
+`hook install` writes one-line `pre-commit` and `commit-msg` hooks to
+`~/.config/git/hooks` and points git's global `core.hooksPath` there, so
+every repository on the machine is covered, including ones cloned later.
+See [Hook installation](#hook-installation) for the other levels.
 
 ## Quick start
 
@@ -75,6 +86,9 @@ git-scan patterns clear
 git-scan run [PATH]            # scan the staged change (what the hook runs)
 git-scan run --unstaged        # also scan changes not yet staged
 git-scan run --untracked       # also scan files git does not track yet
+git-scan run --message FILE    # scan a commit message instead ('-' reads stdin)
+git-scan run --range A..B      # scan every commit in a range instead
+git-scan run --commit REV      # scan one commit instead
 git-scan run --step patterns   # run one check
 git-scan run -v                # show every finding, not just the first ten per check
 git-scan run --hide-skipped    # omit checks that were skipped (shown by default)
@@ -91,6 +105,34 @@ arguments. Findings look like this:
   [FAIL] Patterns in branch names (4 names)
          branch: acme-migration [customer]
 ```
+
+**Commit messages.** `--message FILE` is what the `commit-msg` hook runs,
+and a way to check a draft before committing. Lines starting with `#` and
+anything below git's scissors line (`git commit -v`) are dropped, as git
+drops them. File, branch, and tag names and the git identity are left to
+the commit's own scan. A finding reads `commit message:3 [customer] Acme`.
+When the hook refuses a message, git keeps it in `.git/COMMIT_EDITMSG`;
+edit it and retry with `git commit -e -F .git/COMMIT_EDITMSG`.
+
+**Commits already made.** `--range A..B` runs one `git log -p` over the
+range and scans each commit in it: its own changes (a merge against its
+first parent, so a hand-edited conflict resolution shows), its message, and
+its author and committer emails, which are checked against your
+[identity rules](#git-identity) rather than the email check. Commit ids and
+dates are not scanned. Each commit is scanned on its own changes, so a
+secret added in one commit and deleted in a later one is reported in both,
+where a net `git diff A B` would show nothing. Findings name the commit:
+
+```
+  [FAIL] Patterns (3 personal, 17 built-in, 5 environment; 1 files)
+         [commit 4f2a9c1e07b3] config/settings.py:14 [token] ghp_****
+         [commit 9be01d44a2c6] config/settings.py:14 (removed) [token] ghp_****
+  [FAIL] Git identity (Email not allowed for this remote)
+         [commit 1c5d7e0a9f32] author you@work.example is not allowed for github.com/octo-dev/app
+```
+
+Clean commits are marked `scanned` (see [Push gate](#push-gate-optional)).
+`--commit REV` does the same for one commit.
 
 ## Configuration
 
@@ -241,7 +283,12 @@ Three ways to run git-scan on every commit:
 |---|---|---|
 | Global | `git-scan hook install` | every repository on the machine, via git's global `core.hooksPath` |
 | Local | `git-scan hook install --local` | one repository, via its own `.git/hooks` |
-| pre-commit framework | add this repository to `.pre-commit-config.yaml` (see `.pre-commit-hooks.yaml`) | a team's repository, through `pre-commit install` |
+| pre-commit framework | add this repository to `.pre-commit-config.yaml` (see `.pre-commit-hooks.yaml`) | a team's repository, through `pre-commit install` (the staged change only) |
+
+Both levels install two hooks: `pre-commit`, which scans the staged change
+and the repository's names, and `commit-msg`, which scans the message.
+Re-running `hook install` upgrades earlier git-scan scripts in place and
+adds any hook a previous version didn't install.
 
 Git ignores a repository's own `.git/hooks` while `core.hooksPath` is set
 at any level, so a local install warns when that is the case.
@@ -259,7 +306,7 @@ The text is kept in `missing-config-help` beside the user config file, since
 the config itself is what's missing when the text is needed. Commits blocked
 by findings and refused pushes are unaffected.
 
-The hook script is a fixed three lines, identical on every machine (it
+Each hook script is a fixed few lines, identical on every machine (it
 adds `~/.local/bin` to `PATH` so GUI git clients find `git-scan`). Install
 and uninstall decide what to do by exact match against the scripts git-scan
 has shipped, and nothing else:
@@ -272,10 +319,13 @@ has shipped, and nothing else:
 | anything else | refuses unless `--force` | refuses; remove it yourself |
 
 "Anything else" includes an edited git-scan script: git-scan cannot tell a
-deliberate edit from another tool's hook, so it leaves both alone.
+deliberate edit from another tool's hook, so it leaves both alone. One
+exception to refusing: another tool's `commit-msg` hook (a message linter,
+say) is kept and the rest is installed; `hook status` then says that commit
+messages are not scanned there, and `--force` replaces it.
 
 ```bash
-git-scan hook status            # what is installed at each level, and which one git runs
+git-scan hook status            # what each hook protects, and which one git runs
 git-scan hook uninstall         # or --local
 ```
 
@@ -283,38 +333,45 @@ git-scan hook uninstall         # or --local
   global  ~/.config/git/hooks/pre-commit  (installed)
   local   .git/hooks/pre-commit  (absent)
   core.hooksPath = ~/.config/git/hooks
+  pre-commit   installed  scans each commit's changes and every file, branch, and tag name
+  commit-msg   installed  scans each commit message
+  post-commit  absent     commits are not marked; a push scans every unpushed commit (git-scan hook install --pre-push)
+  pre-push     absent     pushes are not scanned (git-scan hook install --pre-push)
   git runs:  ~/.config/git/hooks/pre-commit  (installed)
 ```
 
-The last line is where git will actually run a pre-commit hook for the
-current repository, and what is there. Uninstalling leaves
-`core.hooksPath` as it is, since other hooks may live in that directory.
+The rows describe the hooks in the directory git will actually use for the
+current repository; the last line is the pre-commit hook there, and its
+state. Uninstalling leaves `core.hooksPath` as it is, since other hooks may
+live in that directory.
 
 ### Push gate (optional)
 
-The pre-commit hook can be skipped: `git commit --no-verify`, a rebase or
-cherry-pick, a commit made on another machine. The push gate refuses to push
-any commit that was not scanned:
+The commit hooks can be skipped: `git commit --no-verify`, a rebase or
+cherry-pick, a history rewrite, a commit made on another machine. The push
+gate scans what a push sends:
 
 ```bash
 git-scan hook install --pre-push
 ```
 
-This adds two hooks beside `pre-commit` in the same directory:
+This adds two hooks beside `pre-commit` and `commit-msg`:
 
-- `post-commit` marks each commit whose scan passed `scanned`;
-- `pre-push` runs `git-scan push-check`, which refuses the push if any commit
-  the remote doesn't have yet lacks its mark, and says what to run.
+- `pre-push` runs `git-scan push-check`, which scans every commit the remote
+  doesn't have yet in one pass (changes, message, author and committer, as
+  `run --range` does) and refuses the push on findings, naming the commits;
+- `post-commit` marks each commit whose commit-time scan passed `scanned`.
 
-A commit made without the hook is scanned afterwards, and marked if clean:
+`scanned` is a cache: the gate skips commits that carry it and marks the
+clean ones it scans, so a commit is scanned once. A rebased or rewritten
+commit is a new commit without the mark; the gate scans it on the next
+push, so a rewrite of many commits costs one scan rather than a refusal.
+A message refused by the `commit-msg` hook keeps that commit from being
+marked even if it is then committed with `--no-verify`.
 
-```bash
-git-scan run --commit <rev>
 ```
-
-`scanned` is per commit: a later commit's scan says nothing about an
-earlier one, and an amended or rebased commit is a new commit that needs
-its own.
+git-scan: 3 commit(s) to push: 2 scanned now, 1 already scanned
+```
 
 **Requiring another check.** Any other check (a manual review, an automated
 one) can require its own mark:
@@ -327,7 +384,8 @@ git-scan mark review              # once the review has passed
 `mark` marks the current commit. A required mark covers that commit and
 every unpushed commit before it, so marking the newest commit covers the
 batch. Required labels are kept in the user config (`push.require_marks`);
-a project's `git-scan.yaml` can add a requirement but not remove one.
+a project's `git-scan.yaml` can add a requirement but not remove one. The
+scan does not stand in for a required mark: both must pass.
 
 `git-scan push-check` run by hand checks the current branch against its
 upstream: would a push be accepted?
@@ -351,7 +409,8 @@ pipx install "git-scan[mcp] @ git+https://github.com/echoark/git-scan.git@v0.5.1
 claude mcp add --scope user git-scan -- git-scan-mcp
 ```
 
-It exposes `scan_repo`, `hook_status`, and `list_steps`. Registration for
+It exposes `scan_repo` (the staged change, a commit message, or a range of
+commits), `hook_status`, and `list_steps`. Registration for
 other clients, the tools' arguments and results, and notes for agents are
 in [MCP server](docs/MCP.md).
 
@@ -359,7 +418,10 @@ in [MCP server](docs/MCP.md).
 
 Optional. The commit's author email must be one you have allowed for the
 remote. You say which emails may commit where; nothing is inferred and no
-network call is made.
+network call is made. Before a commit, the check reads the email git will
+author it with; for commits already made (`--range`, `--commit`, the push
+gate), it reads each commit's author and committer emails, judged by the
+same rules against the remote being pushed to.
 
 **Why this exists when git already has `user.email`.** Git's config answers
 "which address do I use here"; it can't say "this address must never be used
@@ -437,4 +499,4 @@ skipped, so you can add rules as you meet them.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the scanning model, repository
 layout, test conventions, planned work (whole-repository and history
-audits, a commit-msg hook), and the release process.
+audits), and the release process.
