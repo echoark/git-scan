@@ -265,7 +265,7 @@ def test_ack_with_nothing_to_acknowledge_says_so(gate):
     (gate / "a.txt").write_text("plain\n")
     _git(gate, "add", "a.txt")
     r = _run("ack")
-    assert r.exit_code == 0 and "no matches" in r.output
+    assert r.exit_code == 0 and "no judgment matches" in r.output
 
 
 def test_push_check_by_hand_reports_against_the_upstream(gate):
@@ -305,3 +305,28 @@ def test_install_records_missing_config_help_and_a_real_commit_shows_it(gate, tm
     assert "Commit refused" in blocked.stderr
     assert "Commits go through the review tool, which also sets this up." in blocked.stderr
     assert "patterns clear" not in blocked.stderr and "[PASS]" not in blocked.stderr
+
+
+def test_a_judgment_match_in_the_commit_message_is_refused_until_acknowledged(gate):
+    _run("patterns", "add", "town", "--pattern", "Springfield", "--category", "city",
+         "--judgment", "--note", "only beside an address")
+    (gate / "a.txt").write_text("clean\n")
+    _git(gate, "add", "a.txt")
+    refused = _git(gate, "commit", "-q", "-m", "Move the office to Springfield", check=False)
+    assert refused.returncode != 0
+    out = refused.stdout + refused.stderr
+    assert "commit message:1 [city] Springfield" in out and "git-scan ack" in out
+    assert _run("ack").exit_code == 0            # the staged tree is unchanged, so the ack covers the message too
+    assert _git(gate, "commit", "-q", "-m", "Move the office to Springfield", check=False).returncode == 0
+
+
+def test_the_judgment_check_lists_the_guidance_before_the_matches(gate):
+    _run("patterns", "add", "town", "--pattern", "Springfield", "--category", "city", "--judgment")
+    (gate / "a.txt").write_text("".join(f"Springfield line {i}\n" for i in range(12)))
+    _git(gate, "add", "a.txt")
+    r = _run("run")
+    assert r.exit_code == 1
+    lines = [ln.strip() for ln in r.output.splitlines()]
+    first = next(i for i, ln in enumerate(lines) if ln.startswith("Each match below"))
+    assert lines[first + 1] == "git-scan ack"      # the command is visible even when matches are cut at ten
+    assert "and" in r.output and "more (-v shows all)" in r.output

@@ -196,14 +196,25 @@ def ack(rev):
     if judged is None:
         click.echo("nothing to acknowledge: no judgment entries are configured")
         return
+    where = "the staged change"
     if judged.passed:
-        click.echo(f"nothing to acknowledge: {judged.info}")
-        return
+        # Nothing in the staged content; the match may be in the message git
+        # kept when the commit-msg hook refused it.
+        message = marks.pending_message(".")
+        judged = None
+        if message:
+            msg_report = run_scan(repo_path=".", only_step="patterns", message=message)
+            judged = next((c for c in msg_report.checks if c.name == "Judgment"), None)
+            where = "the staged change and its pending commit message"
+        if judged is None or judged.passed:
+            click.echo("nothing to acknowledge: no judgment matches in the staged change"
+                       + (" or its pending commit message" if message else ""))
+            return
     tree = marks.record_ack(".")
     if not tree:
         _fail(marks.MarkError("not a git repository, or nothing is staged"))
     shown = [f for f in judged.findings if not f.startswith(("Each match", "  git-scan", "    note:"))]
-    click.echo(f"acknowledged {len(shown)} judgment match(es) for the staged change:")
+    click.echo(f"acknowledged {len(shown)} judgment match(es) for {where}:")
     for f in shown:
         click.echo(f"  {f}")
     click.echo("Stage anything more and the acknowledgement must be given again.")
@@ -702,7 +713,10 @@ def _setting_command(name: str):
     def _cmd(value, project):
         if value is None:
             current = up.get_setting(name)
-            click.echo("on" if current is True else "off" if current is False else current)
+            if typ is bool:
+                click.echo("on" if current is True else "off")
+            else:
+                click.echo("unset" if current is None else current)
             return
         try:
             up.set_setting(name, value, project=project)

@@ -188,6 +188,17 @@ def ack_applies(repo_path: str = ".") -> bool:
     return bool(acked) and acked == _staged_tree(repo_path)
 
 
+def pending_message(repo_path: str = ".") -> Optional[str]:
+    """The commit message git kept after a hook refused it, if any."""
+    git_dir = _git_dir(repo_path)
+    if not git_dir:
+        return None
+    try:
+        return (git_dir / "COMMIT_EDITMSG").read_text()
+    except OSError:
+        return None
+
+
 def forget_ack(repo_path: str = ".") -> None:
     git_dir = _git_dir(repo_path)
     if git_dir:
