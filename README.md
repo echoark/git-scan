@@ -415,7 +415,7 @@ git-scan hook uninstall         # or --local
   core.hooksPath = ~/.config/git/hooks
   pre-commit   installed  scans each commit's changes and every file, branch, and tag name
   commit-msg   installed  scans each commit message
-  post-commit  absent     commits are not marked; a push scans every unpushed commit (git-scan hook install --pre-push)
+  post-commit  absent     clean commits are not remembered; a push scans every unpushed commit (git-scan hook install --pre-push)
   pre-push     absent     pushes are not scanned (git-scan hook install --pre-push)
   git runs:  ~/.config/git/hooks/pre-commit  (installed)
 ```
@@ -509,6 +509,10 @@ FAILED: fix the content in those commits and review again; nothing was recorded 
 
 Rules the command keeps:
 
+- **The reviewer's own account is shown.** Each batch ends with the
+  reviewer's one-line summary, the model that answered and the time it
+  took, so a clean result is never just the word clean. A result that does
+  not list every commit it was sent is refused and records nothing.
 - **The reviewer's problems never pass as a clean review.** A runner that is
   not installed, exits non-zero, times out, or returns anything but a valid
   result records nothing and says the problem is the reviewer, not the

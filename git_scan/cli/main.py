@@ -82,9 +82,9 @@ def _message_refusal(report, message_file):
 @click.option("--hide-skipped", is_flag=True, help="Don't list checks that were skipped.")
 @click.option("--commit", "commit", default=None, metavar="REV",
               help="Scan one commit (changes, message, author) instead of the staged diff; "
-                   "marks it 'scanned' if clean.")
+                   "the push gate will not scan it again if clean.")
 @click.option("--range", "rev_range", default=None, metavar="A..B",
-              help="Scan every commit in a range in one pass; marks the clean ones 'scanned'.")
+              help="Scan every commit in a range in one pass; the push gate will not scan the clean ones again.")
 @click.option("--message", "message_file", default=None, metavar="FILE",
               help="Scan a commit message ('-' reads standard input) instead of the staged diff.")
 def run(path, deep, step, unstaged, untracked, verbose, hide_skipped, commit, rev_range,
@@ -148,8 +148,8 @@ def run(path, deep, step, unstaged, untracked, verbose, hide_skipped, commit, re
     _echo_checks(report, verbose=verbose, hide_skipped=hide_skipped)
     click.echo()
     if report.scope == "commits" and step is None:
-        click.echo(f"{len(report.commits)} commit(s) read; {len(report.marked)} clean and "
-                   "marked 'scanned'")
+        click.echo(f"{len(report.commits)} commit(s) read; {len(report.marked)} clean; "
+                   "the push gate will not scan those again")
     if report.failed:
         click.echo(click.style(f"FAILED: {report.failed_count} check(s) found issues",
                                fg="red", bold=True))
@@ -189,7 +189,7 @@ def ack(rev):
             sys.exit(1)
         judged = next((c for c in report.checks if c.name == "Judgment"), None)
         what = judged.info if judged else "no judgment entries configured"
-        click.echo(f"acknowledged {rev}: {what}; marked scanned")
+        click.echo(f"acknowledged {rev}: {what}; clean, the push gate will not scan it again")
         return
     report = run_scan(repo_path=".", only_step="patterns")
     judged = next((c for c in report.checks if c.name == "Judgment"), None)
@@ -240,9 +240,10 @@ def review(ctx, relaxed, publish, rev_range, runner, timeout, quiet):
     instructions, your personal patterns and notes, each commit's message
     and patch, and any --publish text. It runs the configured headless agent
     CLI with no tools (the prompt is the reviewer's whole world), validates
-    the JSON that comes back, and marks every commit of a clean batch
-    'reviewed'. With 'config require-review on', a push needs that mark on
-    every commit it sends.
+    the JSON that comes back, and records a clean batch as reviewed. With
+    'config require-review on', a push needs that for every commit it sends.
+    The reviewer's one-line summary of each batch is printed with the model
+    and the time it took.
 
     \b
     Findings are printed with the value and location; nothing is recorded
@@ -260,6 +261,8 @@ def review(ctx, relaxed, publish, rev_range, runner, timeout, quiet):
                                   progress=say)
     except (review_sdk.ReviewError, ConfigError, marks.MarkError) as e:
         _fail(e)
+    for line in result.reports:
+        click.echo(f"  reviewer: {line}")
     for w in result.warnings:
         click.echo(f"  warning: {w}")
     if result.findings:
@@ -317,8 +320,8 @@ def push_check(remote, url):
     """Scan the commits a push would send, and refuse it on findings.
 
     Every commit the remote doesn't have yet is scanned in one pass (its
-    changes, message, author and committer), except commits already marked
-    'scanned', which are skipped; clean commits are marked. With 'config
+    changes, message, author and committer), except commits a scan has
+    already cleared, which are skipped. With 'config
     require-review on', every commit must also carry a clean privacy
     review ('git-scan review').
 
@@ -807,8 +810,8 @@ def hook_install(local, hooks_dir, force, pre_push, require_review, missing_conf
 
     \b
     --pre-push adds the push gate: a pre-push hook that scans every commit
-    being pushed (skipping ones already marked 'scanned'; a post-commit
-    hook marks commits whose scan passed) and refuses the push on findings.
+    being pushed (skipping ones the hooks already cleared; a post-commit
+    hook remembers each commit whose scan passed) and refuses the push on findings.
     --require-review makes it also refuse a push until 'git-scan review' has
     passed for the unpushed commits.
     """
@@ -826,8 +829,8 @@ def hook_install(local, hooks_dir, force, pre_push, require_review, missing_conf
     if pre_push:
         click.echo("\n".join([
             "",
-            "Every push now scans the commits it sends, skipping ones already marked",
-            "'scanned' (committing through the hooks marks them).",
+            "Every push now scans the commits it sends, skipping ones the hooks",
+            "already cleared (committing through the hooks does that).",
         ] + (["A push is also refused until 'git-scan review' has passed for its commits."]
              if require_review else [])))
 
