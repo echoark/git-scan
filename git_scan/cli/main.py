@@ -262,7 +262,9 @@ def patterns_add(id, pattern, category, word_boundary, not_followed_by, exclude_
 @click.option("--pattern", default=None, help="New regex.")
 @click.option("--category", default=None)
 @click.option("--word-boundary/--no-word-boundary", default=None)
-@click.option("--not-followed-by", multiple=True, metavar="TEXT", help="Replaces the list (repeatable).")
+@click.option("--not-followed-by", multiple=True, metavar="TEXT",
+              help="Replaces the whole list (repeatable); to add one exception, use "
+                   "'patterns exceptions add'.")
 @click.option("--exclude-file", multiple=True, metavar="GLOB",
               help="Replaces the list of file globs the pattern skips (repeatable).")
 @click.option("--project", is_flag=True, help="Act on the repo's git-scan.yaml.")
@@ -275,8 +277,11 @@ def patterns_edit(id, pattern, category, word_boundary, not_followed_by, exclude
       git-scan patterns edit my-co --exclude-file 'docs/vendors.md'
       git-scan patterns edit my-co --exclude-file ''      (clears the list)
 
-    Lists replace the previous value. Editing a built-in writes an override
-    into your layer rather than touching the package.
+    Lists replace the previous value: --not-followed-by sets the whole
+    exception list, so an omitted value is dropped. To add or drop one
+    exception and keep the rest, use 'patterns exceptions add / remove'.
+    Editing a built-in writes an override into your layer rather than
+    touching the package.
     """
     try:
         up.edit_pattern(id, project=project, pattern=pattern, category=category,
@@ -342,6 +347,71 @@ def patterns_list(include_disabled):
         state = "  (off; restore with: git-scan patterns restore " + r["id"] + ")" if r["disabled"] else ""
         cat = f" [{r['category']}]" if r["category"] else ""
         click.echo(f"  {r['id']:<{width}}  {r['layer']:<8} {r['pattern']}{cat}{state}")
+
+
+@patterns.group("exceptions")
+def patterns_exceptions():
+    """One pattern's exceptions: texts after which it does not match.
+
+    These are the pattern's --not-followed-by values. 'add' and 'remove'
+    change one value at a time and keep the rest, where 'patterns edit
+    --not-followed-by' replaces the whole list.
+    """
+
+
+@patterns_exceptions.command("list")
+@click.argument("id")
+def exceptions_list(id):
+    """Print a pattern's exceptions, one per line, as the scan applies them."""
+    try:
+        values = up.list_exceptions(id)
+    except (up.PatternError, up.ConfigError) as e:
+        _fail(e)
+    for v in values:
+        click.echo(v)
+
+
+@patterns_exceptions.command("add", context_settings={"ignore_unknown_options": True})
+@click.argument("id")
+@click.argument("values", nargs=-1, required=True, metavar="VALUE...")
+@click.option("--project", is_flag=True, help="Act on the repo's git-scan.yaml.")
+def exceptions_add(id, values, project):
+    """Add exceptions to a pattern and print the resulting list.
+
+    \b
+    Example:
+      git-scan patterns exceptions add my-co ' Cloud' '-sdk'
+
+    A value already present is not added again; the existing values are
+    kept. For a built-in (or, with --project, one of yours) the full list
+    is written as an override in the target layer. A value that starts
+    with '-' (such as '-sdk') is taken as a value; put '--' before the
+    values if one could be read as an option.
+    """
+    try:
+        result = up.add_exceptions(id, list(values), project=project)
+    except (up.PatternError, up.ConfigError) as e:
+        _fail(e)
+    for v in result:
+        click.echo(v)
+
+
+@patterns_exceptions.command("remove", context_settings={"ignore_unknown_options": True})
+@click.argument("id")
+@click.argument("values", nargs=-1, required=True, metavar="VALUE...")
+@click.option("--project", is_flag=True, help="Act on the repo's git-scan.yaml.")
+def exceptions_remove(id, values, project):
+    """Remove exceptions from a pattern and print the remaining list.
+
+    Every VALUE must be present; a value that is not fails the command and
+    nothing is written.
+    """
+    try:
+        result = up.remove_exceptions(id, list(values), project=project)
+    except (up.PatternError, up.ConfigError) as e:
+        _fail(e)
+    for v in result:
+        click.echo(v)
 
 
 # --- emails -----------------------------------------------------------------

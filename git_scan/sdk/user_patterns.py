@@ -121,6 +121,95 @@ def edit_pattern(id: str, repo_path: str = ".", project: bool = False, **changes
     return mine
 
 
+# --- exceptions (not_followed_by) -------------------------------------------
+
+def _pattern_origin(id: str, config) -> str:
+    """The layer that first defines ``id``; a PatternError names close matches."""
+    origin = config.pattern_sources.get(id)
+    if origin is None:
+        close = difflib.get_close_matches(id, list(config.pattern_sources), n=3)
+        hint = f"; did you mean {', '.join(close)}?" if close else ""
+        raise PatternError(f"no pattern '{id}'{hint}")
+    return origin
+
+
+def _effective_exceptions(id: str, config) -> List[str]:
+    """A pattern's ``not_followed_by`` list after merging all layers."""
+    entry = next((p for p in config.all_patterns if p.get("id") == id), None)
+    return list((entry or {}).get("not_followed_by") or [])
+
+
+def list_exceptions(id: str, repo_path: str = ".") -> List[str]:
+    """The texts after which a pattern does not match, as the scan sees them."""
+    config = load_config(repo_path)
+    _pattern_origin(id, config)
+    return _effective_exceptions(id, config)
+
+
+def _write_exceptions(id: str, values: List[str], origin: str, repo_path: str,
+                      project: bool) -> List[str]:
+    """Write a pattern's full ``not_followed_by`` list into the target layer.
+
+    An inherited pattern (a built-in, or with ``project`` one of the user's)
+    gets an override entry, as ``edit_pattern`` writes; an emptied list stays
+    as ``[]`` there so the lower layer's values don't come back."""
+    path = target_path(repo_path, project)
+    data = _read(path)
+    entries = _entries(data)
+    mine = next((e for e in entries if e.get("id") == id), None)
+    if mine is None:
+        mine = {"id": id}
+        entries.append(mine)
+    target_layer = "project" if project else "user"
+    if values or origin != target_layer:
+        mine["not_followed_by"] = list(values)
+    else:
+        mine.pop("not_followed_by", None)
+    data["patterns"] = entries
+    _write(path, data)
+    return list(values)
+
+
+def _check_exception_values(values: List[str]) -> List[str]:
+    values = list(values)
+    if not values:
+        raise PatternError("at least one value is required")
+    if any(v == "" for v in values):
+        raise PatternError("an exception must not be empty")
+    return values
+
+
+def add_exceptions(id: str, values: List[str], repo_path: str = ".",
+                   project: bool = False) -> List[str]:
+    """Add texts after which a pattern should not match. Values already
+    present are kept once; the existing ones survive. Returns the list."""
+    values = _check_exception_values(values)
+    config = load_config(repo_path)
+    origin = _pattern_origin(id, config)
+    current = _effective_exceptions(id, config)
+    for v in values:
+        if v not in current:
+            current.append(v)
+    return _write_exceptions(id, current, origin, repo_path, project)
+
+
+def remove_exceptions(id: str, values: List[str], repo_path: str = ".",
+                      project: bool = False) -> List[str]:
+    """Drop texts from a pattern's exceptions. Every value must be present;
+    otherwise nothing is written. Returns the remaining list."""
+    values = _check_exception_values(values)
+    config = load_config(repo_path)
+    origin = _pattern_origin(id, config)
+    current = _effective_exceptions(id, config)
+    missing = [v for v in values if v not in current]
+    if missing:
+        shown = ", ".join(repr(v) for v in missing)
+        raise PatternError(f"'{id}' has no exception {shown}; "
+                           f"see: git-scan patterns exceptions list {id}")
+    remaining = [v for v in current if v not in values]
+    return _write_exceptions(id, remaining, origin, repo_path, project)
+
+
 # --- allowed emails ---------------------------------------------------------
 
 def allow_email(address: str, repo_path: str = ".", project: bool = False) -> None:
