@@ -158,7 +158,7 @@ def test_judgment_matches_in_a_commit_that_skipped_the_hook_are_cleared_by_ack(g
 
     r = _run("ack", "--commit", sha[:12])
     assert r.exit_code == 0, r.output
-    assert "1 match(es) acknowledged" in r.output and "marked scanned" in r.output
+    assert "1 match(es) acknowledged" in r.output and "will not scan it again" in r.output
     assert marks.marks_on(sha) == {"scanned"}
     assert _push(gate).returncode == 0
 

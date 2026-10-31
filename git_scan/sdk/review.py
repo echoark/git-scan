@@ -24,6 +24,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
@@ -59,6 +60,7 @@ class ReviewResult:
     findings: List[dict] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
     batches: int = 0
+    reports: List[str] = field(default_factory=list)      # one line per batch: what the reviewer said, by whom, how long
 
     @property
     def clean(self) -> bool:
@@ -217,7 +219,11 @@ def parse_result(stdout: str) -> dict:
         data = json.loads(stdout)
     except json.JSONDecodeError as e:
         raise ReviewError(f"the reviewer's output is not JSON ({e}); nothing recorded")
+    meta: Dict[str, object] = {}
     if isinstance(data, dict) and "status" not in data:
+        models = data.get("modelUsage")
+        meta = {"model": next(iter(models), None) if isinstance(models, dict) and models else data.get("model"),
+                "duration_ms": data.get("duration_ms")}
         if data.get("is_error"):
             raise ReviewError(f"the reviewer failed: {str(data.get('result'))[:200]}; "
                               "nothing recorded")
@@ -232,6 +238,7 @@ def parse_result(stdout: str) -> dict:
                 raise ReviewError(f"the reviewer's result is not JSON ({e}); nothing recorded")
     if not isinstance(data, dict) or "status" not in data or not isinstance(data.get("findings"), list):
         raise ReviewError("the reviewer's result lacks 'status' or a 'findings' list; nothing recorded")
+    data["runner_meta"] = meta
     for f in data["findings"]:
         if not isinstance(f, dict) or not all(k in f for k in ("category", "value", "location")):
             raise ReviewError("a finding in the reviewer's result lacks category, value or location; "
@@ -239,7 +246,15 @@ def parse_result(stdout: str) -> dict:
     return data
 
 
+def covers(reported: Sequence[str], shas: Sequence[str]) -> List[str]:
+    """The commits in ``shas`` the reviewer did not list in ``commits_reviewed``
+    (ids may be abbreviated either way, 7 characters or more)."""
+    ids = [str(r).strip() for r in reported if len(str(r).strip()) >= 7]
+    return [s for s in shas if not any(s.startswith(r) or r.startswith(s) for r in ids)]
+
+
 def run_batch(argv: List[str], prompt: str, timeout: int) -> dict:
+    started = time.monotonic()
     try:
         res = subprocess.run(argv, input=prompt, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -253,6 +268,7 @@ def run_batch(argv: List[str], prompt: str, timeout: int) -> dict:
         raise ReviewError("the reviewer runner failed (exit " + str(res.returncode) + "): "
                           + " | ".join(tail) + "; nothing recorded")
     data = parse_result(res.stdout)
+    data["runner_meta"]["seconds"] = round(time.monotonic() - started, 1)
     if data["status"] != "completed":
         raise ReviewError("the reviewer did not complete the review"
                           + (f" ({data.get('failure_reason')})" if data.get("failure_reason") else "")
@@ -265,8 +281,8 @@ def review(repo_path: str = ".", commits: Optional[List[str]] = None,
            publish: Sequence[str] = (), runner: Optional[str] = None,
            timeout: Optional[int] = None, batch_bytes: Optional[int] = None,
            progress: Optional[Callable[[str], None]] = None) -> ReviewResult:
-    """Review the unpushed commits (or ``commits`` / ``rev_range``) and mark
-    each commit of a clean batch ``reviewed``."""
+    """Review the unpushed commits (or ``commits`` / ``rev_range``) and record
+    each commit of a clean batch as reviewed."""
     say = progress or (lambda _msg: None)
     config = load_config(repo_path)
     if not config.user_patterns_defined:
@@ -311,9 +327,20 @@ def review(repo_path: str = ".", commits: Optional[List[str]] = None,
         say(f"batch {i}/{len(batches)}: {len(batch)} commit(s)")
         prompt = build_prompt(mode, catalog, batch, texts if i == 1 else {})
         data = run_batch(argv, prompt, timeout)
-        result.warnings += [str(w) for w in data.get("warnings") or []]
         shas = [r["sha"] for r in batch]
+        missing = covers(data.get("commits_reviewed") or [], shas)
+        if missing:
+            raise ReviewError("the reviewer did not report reviewing commit(s) "
+                              + ", ".join(s[:12] for s in missing)
+                              + "; nothing recorded for this batch. Run it again")
+        result.warnings += [str(w) for w in data.get("warnings") or []]
         result.commits += shas
+        meta = data.get("runner_meta") or {}
+        by = " by " + str(meta["model"]) if meta.get("model") else ""
+        secs = f" in {meta['seconds']}s" if meta.get("seconds") is not None else ""
+        report = f"batch {i}/{len(batches)}{by}{secs}: {str(data.get('summary') or '').strip() or '(no summary)'}"
+        result.reports.append(report)
+        say(report)
         if data["findings"]:
             result.findings += data["findings"]
             say(f"batch {i}/{len(batches)}: {len(data['findings'])} finding(s); not recorded")

@@ -46,9 +46,9 @@ async def scan_repo(
     - ``rev_range``: ``A..B``; every commit in it, in one pass: each
       commit's own patch (a merge against its first parent), its message,
       and its author and committer emails (checked against the identity
-      rules). Findings start with ``[commit <short sha>]``. Clean commits
-      are marked 'scanned', so the push gate skips them; the result's
-      ``commits`` and ``marked`` list them.
+      rules). Findings start with ``[commit <short sha>]``. The push gate
+      will not scan the clean commits again; the result's ``commits`` and
+      ``marked`` list them.
 
     Config is loaded from three layers (package defaults, user
     ~/.config/git-scan/git-scan.yaml, project ./git-scan.yaml).

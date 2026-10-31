@@ -23,16 +23,21 @@ out = os.environ.get("STUB_PROMPT_OUT")
 if out:
     open(out, "a").write(prompt + "\\n=====END PROMPT=====\\n")
 mode = os.environ.get("STUB_MODE", "clean")
-if mode == "clean":
-    print(json.dumps({"status": "completed", "findings": [], "commits_reviewed": [], "summary": "clean"}))
+import re
+seen = re.findall(r"^## commit ([0-9a-f]{12})$", prompt, re.M)
+if mode == "partial":
+    seen = seen[1:]
+if mode in ("clean", "partial"):
+    print(json.dumps({"status": "completed", "findings": [], "commits_reviewed": seen, "summary": "nothing personal in these commits"}))
 elif mode == "finding":
-    print(json.dumps({"status": "completed", "commits_reviewed": [], "summary": "one",
+    print(json.dumps({"status": "completed", "commits_reviewed": seen, "summary": "one",
                       "findings": [{"category": "names", "value": "Jane Doe",
                                     "location": "abc:notes.txt:1", "severity": "high"}]}))
 elif mode == "envelope":          # a CLI envelope carrying the result as text
     print(json.dumps({"type": "result", "subtype": "success", "is_error": False,
+                      "duration_ms": 4321, "modelUsage": {"stub-model-1": {}},
                       "result": "```json\\n" + json.dumps({"status": "completed", "findings": [],
-                                                           "commits_reviewed": [], "summary": "ok"}) + "\\n```"}))
+                                                           "commits_reviewed": seen, "summary": "ok"}) + "\\n```"}))
 elif mode == "failed":
     print(json.dumps({"status": "failed", "failure_reason": "truncated", "findings": [],
                       "commits_reviewed": [], "summary": ""}))
@@ -162,6 +167,31 @@ def test_batches_split_by_size_and_a_finding_in_one_batch_leaves_the_others_reco
     assert len(_prompts(tmp_path)) == 3            # one commit per batch at that limit
     for s in shas:
         assert "reviewed" in marks.marks_on(s)
+
+
+def test_the_reviewers_summary_is_reported_with_the_model_and_the_time(repo, monkeypatch):
+    sha = _commit(repo, "a.txt")
+    r = _run("review", "--quiet")
+    assert r.exit_code == 0, r.output
+    assert "reviewer: batch 1/1 in " in r.output and "s: nothing personal in these commits" in r.output
+    monkeypatch.setenv("STUB_MODE", "envelope")             # a CLI envelope names the model and its timing
+    _commit(repo, "b.txt")
+    r = _run("review", "--quiet")
+    assert r.exit_code == 0, r.output
+    assert "reviewer: batch 1/1 by stub-model-1 in " in r.output and "s: ok" in r.output
+
+
+def test_a_result_that_skips_a_commit_fails_closed_and_records_nothing(repo, monkeypatch):
+    monkeypatch.setenv("STUB_MODE", "partial")                # the reviewer lists all but the first commit
+    first = _commit(repo, "a.txt")
+    second = _commit(repo, "b.txt")
+    r = _run("review", "--quiet")
+    assert r.exit_code == 1
+    assert "did not report reviewing commit(s)" in r.output and "nothing recorded" in r.output
+    assert first[:12] in r.output or second[:12] in r.output
+    assert marks.marks_on(first) == {"scanned"} and marks.marks_on(second) == {"scanned"}
+    assert review.covers(["abcdef1234567"], ["abcdef1234567890" + "0" * 24]) == []
+    assert review.covers(["abc"], ["abcdef1234567890" + "0" * 24]) != []       # too short to count
 
 
 def test_a_cli_envelope_with_the_result_as_text_is_accepted(repo, monkeypatch):

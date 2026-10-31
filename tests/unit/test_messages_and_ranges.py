@@ -148,7 +148,7 @@ def test_a_range_finds_a_secret_added_then_deleted(tmp_path, monkeypatch):
     assert r.exit_code == 1
     assert f"[commit {added[:12]}] cfg.txt:1 [token]" in r.output
     assert f"[commit {deleted[:12]}] cfg.txt:1 (removed) [token]" in r.output
-    assert "3 commit(s) read; 1 clean and marked 'scanned'" in r.output
+    assert "3 commit(s) read; 1 clean; the push gate will not scan those again" in r.output
     assert marks.marks_on(later) == {"scanned"}
     assert marks.marks_on(added) == set() and marks.marks_on(deleted) == set()
 

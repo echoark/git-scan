@@ -277,7 +277,11 @@ records a review. Rules:
   prompt (`data/review-prompt.md`, the catalog from `export_patterns`, the
   commits' records from one `git log`, the publish text), runs the runner
   with the prompt on stdin, and validates the result (`parse_result`:
-  the result object itself or a CLI envelope carrying it). A clean batch
+  the result object itself or a CLI envelope carrying it; `covers` checks
+  that `commits_reviewed` names every commit the batch sent, abbreviated
+  or not, and a batch that skipped one is refused). The reviewer's
+  `summary`, with the model and timing the envelope reports, is printed
+  per batch so the caller sees what was judged, not only the verdict. A clean batch
   marks each of its commits; a batch with findings or a reviewer failure
   marks none, so a rerun resumes. The runner is started with no tools and
   no user context (`--tools ""`, `--setting-sources ""` for `claude`), so

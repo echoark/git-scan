@@ -75,8 +75,8 @@ PROTECTS = {
     "pre-commit": ("scans each commit's changes and every file, branch, and tag name",
                    "commits are not scanned here"),
     "commit-msg": ("scans each commit message", "commit messages are not scanned here"),
-    "post-commit": ("marks each commit whose scan passed, so a push can skip it",
-                    "commits are not marked; a push scans every unpushed commit"),
+    "post-commit": ("remembers each commit whose scan passed, so a push can skip it",
+                    "clean commits are not remembered; a push scans every unpushed commit"),
     "pre-push": ("scans unpushed commits, and requires a recorded review when configured, before a push",
                  "pushes are not scanned"),
 }
