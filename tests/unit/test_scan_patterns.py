@@ -241,3 +241,46 @@ def test_three_groups_not_flagged_as_api_key(tmp_path):
 def test_uuid_underscore_detected(tmp_path):
     uuid = "_".join(["3f2b8c1a", "9d4e", "4a7b", "8c6d", "1e2f3a4b5c6d"])
     assert not _scan_text(tmp_path, f"id = {uuid}").passed
+
+
+def test_judgment_entry_is_not_scanned(tmp_path):
+    repo = _init_repo(tmp_path)
+    (repo / "git-scan.yaml").write_text(
+        "patterns:\n"
+        "  - id: town\n"
+        "    pattern: Springfield\n"
+        "    category: city\n"
+        "    judgment: true\n"
+        "    note: only beside an address\n"
+    )
+    (repo / "notes.txt").write_text("Springfield is a common town name")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+
+    report = run_scan(str(repo), only_step="patterns")
+    check = next(c for c in report.checks if c.name == "Patterns")
+    assert check.passed
+    assert "1 judgment-only, not scanned" in (check.info or "")
+
+
+def test_ignore_case_matches_any_letter_case(tmp_path):
+    repo = _init_repo(tmp_path)
+    (repo / "git-scan.yaml").write_text(
+        "patterns:\n"
+        "  - id: me\n"
+        "    pattern: jane doe\n"
+        "    category: name\n"
+        "    ignore_case: true\n"
+        "  - id: strict\n"
+        "    pattern: acme corp\n"
+        "    category: customer\n"
+    )
+    (repo / "a.txt").write_text("Contact: Jane Doe\n")
+    (repo / "b.txt").write_text("Vendor: ACME CORP\n")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+
+    report = run_scan(str(repo), only_step="patterns")
+    check = next(c for c in report.checks if c.name == "Patterns")
+    assert not check.passed
+    text = "\n".join(check.findings)
+    assert "a.txt" in text and "Jane Doe" in text
+    assert "b.txt" not in text                    # the case-sensitive entry stays strict

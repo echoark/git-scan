@@ -152,7 +152,8 @@ target the repository's `git-scan.yaml` instead of your own.
 ### Patterns
 
 A pattern is a regular expression with an id and, optionally, a category
-shown in findings. Matching is case-sensitive; escape literal dots.
+shown in findings. Matching is case-sensitive unless the entry says
+`--ignore-case`; escape literal dots.
 
 ```bash
 git-scan patterns add ID --pattern REGEX [--category CATEGORY] [OPTIONS]
@@ -163,6 +164,9 @@ git-scan patterns add ID --pattern REGEX [--category CATEGORY] [OPTIONS]
 | `--word-boundary` | match whole words only |
 | `--not-followed-by TEXT` | don't match when this text follows (repeatable) |
 | `--exclude-file GLOB` | don't apply in files whose repository path matches (repeatable) |
+| `--ignore-case` | match regardless of letter case |
+| `--note TEXT` | guidance shown to a reviewer beside this entry (see [Judgment entries and notes](#judgment-entries-and-notes)) |
+| `--judgment` | hand the entry to a reviewer instead of the scanner |
 
 Examples by category:
 
@@ -220,6 +224,45 @@ git-scan patterns exceptions list my-employer
 git-scan patterns exceptions add my-employer ' Cloud'     # keeps '-sdk' etc.
 git-scan patterns exceptions remove my-employer '-sdk'
 ```
+
+### Judgment entries and notes
+
+Some values are sensitive only in context. The last four digits of an
+account collide with line numbers and years; a city or a given name is
+also an ordinary word; an area code is any three digits. As a regex each
+would block ordinary commits, so a pattern list leaves them out, and a
+scanner alone never catches them.
+
+A **judgment entry** keeps such a value in the configuration without
+scanning for it. It is marked `judgment: true` and is never compiled; the
+scanner skips it and reports how many it skipped. Its `note` says when the
+value is a finding. The entry exists for a reviewer that reads the
+configuration and weighs context, such as an agent run before a push:
+
+```bash
+git-scan patterns add card-a --pattern '1234' --category last4 --judgment \
+    --note 'a finding only beside account, card, checking or a **** mask'
+git-scan patterns edit my-town --judgment --note 'only beside an address'   # move an entry out of the scanner
+git-scan patterns edit my-town --no-judgment                                # and back (the text must then be a valid regex)
+```
+
+Prefer `--judgment` over `patterns remove` for an entry that trips as a
+regex but still matters: the reviewer keeps it. A `--note` is allowed on
+any entry, scanned or not, for the same reader.
+
+**Notes** carry guidance that belongs to no single entry:
+
+```bash
+git-scan notes add 'a city name is a finding only beside an address or a property'
+git-scan notes list
+git-scan notes remove 1
+```
+
+**The reviewer's input.** `git-scan patterns list --json` prints your
+entries, scanned and judgment alike, each with its note, plus the notes, as
+JSON, and leaves the built-in token patterns out. Treat the output as you
+treat the configuration: it is the list of what must stay out of your
+repositories.
 
 ### Allowed emails
 

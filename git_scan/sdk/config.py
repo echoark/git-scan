@@ -41,9 +41,11 @@ CONFIG_FILENAME = "git-scan.yaml"
 
 LAYERS = ("built-in", "user", "project")
 
-TOP_LEVEL_KEYS = {"entropy", "thresholds", "patterns", "allowed_emails", "identity", "push"}
+TOP_LEVEL_KEYS = {"entropy", "thresholds", "patterns", "allowed_emails", "identity", "push",
+                  "notes"}
 PATTERN_FIELDS = {"id", "pattern", "category", "word_boundary",
-                  "not_followed_by", "exclude_files", "disabled"}
+                  "not_followed_by", "exclude_files", "disabled",
+                  "ignore_case", "judgment", "note"}
 THRESHOLD_KEYS = {"large_amount", "suspicious_nonround", "suspicious_any",
                   "cents_review"}
 ENTROPY_KEYS = {"enabled", "threshold", "min_len", "exclusions"}
@@ -143,14 +145,15 @@ def validate_layer(data, path) -> None:
             if "pattern" in p:
                 if not isinstance(p["pattern"], str) or not p["pattern"]:
                     errors.append(f"{loc}: 'pattern' must be text")
-                else:
+                elif not p.get("judgment"):
                     try:
                         re.compile(p["pattern"])
                     except re.error as e:
                         errors.append(f"{loc}: pattern is not a valid regex: {e}")
-            if "category" in p and not isinstance(p["category"], str):
-                errors.append(f"{loc}: 'category' must be text")
-            for flag in ("word_boundary", "disabled"):
+            for text_field in ("category", "note"):
+                if text_field in p and not isinstance(p[text_field], str):
+                    errors.append(f"{loc}: '{text_field}' must be text")
+            for flag in ("word_boundary", "disabled", "ignore_case", "judgment"):
                 if flag in p and not isinstance(p[flag], bool):
                     errors.append(f"{loc}: '{flag}' must be true or false")
             for field in ("not_followed_by", "exclude_files"):
@@ -158,6 +161,10 @@ def validate_layer(data, path) -> None:
                 if val is not None and (not isinstance(val, list)
                                         or not all(isinstance(x, str) for x in val)):
                     errors.append(f"{loc}: '{field}' must be a list of text")
+
+    notes = data.get("notes", [])
+    if not isinstance(notes, list) or not all(isinstance(n, str) and n for n in notes):
+        errors.append("notes: must be a list of text (run: git-scan notes add TEXT)")
 
     thresholds = data.get("thresholds", {})
     if not isinstance(thresholds, dict):
@@ -254,9 +261,32 @@ class MergedConfig:
                 if not p.get("disabled")]
 
     @property
+    def scan_patterns(self) -> list[dict]:
+        """Active patterns the scanner compiles: everything but judgment entries."""
+        return [p for p in self.patterns if not p.get("judgment")]
+
+    @property
+    def judgment_patterns(self) -> list[dict]:
+        """Active entries for a reviewer's judgment, never compiled to a regex."""
+        return [p for p in self.patterns if p.get("judgment")]
+
+    @property
     def all_patterns(self) -> list[dict]:
         """All patterns including disabled."""
         return self.raw.get("patterns", [])
+
+    @property
+    def notes(self) -> list[str]:
+        """Free-text guidance for a reviewer, from every layer combined.
+
+        Read per layer, like ``required_marks``: merging replaces a list, so a
+        project layer could otherwise drop the user's notes.
+        """
+        seen: dict = {}
+        for layer in self.layers.values():
+            for n in (layer or {}).get("notes") or []:
+                seen.setdefault(n, None)
+        return list(seen)
 
     @property
     def user_patterns_defined(self) -> bool:
@@ -277,10 +307,14 @@ class MergedConfig:
 
     @property
     def pattern_counts(self) -> dict:
-        """Active patterns by origin: built-in vs personal (user or project)."""
+        """Active patterns by origin: built-in vs personal (user or project),
+        with judgment entries counted apart since they are never compiled."""
         sources = self.pattern_sources
-        counts = {"built-in": 0, "personal": 0}
+        counts = {"built-in": 0, "personal": 0, "judgment": 0}
         for p in self.patterns:
+            if p.get("judgment"):
+                counts["judgment"] += 1
+                continue
             origin = sources.get(p.get("id"), "user")
             counts["built-in" if origin == "built-in" else "personal"] += 1
         return counts

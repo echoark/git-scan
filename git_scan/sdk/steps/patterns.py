@@ -140,9 +140,13 @@ class Compiled:
 
 
 def compile_patterns(patterns: List[dict]) -> List[Compiled]:
-    """Compile pattern entries, applying word_boundary, not_followed_by, exclude_files."""
+    """Compile pattern entries, applying word_boundary, not_followed_by,
+    exclude_files and ignore_case. Judgment entries are skipped: they exist
+    for a reviewer reading them, not for a regex."""
     result = []
     for p in patterns:
+        if p.get("judgment"):
+            continue
         pattern_str = p.get("pattern", "")
         regex_str = pattern_str
 
@@ -156,7 +160,7 @@ def compile_patterns(patterns: List[dict]) -> List[Compiled]:
             regex_str = f"{regex_str}{lookahead}"
 
         try:
-            compiled = re.compile(regex_str)
+            compiled = re.compile(regex_str, re.IGNORECASE if p.get("ignore_case") else 0)
             label = p.get("category", p.get("id", pattern_str))
             result.append(Compiled(label, compiled, list(p.get("exclude_files") or [])))
         except re.error:
@@ -214,6 +218,8 @@ def run_checks(repo_path: str, config=None, scan_input=None, **kwargs) -> List[C
     counts = config.pattern_counts if config else {}
     info = (f"{counts.get('personal', 0)} personal, {counts.get('built-in', 0)} built-in, "
             f"{len(dynamic)} environment; {len(scan_input.files) if scan_input else 0} files")
+    if counts.get("judgment"):
+        info += f"; {counts['judgment']} judgment-only, not scanned"
     if ignored_count:
         info += f", {ignored_count} ignored"
     return [CheckResult("Patterns", not findings, findings[:20], info=info)]

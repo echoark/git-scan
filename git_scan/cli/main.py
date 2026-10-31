@@ -1,5 +1,6 @@
 """CLI — thin wrapper around the SDK."""
 
+import json
 import os
 import re
 import sys
@@ -235,23 +236,36 @@ def patterns():
               help="Don't match when this text follows (repeatable).")
 @click.option("--exclude-file", multiple=True, metavar="GLOB",
               help="Don't apply in files matching this glob (repeatable).")
+@click.option("--ignore-case", is_flag=True, help="Match regardless of letter case.")
+@click.option("--judgment", is_flag=True,
+              help="A value for a reviewer to weigh in context; never scanned as a regex.")
+@click.option("--note", default=None, metavar="TEXT",
+              help="Guidance shown to a reviewer beside this entry.")
 @click.option("--project", is_flag=True, help="Write the repo's git-scan.yaml instead of yours.")
-def patterns_add(id, pattern, category, word_boundary, not_followed_by, exclude_file, project):
+def patterns_add(id, pattern, category, word_boundary, not_followed_by, exclude_file,
+                 ignore_case, judgment, note, project):
     """Add a pattern: a regex that must never appear in a commit.
 
     \b
     Examples:
-      git-scan patterns add my-name --pattern 'Jane Doe' --category name
+      git-scan patterns add my-name --pattern 'Jane Doe' --category name --ignore-case
       git-scan patterns add cust-acme --pattern 'Acme Corporation' --category customer
       git-scan patterns add my-co --pattern 'Example Corp' --category employer --not-followed-by ' Cloud'
+      git-scan patterns add card-a --pattern '1234' --category last4 --judgment \\
+          --note 'flag only beside account, card, checking or a **** mask'
 
     ID is a handle for later edits (letters, digits, '.', '_', '-'); keep it
     free of the pattern text, since ids can appear in a repository's
     git-scan.yaml.
+
+    A --judgment entry is for a reviewer that reads the configuration (see
+    'patterns list --json'), not for the scanner: a value that collides with
+    ordinary text as a regex but is sensitive in context.
     """
     try:
         up.add_pattern(id, pattern, category, word_boundary, list(not_followed_by),
-                       list(exclude_file), project=project)
+                       list(exclude_file), project=project, ignore_case=ignore_case,
+                       judgment=judgment, note=note)
     except (up.PatternError, up.ConfigError) as e:
         _fail(e)
     click.echo(f"added '{id}'")
@@ -267,8 +281,13 @@ def patterns_add(id, pattern, category, word_boundary, not_followed_by, exclude_
                    "'patterns exceptions add'.")
 @click.option("--exclude-file", multiple=True, metavar="GLOB",
               help="Replaces the list of file globs the pattern skips (repeatable).")
+@click.option("--ignore-case/--no-ignore-case", default=None)
+@click.option("--judgment/--no-judgment", default=None,
+              help="Hand the entry to a reviewer, or back to the scanner.")
+@click.option("--note", default=None, metavar="TEXT", help="Replaces the note ('' clears it).")
 @click.option("--project", is_flag=True, help="Act on the repo's git-scan.yaml.")
-def patterns_edit(id, pattern, category, word_boundary, not_followed_by, exclude_file, project):
+def patterns_edit(id, pattern, category, word_boundary, not_followed_by, exclude_file,
+                  ignore_case, judgment, note, project):
     """Change a pattern's fields.
 
     \b
@@ -276,18 +295,22 @@ def patterns_edit(id, pattern, category, word_boundary, not_followed_by, exclude
       git-scan patterns edit my-co --not-followed-by ' Cloud' --not-followed-by '-sdk'
       git-scan patterns edit my-co --exclude-file 'docs/vendors.md'
       git-scan patterns edit my-co --exclude-file ''      (clears the list)
+      git-scan patterns edit my-town --judgment --note 'only beside an address'
 
     Lists replace the previous value: --not-followed-by sets the whole
     exception list, so an omitted value is dropped. To add or drop one
     exception and keep the rest, use 'patterns exceptions add / remove'.
     Editing a built-in writes an override into your layer rather than
-    touching the package.
+    touching the package. Prefer --judgment over 'patterns remove' for an
+    entry that trips as a regex but still matters: the reviewer keeps it.
     """
     try:
         up.edit_pattern(id, project=project, pattern=pattern, category=category,
                         word_boundary=word_boundary,
                         not_followed_by=list(not_followed_by) or None,
-                        exclude_files=list(exclude_file) or None)
+                        exclude_files=list(exclude_file) or None,
+                        ignore_case=ignore_case, judgment=judgment,
+                        note=note if note is None else (note or False))
     except (up.PatternError, up.ConfigError) as e:
         _fail(e)
     click.echo(f"updated '{id}'")
@@ -336,9 +359,20 @@ def patterns_clear(project):
 
 @patterns.command("list")
 @click.option("--all", "include_disabled", is_flag=True, help="Include turned-off patterns.")
-def patterns_list(include_disabled):
-    """Show every active pattern with the layer it comes from."""
+@click.option("--json", "as_json", is_flag=True,
+              help="Your entries and notes as JSON, for a reviewer that reads them.")
+def patterns_list(include_disabled, as_json):
+    """Show every active pattern with the layer it comes from.
+
+    --json prints the personal entries (scan and judgment alike, each with
+    its note) and the free-text notes, and leaves the built-in token
+    patterns out. It is the input for a reviewer that applies judgment
+    where a regex can't; the output is as sensitive as the configuration.
+    """
     try:
+        if as_json:
+            click.echo(json.dumps(up.export_patterns(), indent=2, ensure_ascii=False))
+            return
         rows = up.list_patterns(include_disabled=include_disabled)
     except up.ConfigError as e:
         _fail(e)
@@ -346,7 +380,53 @@ def patterns_list(include_disabled):
     for r in rows:
         state = "  (off; restore with: git-scan patterns restore " + r["id"] + ")" if r["disabled"] else ""
         cat = f" [{r['category']}]" if r["category"] else ""
-        click.echo(f"  {r['id']:<{width}}  {r['layer']:<8} {r['pattern']}{cat}{state}")
+        kind = "  (judgment)" if r["judgment"] else ""
+        click.echo(f"  {r['id']:<{width}}  {r['layer']:<8} {r['pattern']}{cat}{kind}{state}")
+
+
+# --- notes ------------------------------------------------------------------
+
+@cli.group()
+def notes():
+    """Free-text guidance for a reviewer that reads your configuration."""
+
+
+@notes.command("add")
+@click.argument("text")
+@click.option("--project", is_flag=True, help="Write the repo's git-scan.yaml instead of yours.")
+def notes_add(text, project):
+    """Add a note: guidance that belongs to no single entry.
+
+    \b
+    Example:
+      git-scan notes add 'a city name is a finding only beside an address or a property'
+    """
+    try:
+        click.echo(up.add_note(text, project=project))
+    except (up.PatternError, up.ConfigError) as e:
+        _fail(e)
+
+
+@notes.command("remove")
+@click.argument("number", type=int)
+@click.option("--project", is_flag=True, help="Act on the repo's git-scan.yaml.")
+def notes_remove(number, project):
+    """Remove a note by its number in 'notes list'."""
+    try:
+        click.echo(up.remove_note(number, project=project))
+    except (up.PatternError, up.ConfigError) as e:
+        _fail(e)
+
+
+@notes.command("list")
+def notes_list():
+    """Show the notes from every layer."""
+    try:
+        rows = up.list_notes()
+    except up.ConfigError as e:
+        _fail(e)
+    for i, n in enumerate(rows, 1):
+        click.echo(f"  {i}. {n}")
 
 
 @patterns.group("exceptions")

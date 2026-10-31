@@ -54,14 +54,24 @@ def _entries(data: dict) -> List[dict]:
 def add_pattern(id: str, pattern: str, category: Optional[str] = None,
                 word_boundary: bool = False, not_followed_by: Optional[List[str]] = None,
                 exclude_files: Optional[List[str]] = None,
-                repo_path: str = ".", project: bool = False) -> dict:
-    """Add a pattern to the user (or project) layer. Fails on a duplicate id."""
+                repo_path: str = ".", project: bool = False,
+                ignore_case: bool = False, judgment: bool = False,
+                note: Optional[str] = None) -> dict:
+    """Add a pattern to the user (or project) layer. Fails on a duplicate id.
+
+    A judgment entry (``judgment=True``) is a value for a reviewer to weigh in
+    context, never compiled to a regex, so it needn't be one; ``note`` carries
+    the guidance that goes with it (and is allowed on any entry).
+    """
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", id):
         raise PatternError(f"'{id}' is not a valid id: use letters, digits, '.', '_' or '-'")
-    try:
-        re.compile(pattern)
-    except re.error as e:
-        raise PatternError(f"'{pattern}' is not a valid regex: {e}")
+    if not pattern:
+        raise PatternError("a pattern needs text")
+    if not judgment:
+        try:
+            re.compile(pattern)
+        except re.error as e:
+            raise PatternError(f"'{pattern}' is not a valid regex: {e}")
 
     path = target_path(repo_path, project)
     data = _read(path)
@@ -78,13 +88,20 @@ def add_pattern(id: str, pattern: str, category: Optional[str] = None,
         entry["not_followed_by"] = list(not_followed_by)
     if exclude_files:
         entry["exclude_files"] = list(exclude_files)
+    if ignore_case:
+        entry["ignore_case"] = True
+    if judgment:
+        entry["judgment"] = True
+    if note:
+        entry["note"] = note
     entries.append(entry)
     data["patterns"] = entries
     _write(path, data)
     return entry
 
 
-EDITABLE = ("pattern", "category", "word_boundary", "not_followed_by", "exclude_files")
+EDITABLE = ("pattern", "category", "word_boundary", "not_followed_by", "exclude_files",
+            "ignore_case", "judgment", "note")
 
 
 def edit_pattern(id: str, repo_path: str = ".", project: bool = False, **changes) -> dict:
@@ -94,14 +111,17 @@ def edit_pattern(id: str, repo_path: str = ".", project: bool = False, **changes
     changes = {k: v for k, v in changes.items() if k in EDITABLE and v is not None}
     if not changes:
         raise PatternError("nothing to change")
-    if "pattern" in changes:
-        try:
-            re.compile(changes["pattern"])
-        except re.error as e:
-            raise PatternError(f"'{changes['pattern']}' is not a valid regex: {e}")
     config = load_config(repo_path)
     if id not in config.pattern_sources:
         raise PatternError(f"no pattern '{id}'")
+    current = next((p for p in config.all_patterns if p.get("id") == id), {})
+    merged = {**current, **changes}
+    if "pattern" in changes or ("judgment" in changes and not changes["judgment"]):
+        if not merged.get("judgment"):
+            try:
+                re.compile(merged.get("pattern", ""))
+            except re.error as e:
+                raise PatternError(f"'{merged.get('pattern', '')}' is not a valid regex: {e}")
     path = target_path(repo_path, project)
     data = _read(path)
     entries = _entries(data)
@@ -307,14 +327,76 @@ def list_patterns(repo_path: str = ".", include_disabled: bool = False) -> List[
     for p in config.all_patterns:
         if p.get("disabled") and not include_disabled:
             continue
-        rows.append({
+        row = {
             "id": p.get("id"),
             "pattern": p.get("pattern", ""),
             "category": p.get("category", ""),
             "layer": sources.get(p.get("id"), "user"),
             "disabled": bool(p.get("disabled")),
-        })
+            "judgment": bool(p.get("judgment")),
+        }
+        for optional in ("word_boundary", "ignore_case", "not_followed_by",
+                         "exclude_files", "note"):
+            if p.get(optional):
+                row[optional] = p[optional]
+        rows.append(row)
     return rows
+
+
+def export_patterns(repo_path: str = ".") -> dict:
+    """Everything a reviewer needs, in one structure: the active entries
+    (scan and judgment alike, with their notes) and the free-text notes.
+
+    Built-in token patterns are left out: a reviewer knows those formats, and
+    the list is about what is personal to this configuration.
+    """
+    config = load_config(repo_path)
+    sources = config.pattern_sources
+    entries = []
+    for row in list_patterns(repo_path):
+        if row["layer"] == "built-in" or sources.get(row["id"]) == "built-in":
+            continue
+        row.pop("layer", None)
+        row.pop("disabled", None)
+        entries.append(row)
+    return {
+        "configured": config.user_patterns_defined,
+        "patterns": entries,
+        "notes": config.notes,
+    }
+
+
+# --- notes ------------------------------------------------------------------
+
+def list_notes(repo_path: str = ".") -> List[str]:
+    return load_config(repo_path).notes
+
+
+def add_note(text: str, repo_path: str = ".", project: bool = False) -> str:
+    text = " ".join(text.split())
+    if not text:
+        raise PatternError("a note needs text")
+    path = target_path(repo_path, project)
+    data = _read(path)
+    notes = [n for n in (data.get("notes") or []) if isinstance(n, str)]
+    if text in notes:
+        raise PatternError("that note is already there")
+    notes.append(text)
+    data["notes"] = notes
+    _write(path, data)
+    return f"added note {len(notes)} to {path}"
+
+
+def remove_note(number: int, repo_path: str = ".", project: bool = False) -> str:
+    path = target_path(repo_path, project)
+    data = _read(path)
+    notes = [n for n in (data.get("notes") or []) if isinstance(n, str)]
+    if not 1 <= number <= len(notes):
+        raise PatternError(f"no note {number} in {path} ({len(notes)} notes; see: git-scan notes list)")
+    notes.pop(number - 1)
+    data["notes"] = notes
+    _write(path, data)
+    return f"removed note {number} from {path}"
 
 
 # --- identity rules ---------------------------------------------------------

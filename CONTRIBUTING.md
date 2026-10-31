@@ -179,6 +179,28 @@ Rules:
   rewrites it from its parsed form, so hand-written comments are lost;
   that is accepted.
 
+### Judgment entries
+
+A pattern entry with `judgment: true` is validated like any other but never
+compiled: `MergedConfig.scan_patterns` is what the patterns step compiles,
+`judgment_patterns` what it skips, and the step's info line counts the
+skipped ones so a user can see they are there. The split exists because one
+configuration now serves two readers with opposite needs. The scanner wants
+few, precise regexes, or it blocks ordinary commits; a reviewer that weighs
+context wants every value that is sensitive somewhere, with the guidance
+that says where. Deleting an entry to quiet the scanner used to cost the
+reviewer that value. Moving it to judgment keeps it for the reader that
+can use it. The regex check is skipped for judgment entries so a literal
+with regex metacharacters is accepted; `patterns edit --no-judgment` runs
+the check before handing an entry back to the scanner.
+
+`note` (any entry) and the top-level `notes` list are text the scanner
+never reads. `notes` combine across layers the way `push.require_marks`
+do, since a merge would otherwise let a project layer replace the user's.
+`patterns list --json` (`user_patterns.export_patterns`) is the one
+exporter of all this for a reviewer; built-in patterns are left out of it
+because they describe token formats, not the user.
+
 ## The hook script is a contract
 
 `sdk/hooks.py` classifies each hook file by exact byte match against the
