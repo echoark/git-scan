@@ -43,7 +43,7 @@ LAYERS = ("built-in", "user", "project")
 
 TOP_LEVEL_KEYS = {"entropy", "thresholds", "patterns", "allowed_emails", "identity", "push",
                   "notes", "review"}
-REVIEW_KEYS = {"runner", "timeout", "batch_bytes", "relaxed"}
+REVIEW_KEYS = {"runner", "model", "timeout", "batch_bytes", "relaxed"}
 PATTERN_FIELDS = {"id", "pattern", "category", "word_boundary",
                   "not_followed_by", "exclude_files", "disabled",
                   "ignore_case", "judgment", "note"}
@@ -244,13 +244,13 @@ def validate_layer(data, path) -> None:
 
     review = data.get("review", {})
     if not isinstance(review, dict):
-        errors.append("review: must be a mapping (runner, timeout, batch_bytes, relaxed)")
+        errors.append("review: must be a mapping (runner, model, timeout, batch_bytes, relaxed)")
     else:
         for k, v in review.items():
             if k not in REVIEW_KEYS:
                 errors.append(f"review.{k}: unknown (known: {', '.join(sorted(REVIEW_KEYS))})")
-            elif k == "runner" and (not isinstance(v, str) or not v):
-                errors.append("review.runner: must be text (a CLI name or command)")
+            elif k in ("runner", "model") and (not isinstance(v, str) or not v):
+                errors.append(f"review.{k}: must be text")
             elif k in ("timeout", "batch_bytes") and (not isinstance(v, int) or isinstance(v, bool)
                                                        or v <= 0):
                 errors.append(f"review.{k}: must be a positive whole number")

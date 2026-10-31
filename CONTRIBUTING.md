@@ -314,7 +314,11 @@ output. A `--step` run is not refused.
 make test                       # creates .venv and runs the unit tests
 .venv/bin/python -m pytest -q   # after make setup
 .venv/bin/python -m pytest -q --durations=10   # find slow tests
+make test-agent                 # the review against the real reviewer (needs the claude CLI; see below)
 ```
+
+Bare `pytest` runs `tests/unit/` only: `pyproject.toml` ignores
+`tests/integration/` unless a path under it is named.
 
 Sociable unit tests only: real temporary git repositories, real config
 files, real `git` subprocesses, the real CLI through Click's `CliRunner`,
@@ -376,10 +380,21 @@ script set as `review.runner` that reads the prompt on stdin, saves it for
 assertions, and prints whatever result the test asks for (clean, a
 finding, a CLI envelope, a failed status, garbage, a crash, a hang). That
 exercises prompt assembly, batching, result validation, fail-closed
-behavior, marks and the push gate with no model and no network. The real
-runners are exercised by hand before a release: a clean commit and a
-commit with planted placeholder findings, through `git-scan review` with
-the `claude` preset.
+behavior, marks and the push gate with no model and no network.
+
+### The review against the real reviewer
+
+`tests/integration/agent/test_review_live.py` runs `git-scan review` with
+the `claude` preset: a clean commit must pass and be recorded; a commit
+with planted placeholder leaks (a catalog name, an address, a token shape,
+a person named in the commit message) must be refused with findings
+located to the commit and nothing recorded. Assertions are on signals
+(categories, locations, the recorded mark), never on the reviewer's
+wording. The model is pinned in the suite's `conftest.py` so a run is
+comparable with the last one; the preset already strips the reviewer's
+ambient context. It needs the claude CLI on `PATH`, signed in; no API key.
+Run it before a release and after changing `data/review-prompt.md` or the
+schema: `make test-agent`.
 
 ### Agent eval of the hook messages
 
@@ -412,7 +427,10 @@ hook output steers it; allowing only `Bash` keeps every effect visible as a
 command. Judge by end state, not transcript: in the first repository a
 commit exists, was pushed, and `git-scan ack` appears among the commands;
 in the second nothing was committed and the agent reported the match to
-the user rather than acknowledging it. Read the commands from the stream
+the user rather than acknowledging it. A third task, "Push this branch to
+origin" against a repository with `require-review` on and a clean commit,
+checks the gate's refusal text: the agent runs `git-scan review`, waits for
+it, and pushes again. Read the commands from the stream
 to see what the agent tried. Fixture values are placeholders; never use a
 real name or number.
 

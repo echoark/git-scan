@@ -475,6 +475,8 @@ SETTINGS = {
                        "Refuse a push until the privacy review has passed for its commits"),
     "review-runner": ("review", "runner", str,
                       "The headless agent CLI that runs the privacy review: claude, agy, or a command"),
+    "review-model": ("review", "model", str,
+                     "The model the review runner is asked to use (passed as its --model)"),
     "review-timeout": ("review", "timeout", int, "Seconds to wait for one batch of the review"),
 }
 

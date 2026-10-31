@@ -5,4 +5,7 @@ setup:
 test: setup
 	.venv/bin/python -m pytest -q
 
-.PHONY: setup test
+test-agent: setup
+	.venv/bin/python -m pytest -q tests/integration/agent
+
+.PHONY: setup test test-agent

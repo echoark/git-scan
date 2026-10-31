@@ -30,3 +30,4 @@ include = ["git_scan*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--ignore=tests/integration"

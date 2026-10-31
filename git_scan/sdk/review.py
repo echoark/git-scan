@@ -67,24 +67,29 @@ class ReviewResult:
 
 # --- runner ----------------------------------------------------------------
 
-def preset_argv(name: str) -> Optional[List[str]]:
+def preset_argv(name: str, model: Optional[str] = None) -> Optional[List[str]]:
     """The command line for a known headless agent CLI, prompt on stdin,
-    no tools, JSON out."""
+    no tools, no user context, JSON out; ``model`` pins the model."""
     if name == "claude":
-        return ["claude", "-p", "--output-format", "json", "--tools", "", "--max-turns", "1",
+        argv = ["claude", "-p", "--output-format", "json", "--tools", "", "--max-turns", "1",
                 "--setting-sources", "", "--disable-slash-commands", "--no-session-persistence",
                 "--json-schema", SCHEMA_FILE.read_text()]
-    if name == "agy":
-        return ["agy", "-p", "--output-format", "json"]
-    return None
+    elif name == "agy":
+        argv = ["agy", "-p", "--output-format", "json"]
+    else:
+        return None
+    if model:
+        argv += ["--model", model]
+    return argv
 
 
 def resolve_runner(config: MergedConfig, override: Optional[str] = None) -> tuple:
     """``(name, argv)`` for the runner to use: the override, else the
     configured ``review.runner``, else the first known CLI on PATH."""
     chosen = override or config.review.get("runner")
+    model = config.review.get("model")
     if chosen:
-        preset = preset_argv(chosen)
+        preset = preset_argv(chosen, model)
         if preset is not None:
             if not shutil.which(preset[0]):
                 raise ReviewError(f"the configured reviewer runner '{chosen}' is not installed "
@@ -98,7 +103,7 @@ def resolve_runner(config: MergedConfig, override: Optional[str] = None) -> tupl
         return chosen, argv
     for name in ("claude", "agy"):
         if shutil.which(name):
-            return name, preset_argv(name)
+            return name, preset_argv(name, model)
     raise ReviewError("no reviewer runner: install the claude or agy CLI, or name a command "
                       "that reads a prompt on stdin and prints the result JSON: "
                       "git-scan config review-runner CMD")
