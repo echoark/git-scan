@@ -55,9 +55,12 @@ short SHA instead; 12 characters is plenty.
 Requires Python 3.11+ and git.
 
 ```bash
-pipx install git+https://github.com/echoark/git-scan.git@v0.8.1
+pipx install git+https://github.com/echoark/git-scan.git
 git-scan hook install
 ```
+
+That installs the default branch. To pin a machine to a release, append
+`@vX.Y.Z` to the URL with a tag from the repository's releases.
 
 `hook install` writes one-line `pre-commit` and `commit-msg` hooks to
 `~/.config/git/hooks` and points git's global `core.hooksPath` there, so
@@ -550,7 +553,7 @@ An agent can run the same scan through a stdio MCP server, `git-scan-mcp`,
 installed with the `mcp` extra:
 
 ```bash
-pipx install "git-scan[mcp] @ git+https://github.com/echoark/git-scan.git@v0.8.1"
+pipx install "git-scan[mcp] @ git+https://github.com/echoark/git-scan.git"
 claude mcp add --scope user git-scan -- git-scan-mcp
 ```
 
