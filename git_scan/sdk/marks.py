@@ -8,9 +8,9 @@ module writes either:
 - ``scanned``: the commit's own changes, message, and identities passed the
   scan. Written by the post-commit hook for a commit made through the
   hooks, and by a scan of existing commits for each clean one.
-- ``reviewed``: a privacy review covering this commit and every unpushed
-  commit before it was recorded (``review.record``, from the reviewer's own
-  result). The push check requires it when the config says so.
+- ``reviewed``: the commit was part of a clean batch of the privacy review
+  that git-scan ran itself (``review.review``). The push check requires it
+  on every outgoing commit when the config says so.
 
 Marks are not pushed and do not follow a rewritten commit (amend, rebase,
 cherry-pick produce new commits), so a rewritten commit is unmarked until it
@@ -22,9 +22,9 @@ The push check, for every commit the remote does not have yet:
   outgoing commit that lacks it (``scanner.push_scan``, one pass over all
   of them) and skips the ones that have it, so a rebase or a history
   rewrite costs one scan at push time rather than a refusal.
-- ``reviewed`` on a commit covers it and every unpushed commit in its
-  history. A review reads the whole unpushed range, so one record on the
-  tip of a batch covers the batch.
+- ``reviewed`` is per commit, like ``scanned``: the review marks every
+  commit of a clean batch, so a rerun after an interruption skips what was
+  already reviewed and a rewritten commit is reviewed again.
 
 Two records bridge the pre-commit hooks and the post-commit hook, both keyed
 to the staged tree so they apply to exactly one change: a passing staged
@@ -306,9 +306,7 @@ def push_check(push_lines: Iterable[str], remote: Optional[str] = None,
     marks = marks_of(outgoing, repo_path)
     result.cached = [s for s in outgoing if SCANNED in marks[s]]
     if require_review:
-        reviewed = [s for s in outgoing if REVIEWED in marks[s]]
-        covered = set(_rev_list(repo_path, reviewed, [])) if reviewed else set()
-        result.unreviewed = [s for s in outgoing if s not in covered]
+        result.unreviewed = [s for s in outgoing if REVIEWED not in marks[s]]
     return result
 
 
@@ -347,12 +345,13 @@ def format_push_result(result: PushResult, repo_path: str = ".") -> str:
                   "rewritten commit is scanned again on the next push. A 'Judgment' match",
                   "is cleared, after looking at it, with: git-scan ack --commit <sha>"]
     if result.unreviewed:
-        lines += ["", f"{len(result.unreviewed)} commit(s) with no privacy review recorded:"]
+        lines += ["", f"{len(result.unreviewed)} commit(s) not yet reviewed:"]
         for sha in result.unreviewed:
             subject = _out(repo_path, "log", "-1", "--format=%s", sha)
             lines.append(f"  {sha[:12]}  {subject[:60]}")
         lines += ["",
-                  "Run the privacy review over the unpushed commits, then record its result:",
-                  "  git-scan review record RESULT.json",
-                  "A review recorded on the newest commit covers every unpushed commit before it."]
+                  "Run the privacy review, then push again:",
+                  "  git-scan review",
+                  "It takes a minute or more; run it as a background command if you can.",
+                  "Commits already reviewed are skipped, so a rerun costs only what is new."]
     return "\n".join(lines)

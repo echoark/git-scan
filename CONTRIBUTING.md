@@ -11,13 +11,15 @@ git_scan/
     user_patterns.py    # patterns add/remove/restore/clear/list/exceptions, settings
     hooks.py            # hook installation and status: pre-commit, commit-msg, push gate
     marks.py            # marks on commits, staged-tree records, outgoing commits for a push
-    review.py           # recording a privacy review from the reviewer's result
+    review.py           # the privacy review: prompt assembly, runner, result validation, marks
     entropy.py          # Shannon-entropy detector and exclusions
     yaml_merge.py       # layer merge (managed snippet; see below)
     steps/              # one module per check; exposes run_checks(...)
   cli/main.py           # thin Click wrapper over the SDK
   mcp/server.py         # thin MCP wrapper over the SDK (git-scan-mcp, stdio)
   data/git-scan.yaml    # built-in patterns, thresholds, exclusions
+  data/review-prompt.md # the reviewer's instructions, sent with every batch
+  data/review-schema.json # the result shape the runner is held to
 tests/unit/             # sociable unit tests
 docs/MCP.md             # MCP server: install, registration, tools
 ```
@@ -206,9 +208,9 @@ acknowledgement does can clear a finding from another check.
 `note` (any entry) and the top-level `notes` list are text the scanner
 never reads. `notes` combine across layers the way `review_required` does,
 since a merge would otherwise let a project layer replace the user's.
-`patterns list --json` (`user_patterns.export_patterns`) is the one
-exporter of all this for a reviewer; built-in patterns are left out of it
-because they describe token formats, not the user.
+`user_patterns.export_patterns` assembles all of it as the catalog the
+privacy review sends to the reviewer; built-in patterns are left out of it
+because they describe token formats, not the user. No command prints it.
 
 ## The hook script is a contract
 
@@ -255,11 +257,12 @@ records a review. Rules:
   Python.
 - **Marks are internal, and only two exist.** `scanned` is written by the
   post-commit hook and by a scan of existing commits; `reviewed` by
-  `review.record` from a clean result. Only `marks.py` touches the storage,
-  and no command writes an arbitrary label: a command that did would hand
-  any agent the bypass along with the documentation of where it lives. The
-  storage is repository-local metadata that is not pushed; the README says
-  that much and no more, on purpose.
+  `review.review` on every commit of a clean batch, after it has run the
+  reviewer itself. Only `marks.py` touches the storage, and no command
+  writes a mark on request or accepts a result from outside: a command that
+  did would hand any agent the bypass along with the documentation of where
+  it lives. The storage is repository-local metadata that is not pushed;
+  the README says that much and no more, on purpose.
 - **The gate scans; `scanned` is its cache.** Every outgoing commit without
   `scanned` goes through one `commits` scan, and the clean ones are marked.
   `scanned` is per commit: it says that commit's own changes, message, and
@@ -268,12 +271,20 @@ records a review. Rules:
   pinned to a commit, so the clean ones are still marked at a cost of a
   few extra small passes; a finding in a name belongs to no commit and
   leaves none marked.
-- **The review record covers history.** It is written after a review of the
-  whole unpushed range, so it covers the marked commit and every unpushed
-  commit before it. The scan never satisfies the review requirement.
-  `review.record` refuses a result that did not complete, has findings, or
-  does not cover the commits the branch would push, judged from the
-  result's `commits` list or its `scan_scope.unpushed_commits` count.
+- **The review is per commit, like the scan.** `review.review` computes the
+  outgoing commits (or takes a range), skips the ones already marked
+  `reviewed`, batches the rest by patch size, and for each batch builds the
+  prompt (`data/review-prompt.md`, the catalog from `export_patterns`, the
+  commits' records from one `git log`, the publish text), runs the runner
+  with the prompt on stdin, and validates the result (`parse_result`:
+  the result object itself or a CLI envelope carrying it). A clean batch
+  marks each of its commits; a batch with findings or a reviewer failure
+  marks none, so a rerun resumes. The runner is started with no tools and
+  no user context (`--tools ""`, `--setting-sources ""` for `claude`), so
+  the prompt is the reviewer's whole world and nothing on the machine can
+  steer the range, the catalog or the mode. Exposure mode is public unless
+  the remote matches a prefix in `review.relaxed`, and the caller can only
+  ask for relaxed, never force it.
 - **A pre-commit hook runs before the commit exists.** A passing staged scan
   records the staged tree in the git directory; a refused commit message
   deletes that record; the post-commit hook marks HEAD only if its tree is
@@ -357,6 +368,18 @@ a test is a leak the scanner would rightly block, and this repository's
 own commits are scanned.
 
 One test is marked `xfail`: history scanning (see below) is not built.
+
+### The review in the suite
+
+`tests/unit/test_review.py` drives the review with a stub runner: a small
+script set as `review.runner` that reads the prompt on stdin, saves it for
+assertions, and prints whatever result the test asks for (clean, a
+finding, a CLI envelope, a failed status, garbage, a crash, a hang). That
+exercises prompt assembly, batching, result validation, fail-closed
+behavior, marks and the push gate with no model and no network. The real
+runners are exercised by hand before a release: a clean commit and a
+commit with planted placeholder findings, through `git-scan review` with
+the `claude` preset.
 
 ### Agent eval of the hook messages
 

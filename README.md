@@ -277,12 +277,10 @@ git-scan notes list
 git-scan notes remove 1
 ```
 
-**The reviewer's input.** `git-scan patterns list --json` prints your
-entries, scanned and judgment alike, each with its note, plus the notes, as
-JSON, and leaves the built-in token patterns out. It is the input for a
-reviewer that applies judgment where a regex can't, independently of any
-acknowledgement given at commit time. Treat the output as you treat the
-configuration: it is the list of what must stay out of your repositories.
+**The reviewer.** The privacy review (below) reads the same entries and
+notes: git-scan hands them to the reviewer with the commits, so an entry
+that is too noisy for the scanner still gets judged, with its note, when a
+push is reviewed.
 
 ### Allowed emails
 
@@ -455,42 +453,92 @@ marked even if it is then committed with `--no-verify`.
 git-scan: 3 commit(s) to push: 2 scanned now, 1 already scanned
 ```
 
-**Requiring a review.** A judgment review of the unpushed commits, by a
-reviewer that reads the configuration (`patterns list --json`), can be made a
-condition of every push:
+**Requiring a review.** A judgment review of the unpushed commits can be
+made a condition of every push:
 
 ```bash
 git-scan hook install --pre-push --require-review     # or: git-scan config require-review on
-git-scan review record result.json                    # after the review has passed
+git-scan review                                       # before pushing; a minute or more
 ```
 
-`review record` takes the reviewer's result (JSON with `status`, `findings`
-and the commits it covered, bare or inside its report's fenced
-`privacy-guard-result` block; `-` reads stdin). It records the review only
-when the status is `completed`, there are no findings, and the covered
-commits are the ones this branch would push. One record on the newest
-commit covers every unpushed commit before it; a newer commit, or a
-rewrite, needs a new review. A push without a record is refused with the
-command to run. The scan does not stand in for the review, and the review
+A push is refused while any commit it sends lacks a clean review, with the
+command to run. The scan does not stand in for the review and the review
 does not stand in for the scan: both must pass. A project's `git-scan.yaml`
 can require the review but not lift the requirement.
-
-Records are kept in the repository, are not pushed, and do not follow a
-rewritten commit. Nothing writes the `scanned` record but a passing scan,
-and nothing writes the review record but `review record` with a clean
-result.
 
 **Upgrading from 0.7 or earlier.** `git-scan mark` is gone, and so is
 `push.require_marks`: a configuration that still has it fails to load with
 the fix in the message. Turn the requirement into `git-scan config
-require-review on` (or reinstall with `--require-review`), and record each
-review with `git-scan review record` instead of marking it. Commits marked
-`scanned` before the upgrade stay scanned.
+require-review on` (or reinstall with `--require-review`); the review itself
+is `git-scan review`. Commits marked `scanned` before the upgrade stay
+scanned.
 
 **Limitation:** the check is made against the remote being pushed to. With
 several remotes, commits marked relative to one may be pushed to another
 that is further behind; only the remote's own tracking refs and the tips
 git reports are treated as already present.
+
+## The privacy review
+
+Regexes catch secret formats and the strings you listed. They cannot tell a
+colleague's name in a commit message from a word, a personal use case in a
+README from documentation, or an employer from a vendor. `git-scan review`
+puts a judgment reviewer in front of every push for exactly those:
+
+```bash
+git-scan review                        # the unpushed commits of this branch
+git-scan review --publish pr-body.md   # and the text that will be published with them
+git-scan review --range A..B           # commits already made
+```
+
+What happens: git-scan computes the outgoing commits, builds one prompt
+per batch from its packaged review instructions, your patterns and notes,
+each commit's message and patch, and any `--publish` text, and runs a
+headless agent CLI on it with no tools, so the prompt is the reviewer's
+whole world and nothing on the machine can steer it. The JSON that comes
+back is validated; every commit of a clean batch is recorded as reviewed.
+Findings are printed with the value and the location, and nothing is
+recorded for that batch:
+
+```
+  [FAIL] Privacy review (public; 2 commit(s); 2 finding(s))
+         3f9c2a1b7d0e:contacts.txt:1 [names/high] Jane Doe
+         3f9c2a1b7d0e:message [contextual/medium] ask Dana about the deploy
+FAILED: fix the content in those commits and review again; nothing was recorded for them
+```
+
+Rules the command keeps:
+
+- **The reviewer's problems never pass as a clean review.** A runner that is
+  not installed, exits non-zero, times out, or returns anything but a valid
+  result records nothing and says the problem is the reviewer, not the
+  content.
+- **Reviewed commits are skipped on a rerun**, so an interrupted run or a
+  new commit costs only what is new. A rewritten commit is a new commit and
+  is reviewed again.
+- **The default mode is public** for every repository. `--relaxed` (a
+  private repository kept for personal material: names and paths become
+  notes, framing is not judged) works only for a remote you listed:
+  `git-scan review relaxed add github.com/octo/my-` covers every repository
+  of octo's whose name starts with `my-`. Nothing else makes it available.
+- **Nothing accepts a result from outside.** The only writer of the review
+  record is this command, after it has run the reviewer itself.
+
+**The runner.** git-scan uses the first headless agent CLI it finds on
+`PATH`, `claude` or `agy`, each started with its prompt on standard input,
+no tools, and JSON output; it runs on whatever login that CLI already has,
+so no API key is involved. Choose one, or name any command that reads a
+prompt on stdin and prints the result JSON:
+
+```bash
+git-scan config review-runner claude
+git-scan config review-runner "my-reviewer --json"
+git-scan config review-timeout 900       # seconds per batch (default 600)
+```
+
+Large pushes are reviewed in batches of about 200 KB of patch text each
+(`review.batch_bytes` in the configuration). The run takes a minute or
+more per batch; an agent should start it as a background command.
 
 ## MCP server
 

@@ -360,25 +360,6 @@ def test_add_judgment_entry_with_note_and_ignore_case(tmp_path, monkeypatch):
     assert "(judgment)" in out
 
 
-def test_list_json_exports_personal_entries_and_notes_only(tmp_path, monkeypatch):
-    import json
-    _repo(tmp_path, monkeypatch)
-    _run("patterns", "add", "me", "--pattern", "Jane", "--category", "name", "--note", "a person")
-    _run("patterns", "add", "town", "--pattern", "Springfield", "--category", "city", "--judgment")
-    assert _run("notes", "add", "a city is a finding only beside an address").exit_code == 0
-    r = _run("patterns", "list", "--json")
-    assert r.exit_code == 0, r.output
-    data = json.loads(r.output)
-    assert data["configured"] is True
-    ids = {p["id"] for p in data["patterns"]}
-    assert ids == {"me", "town"}                 # built-ins such as github-pat are left out
-    me = next(p for p in data["patterns"] if p["id"] == "me")
-    assert me["note"] == "a person" and me["judgment"] is False
-    town = next(p for p in data["patterns"] if p["id"] == "town")
-    assert town["judgment"] is True
-    assert data["notes"] == ["a city is a finding only beside an address"]
-
-
 def test_notes_add_list_remove(tmp_path, monkeypatch):
     _repo(tmp_path, monkeypatch)
     assert _run("notes", "add", "first").exit_code == 0

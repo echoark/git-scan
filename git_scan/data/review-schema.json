@@ -1,0 +1,26 @@
+{
+  "type": "object",
+  "required": ["status", "findings", "commits_reviewed", "summary"],
+  "properties": {
+    "status": {"type": "string", "enum": ["completed", "failed"]},
+    "failure_reason": {"type": ["string", "null"]},
+    "exposure_mode": {"type": "string", "enum": ["public", "relaxed"]},
+    "commits_reviewed": {"type": "array", "items": {"type": "string"}},
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["category", "value", "location", "severity"],
+        "properties": {
+          "category": {"type": "string"},
+          "value": {"type": "string"},
+          "location": {"type": "string"},
+          "severity": {"type": "string", "enum": ["high", "medium", "low"]},
+          "note": {"type": "string"}
+        }
+      }
+    },
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "summary": {"type": "string"}
+  }
+}

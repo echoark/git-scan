@@ -340,8 +340,9 @@ def list_patterns(repo_path: str = ".", include_disabled: bool = False) -> List[
 
 
 def export_patterns(repo_path: str = ".") -> dict:
-    """Everything a reviewer needs, in one structure: the active entries
-    (scan and judgment alike, with their notes) and the free-text notes.
+    """The catalog the privacy review sends to the reviewer: the active
+    personal entries (scan and judgment alike, with their notes) and the
+    free-text notes.
 
     Built-in token patterns are left out: a reviewer knows those formats, and
     the list is about what is personal to this configuration.
@@ -471,7 +472,10 @@ SETTINGS = {
     "entropy-threshold": ("entropy", "threshold", float, "Shannon entropy that flags a token"),
     "entropy-min-len": ("entropy", "min_len", int, "Shortest token the entropy scan considers"),
     "require-review": ("push", "require_review", bool,
-                       "Refuse a push until a privacy review is recorded for its commits"),
+                       "Refuse a push until the privacy review has passed for its commits"),
+    "review-runner": ("review", "runner", str,
+                      "The headless agent CLI that runs the privacy review: claude, agy, or a command"),
+    "review-timeout": ("review", "timeout", int, "Seconds to wait for one batch of the review"),
 }
 
 
@@ -491,6 +495,10 @@ def set_setting(name: str, value, repo_path: str = ".", project: bool = False) -
                 value = False
             else:
                 raise PatternError(f"{name}: expected on or off")
+    elif typ is str:
+        value = str(value).strip()
+        if not value:
+            raise PatternError(f"{name}: expected text")
     else:
         try:
             value = typ(value)
@@ -508,3 +516,38 @@ def layer_status(repo_path: str = ".") -> List[dict]:
     """Each layer's path and whether its file exists."""
     return [{"layer": name, "path": str(path), "exists": path.is_file()}
             for name, path in layer_paths(repo_path).items()]
+
+
+# --- relaxed remotes for the review ------------------------------------------------
+
+def relaxed_add(prefix: str, repo_path: str = ".", project: bool = False) -> List[str]:
+    prefix = prefix.strip().strip("/")
+    if not prefix or "://" in prefix or "@" in prefix:
+        raise PatternError(f"'{prefix}' is not a host/owner/repo prefix (e.g. github.com/octo/my-)")
+    path = target_path(repo_path, project)
+    data = _read(path)
+    review = data.setdefault("review", {})
+    current = [x for x in (review.get("relaxed") or []) if isinstance(x, str)]
+    if prefix not in current:
+        current.append(prefix)
+    review["relaxed"] = current
+    _write(path, data)
+    return current
+
+
+def relaxed_remove(prefix: str, repo_path: str = ".", project: bool = False) -> List[str]:
+    path = target_path(repo_path, project)
+    data = _read(path)
+    review = data.get("review") or {}
+    current = [x for x in (review.get("relaxed") or []) if isinstance(x, str)]
+    if prefix not in current:
+        raise PatternError(f"'{prefix}' is not in the relaxed list of {path}")
+    current.remove(prefix)
+    if current:
+        review["relaxed"] = current
+    else:
+        review.pop("relaxed", None)
+        if not review:
+            data.pop("review", None)
+    _write(path, data)
+    return current

@@ -220,40 +220,94 @@ def ack(rev):
     click.echo("Stage anything more and the acknowledgement must be given again.")
 
 
-@cli.group()
-def review():
-    """The privacy review's record, which the push gate can require."""
+@cli.group(invoke_without_command=True)
+@click.option("--relaxed", is_flag=True,
+              help="Review as a private, personal repository. Allowed only for a remote "
+                   "listed with 'review relaxed add'.")
+@click.option("--publish", "publish", multiple=True, metavar="FILE",
+              help="Text published beside the push (a pull-request body) to review too (repeatable).")
+@click.option("--range", "rev_range", default=None, metavar="A..B",
+              help="Review these commits instead of the unpushed ones.")
+@click.option("--runner", default=None, metavar="NAME|CMD",
+              help="The headless agent CLI for this run (claude, agy, or a command).")
+@click.option("--timeout", type=int, default=None, metavar="SECONDS", help="Per batch.")
+@click.option("--quiet", is_flag=True, help="No progress lines on standard error.")
+@click.pass_context
+def review(ctx, relaxed, publish, rev_range, runner, timeout, quiet):
+    """Run the privacy review of the unpushed commits and record a clean result.
+
+    git-scan builds the reviewer's prompt itself: its packaged review
+    instructions, your personal patterns and notes, each commit's message
+    and patch, and any --publish text. It runs the configured headless agent
+    CLI with no tools (the prompt is the reviewer's whole world), validates
+    the JSON that comes back, and marks every commit of a clean batch
+    'reviewed'. With 'config require-review on', a push needs that mark on
+    every commit it sends.
+
+    \b
+    Findings are printed with the value and location; nothing is recorded
+    for that batch. A reviewer problem (not installed, failed, timed out,
+    unreadable output) is reported as such and records nothing. Commits
+    already reviewed are skipped, so a rerun costs only what is new. The
+    run takes a minute or more: start it as a background command if you can.
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+    say = (lambda _m: None) if quiet else (lambda m: click.echo(f"git-scan review: {m}", err=True))
+    try:
+        result = review_sdk.review(".", rev_range=rev_range, relaxed=relaxed,
+                                  publish=list(publish), runner=runner, timeout=timeout,
+                                  progress=say)
+    except (review_sdk.ReviewError, ConfigError, marks.MarkError) as e:
+        _fail(e)
+    for w in result.warnings:
+        click.echo(f"  warning: {w}")
+    if result.findings:
+        click.echo(click.style(f"  [FAIL] Privacy review ({result.mode}; {len(result.commits)} "
+                               f"commit(s); {len(result.findings)} finding(s))", fg="red"))
+        for f in result.findings:
+            note = f" ({f['note']})" if f.get("note") else ""
+            click.echo(f"         {f['location']} [{f['category']}/{f.get('severity', '?')}] "
+                       f"{f['value']}{note}")
+        click.echo(click.style("FAILED: fix the content in those commits and review again; "
+                               "nothing was recorded for them", fg="red", bold=True))
+        sys.exit(1)
+    n = len(result.commits)
+    skipped = f", {len(result.skipped)} already reviewed" if result.skipped else ""
+    if n:
+        click.echo(click.style(f"PASSED: privacy review ({result.mode}, {result.runner}) clean for "
+                               f"{n} commit(s){skipped}; recorded", fg="green"))
+    else:
+        click.echo(f"nothing new to review{skipped}")
 
 
-@review.command("record")
-@click.argument("result_file")
-def review_record(result_file):
-    """Record a clean privacy review of the unpushed commits.
+@review.command("relaxed")
+@click.argument("action", type=click.Choice(["add", "remove", "list"]))
+@click.argument("prefix", required=False)
+@click.option("--project", is_flag=True, help="Act on the repo's git-scan.yaml.")
+def review_relaxed(action, prefix, project):
+    """Remotes that may be reviewed as private, personal repositories.
 
-    RESULT_FILE holds the reviewer's result: its 'privacy-guard-result' JSON,
-    bare or inside the fenced block of its report ('-' reads stdin). The
-    result is recorded only if its status is 'completed', it has no
-    findings, and it covers the commits this branch would push ('commits',
-    a list of ids, or 'scan_scope.unpushed_commits', a count). One record on
-    the newest commit covers every unpushed commit before it; a later commit,
-    or a rewrite, needs a new review.
+    \b
+      git-scan review relaxed add github.com/octo/my-     # every repo of octo's whose name starts with my-
+      git-scan review relaxed list
+      git-scan review relaxed remove github.com/octo/my-
 
-    With 'config require-review on', a push without this record is refused.
+    A prefix is matched segment by segment against host/owner/repo. Nothing
+    else makes --relaxed available; the default for every repository is public.
     """
     try:
-        if result_file == "-":
-            text = click.get_text_stream("stdin").read()
-        else:
-            with open(result_file, encoding="utf-8", errors="replace") as f:
-                text = f.read()
-    except OSError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(2)
-    try:
-        done = review_sdk.record(review_sdk.load_result(text))
-    except (review_sdk.ReviewError, marks.MarkError) as e:
+        if action == "list":
+            for r in review_sdk.relaxed_list():
+                click.echo(f"  {r}")
+            return
+        if not prefix:
+            _fail(click.UsageError(f"'{action}' needs a prefix"))
+        rows = up.relaxed_add(prefix, project=project) if action == "add" \
+            else up.relaxed_remove(prefix, project=project)
+        click.echo(f"relaxed remotes: {', '.join(rows) if rows else '(none)'}")
+    except (up.PatternError, up.ConfigError) as e:
         _fail(e)
-    click.echo(f"recorded a clean review of {done['covered']} unpushed commit(s) on {done['sha'][:12]}")
 
 
 @cli.command("push-check")
@@ -265,8 +319,8 @@ def push_check(remote, url):
     Every commit the remote doesn't have yet is scanned in one pass (its
     changes, message, author and committer), except commits already marked
     'scanned', which are skipped; clean commits are marked. With 'config
-    require-review on', a recorded review ('git-scan review record') must
-    cover them too.
+    require-review on', every commit must also carry a clean privacy
+    review ('git-scan review').
 
     This is what the pre-push hook runs; git passes REMOTE and URL and the
     refs being pushed on standard input. Run by hand, it checks the current
@@ -343,9 +397,9 @@ def patterns_add(id, pattern, category, word_boundary, not_followed_by, exclude_
     free of the pattern text, since ids can appear in a repository's
     git-scan.yaml.
 
-    A --judgment entry is for a reviewer that reads the configuration (see
-    'patterns list --json'), not for the scanner: a value that collides with
-    ordinary text as a regex but is sensitive in context.
+    A --judgment entry is for a reviewer that weighs context (see
+    the privacy review), not for the scanner alone: a value that collides
+    with ordinary text as a regex but is sensitive in context.
     """
     try:
         up.add_pattern(id, pattern, category, word_boundary, list(not_followed_by),
@@ -444,20 +498,9 @@ def patterns_clear(project):
 
 @patterns.command("list")
 @click.option("--all", "include_disabled", is_flag=True, help="Include turned-off patterns.")
-@click.option("--json", "as_json", is_flag=True,
-              help="Your entries and notes as JSON, for a reviewer that reads them.")
-def patterns_list(include_disabled, as_json):
-    """Show every active pattern with the layer it comes from.
-
-    --json prints the personal entries (scan and judgment alike, each with
-    its note) and the free-text notes, and leaves the built-in token
-    patterns out. It is the input for a reviewer that applies judgment
-    where a regex can't; the output is as sensitive as the configuration.
-    """
+def patterns_list(include_disabled):
+    """Show every active pattern with the layer it comes from."""
     try:
-        if as_json:
-            click.echo(json.dumps(up.export_patterns(), indent=2, ensure_ascii=False))
-            return
         rows = up.list_patterns(include_disabled=include_disabled)
     except up.ConfigError as e:
         _fail(e)
@@ -766,8 +809,8 @@ def hook_install(local, hooks_dir, force, pre_push, require_review, missing_conf
     --pre-push adds the push gate: a pre-push hook that scans every commit
     being pushed (skipping ones already marked 'scanned'; a post-commit
     hook marks commits whose scan passed) and refuses the push on findings.
-    --require-review makes it also refuse a push until a privacy review of
-    the unpushed commits is recorded with 'git-scan review record'.
+    --require-review makes it also refuse a push until 'git-scan review' has
+    passed for the unpushed commits.
     """
     if require_review and not pre_push:
         _fail(click.UsageError("--require-review needs --pre-push"))
@@ -777,7 +820,7 @@ def hook_install(local, hooks_dir, force, pre_push, require_review, missing_conf
             click.echo(f"missing-config help: {write_missing_config_help(missing_config_help)}")
         if require_review:
             up.set_setting("require-review", True)
-            click.echo("push requires: a scan of every commit, and a recorded review")
+            click.echo("push requires: a scan of every commit, and a clean privacy review")
     except (HookError, up.PatternError, up.ConfigError) as e:
         _fail(e)
     if pre_push:
@@ -785,8 +828,8 @@ def hook_install(local, hooks_dir, force, pre_push, require_review, missing_conf
             "",
             "Every push now scans the commits it sends, skipping ones already marked",
             "'scanned' (committing through the hooks marks them).",
-        ] + (["A push is also refused until a privacy review is recorded for its commits "
-              "(git-scan review record RESULT)."] if require_review else [])))
+        ] + (["A push is also refused until 'git-scan review' has passed for its commits."]
+             if require_review else [])))
 
 
 @hook.command("uninstall")

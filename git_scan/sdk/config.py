@@ -42,7 +42,8 @@ CONFIG_FILENAME = "git-scan.yaml"
 LAYERS = ("built-in", "user", "project")
 
 TOP_LEVEL_KEYS = {"entropy", "thresholds", "patterns", "allowed_emails", "identity", "push",
-                  "notes"}
+                  "notes", "review"}
+REVIEW_KEYS = {"runner", "timeout", "batch_bytes", "relaxed"}
 PATTERN_FIELDS = {"id", "pattern", "category", "word_boundary",
                   "not_followed_by", "exclude_files", "disabled",
                   "ignore_case", "judgment", "note"}
@@ -241,6 +242,22 @@ def validate_layer(data, path) -> None:
         if "require_review" in push and not isinstance(push["require_review"], bool):
             errors.append("push.require_review: must be true or false")
 
+    review = data.get("review", {})
+    if not isinstance(review, dict):
+        errors.append("review: must be a mapping (runner, timeout, batch_bytes, relaxed)")
+    else:
+        for k, v in review.items():
+            if k not in REVIEW_KEYS:
+                errors.append(f"review.{k}: unknown (known: {', '.join(sorted(REVIEW_KEYS))})")
+            elif k == "runner" and (not isinstance(v, str) or not v):
+                errors.append("review.runner: must be text (a CLI name or command)")
+            elif k in ("timeout", "batch_bytes") and (not isinstance(v, int) or isinstance(v, bool)
+                                                       or v <= 0):
+                errors.append(f"review.{k}: must be a positive whole number")
+            elif k == "relaxed" and (not isinstance(v, list)
+                                     or not all(isinstance(x, str) and x for x in v)):
+                errors.append("review.relaxed: must be a list of remote prefixes")
+
     if errors:
         lines = [f"Invalid config: {path}"] + [f"  {e}" for e in errors] + [
             "Fix the file, or remove the entry with 'git-scan patterns remove <id>' "
@@ -352,6 +369,11 @@ class MergedConfig:
     @property
     def entropy_min_len(self) -> int:
         return self._entropy.get("min_len", 20)
+
+    @property
+    def review(self) -> dict:
+        """The merged ``review`` section: runner, timeout, batch_bytes, relaxed."""
+        return dict(self.raw.get("review") or {})
 
     @property
     def review_required(self) -> bool:
