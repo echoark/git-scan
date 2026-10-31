@@ -256,8 +256,11 @@ def review(ctx, relaxed_review, publish, rev_range, runner, timeout, quiet):
     Findings are printed with the value and location; nothing is recorded
     for that batch. A reviewer problem (not installed, failed, timed out,
     unreadable output) is reported as such and records nothing. Commits
-    already reviewed are skipped, so a rerun costs only what is new. The
-    run takes a minute or more: start it as a background command if you can.
+    already reviewed are skipped, so a rerun costs only what is new. With
+    --publish and no commit left to review (a pull-request body edited after
+    the push, a comment, an issue), the text is reviewed on its own and
+    nothing is recorded. The run takes a minute or more: start it as a
+    background command if you can.
     """
     if ctx.invoked_subcommand is not None:
         return
@@ -282,10 +285,17 @@ def review(ctx, relaxed_review, publish, rev_range, runner, timeout, quiet):
             note = f" ({f['note']})" if f.get("note") else ""
             click.echo(f"         {f['location']} [{f['category']}/{f.get('severity', '?')}] "
                        f"{f['value']}{note}")
-        click.echo(click.style("FAILED: fix the content in those commits and review again; "
+        click.echo(click.style("FAILED: fix the publish text and review it again; nothing is recorded "
+                               "for text" if result.text_only and not result.commits else
+                               "FAILED: fix the content in those commits and review again; "
                                "nothing was recorded for them", fg="red", bold=True))
         sys.exit(1)
     n = len(result.commits)
+    if result.text_only and not n:
+        click.echo(click.style(f"PASSED: privacy review ({result.mode}, {result.runner}) clean for "
+                               f"publish text only ({', '.join(result.text_only)}); no commit was "
+                               "reviewed and nothing was recorded", fg="green"))
+        return
     skipped = f", {len(result.skipped)} already reviewed" if result.skipped else ""
     if n:
         click.echo(click.style(f"PASSED: privacy review ({result.mode}, {result.runner}) clean for "

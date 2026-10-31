@@ -285,7 +285,10 @@ records a review. Rules:
   `summary`, with the model and timing the envelope reports, is printed
   per batch so the caller sees what was judged, not only the verdict. A clean batch
   marks each of its commits; a batch with findings or a reviewer failure
-  marks none, so a rerun resumes. The runner is started with no tools and
+  marks none, so a rerun resumes. Publish text with no commit left to review
+  goes through `_review_text_only`: one prompt with no commit records,
+  the same validation, and no mark, since a mark belongs to a commit and the
+  gate reads only those. The runner is started with no tools and
   no user context (`--tools ""`, `--setting-sources ""` for `claude`), so
   the prompt is the reviewer's whole world and nothing on the machine can
   steer the range, the catalog or the mode. The mode is public unless the

@@ -61,6 +61,7 @@ class ReviewResult:
     notes: List[dict] = field(default_factory=list)       # low-severity, relaxed only: shown, not blocking
     warnings: List[str] = field(default_factory=list)
     batches: int = 0
+    text_only: List[str] = field(default_factory=list)    # publish texts reviewed with no commit; nothing recorded
     reports: List[str] = field(default_factory=list)      # one line per batch: what the reviewer said, by whom, how long
 
     @property
@@ -259,7 +260,9 @@ def review(repo_path: str = ".", commits: Optional[List[str]] = None,
            timeout: Optional[int] = None, batch_bytes: Optional[int] = None,
            progress: Optional[Callable[[str], None]] = None) -> ReviewResult:
     """Review the unpushed commits (or ``commits`` / ``rev_range``) and record
-    each commit of a clean batch as reviewed."""
+    each commit of a clean batch as reviewed. With ``publish`` text and no
+    commit left to review, review the text alone and record nothing: there
+    is no commit to record, so the push gate is unaffected."""
     say = progress or (lambda _msg: None)
     config = load_config(repo_path)
     if not config.user_patterns_defined:
@@ -271,22 +274,6 @@ def review(repo_path: str = ".", commits: Optional[List[str]] = None,
     timeout = timeout or int(config.review.get("timeout") or DEFAULT_TIMEOUT)
     batch_bytes = batch_bytes or int(config.review.get("batch_bytes") or DEFAULT_BATCH_BYTES)
 
-    if rev_range:
-        wanted = range_commits(repo_path, rev_range)
-    elif commits is not None:
-        wanted = list(commits)
-    else:
-        wanted = unpushed(repo_path)
-    if not wanted:
-        raise ReviewError("nothing to review: no unpushed commits on this branch")
-    marked = marks.marks_of(wanted, repo_path)
-    result = ReviewResult(mode=mode, runner=name, mode_reason=why)
-    result.skipped = [s for s in wanted if marks.REVIEWED in marked[s]]
-    todo = [s for s in wanted if marks.REVIEWED not in marked[s]]
-    if not todo:
-        say(f"all {len(wanted)} commit(s) already reviewed")
-        return result
-
     texts: Dict[str, str] = {}
     for p in publish:
         try:
@@ -294,8 +281,25 @@ def review(repo_path: str = ".", commits: Optional[List[str]] = None,
         except OSError as e:
             raise ReviewError(f"publish text {p} can't be read: {e}")
 
+    if rev_range:
+        wanted = range_commits(repo_path, rev_range)
+    elif commits is not None:
+        wanted = list(commits)
+    else:
+        wanted = unpushed(repo_path)
+    if not wanted and not texts:
+        raise ReviewError("nothing to review: no unpushed commits on this branch")
+    marked = marks.marks_of(wanted, repo_path) if wanted else {}
+    result = ReviewResult(mode=mode, runner=name, mode_reason=why)
+    result.skipped = [s for s in wanted if marks.REVIEWED in marked[s]]
+    todo = [s for s in wanted if marks.REVIEWED not in marked[s]]
     catalog = export_patterns(repo_path)
     catalog.pop("configured", None)
+    if not todo:
+        if not texts:
+            say(f"all {len(wanted)} commit(s) already reviewed")
+            return result
+        return _review_text_only(result, argv, mode, catalog, texts, timeout, say)
     records = commit_records(repo_path, todo)
     batches = _batches(records, batch_bytes)
     result.batches = len(batches)
@@ -331,3 +335,23 @@ def review(repo_path: str = ".", commits: Optional[List[str]] = None,
             marks.add_marks(marks.REVIEWED, shas, repo_path)
             say(f"batch {i}/{len(batches)}: clean; recorded")
     return result
+
+
+def _review_text_only(result: ReviewResult, argv: List[str], mode: str, catalog: dict,
+                      texts: Dict[str, str], timeout: int, say) -> ReviewResult:
+    """Review publish text with no commit beside it. Nothing is recorded."""
+    say(f"reviewing publish text only ({', '.join(texts)}) with {result.runner}; "
+        "no commit to review, nothing will be recorded")
+    data = run_batch(argv, build_prompt(mode, catalog, [], texts), timeout)
+    result.batches = 1
+    result.text_only = list(texts)
+    result.warnings += [str(w) for w in data.get("warnings") or []]
+    meta = data.get("runner_meta") or {}
+    by = " by " + str(meta["model"]) if meta.get("model") else ""
+    secs = f" in {meta['seconds']}s" if meta.get("seconds") is not None else ""
+    report = f"publish text{by}{secs}: {str(data.get('summary') or '').strip() or '(no summary)'}"
+    result.reports.append(report)
+    say(report)
+    result.findings += data["findings"]
+    return result
+

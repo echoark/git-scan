@@ -223,6 +223,33 @@ def test_a_timeout_fails_closed(repo, monkeypatch):
     assert marks.marks_on(sha) == {"scanned"}
 
 
+def test_publish_text_is_reviewed_alone_when_every_commit_is_already_reviewed(repo, tmp_path):
+    sha = _commit(repo, "a.txt")
+    assert _run("review", "--quiet").exit_code == 0          # the commit is reviewed and recorded
+    before = marks.marks_on(sha)
+    (tmp_path / "pr.md").write_text("## Why\nEdited after the push.\n")
+    r = _run("review", "--quiet", "--publish", str(tmp_path / "pr.md"))
+    assert r.exit_code == 0, r.output
+    assert "clean for publish text only (pr.md)" in r.output and "nothing was recorded" in r.output
+    assert "reviewer: publish text in " in r.output
+    p = _prompts(tmp_path)[-1]
+    assert "# Commits (0)" in p and "Edited after the push." in p
+    assert marks.marks_on(sha) == before                       # nothing new recorded
+
+
+def test_publish_text_with_no_unpushed_commit_is_reviewed_and_a_finding_fails(repo, tmp_path, monkeypatch):
+    sha = _commit(repo, "a.txt")
+    _git(repo, "push", "-q", "origin", "main")
+    (tmp_path / "comment.md").write_text("A comment for an issue.\n")
+    r = _run("review", "--quiet", "--publish", str(tmp_path / "comment.md"))
+    assert r.exit_code == 0 and "publish text only (comment.md)" in r.output
+    monkeypatch.setenv("STUB_MODE", "finding")
+    r = _run("review", "--quiet", "--publish", str(tmp_path / "comment.md"))
+    assert r.exit_code == 1
+    assert "[names/high] Jane Doe" in r.output and "fix the publish text" in r.output
+    assert "reviewed" not in marks.marks_on(sha)
+
+
 def test_no_runner_is_a_clear_error_and_nothing_to_review_says_so(repo, monkeypatch):
     _commit(repo, "a.txt")
     assert _run("review", "--runner", "/nonexistent/agent").exit_code == 1

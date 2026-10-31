@@ -492,6 +492,7 @@ puts a judgment reviewer in front of every push for exactly those:
 git-scan review                        # the unpushed commits of this branch
 git-scan review --publish pr-body.md   # and the text that will be published with them
 git-scan review --range A..B           # commits already made
+git-scan review --publish comment.md   # text alone: a body edited after the push, a comment, an issue
 ```
 
 What happens: git-scan computes the outgoing commits, builds one prompt
@@ -523,6 +524,11 @@ Rules the command keeps:
 - **Reviewed commits are skipped on a rerun**, so an interrupted run or a
   new commit costs only what is new. A rewritten commit is a new commit and
   is reviewed again.
+- **Text with no commit is reviewed on its own.** With `--publish` and no
+  commit left to review, the text is reviewed alone and nothing is
+  recorded, since there is no commit to record; the output says so. Use it
+  before posting a pull-request body edited after the push, a comment, or
+  an issue.
 - **Every review is public** unless `--relaxed` is given for that review,
   and that is refused unless the repository is eligible (see
   [Relaxed review](#relaxed-review)).
