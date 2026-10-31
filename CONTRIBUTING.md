@@ -474,5 +474,5 @@ git tag -a vX.Y.Z -m "vX.Y.Z"
 git push origin main --tags
 ```
 
-Users install from a tag (`pipx install git+...@vX.Y.Z`), so the README's
-install line moves with each release.
+The README's install lines carry no version, so a release needs no README
+edit; the README tells readers how to pin a machine to a tag.
