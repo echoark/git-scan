@@ -12,7 +12,7 @@ user, and reads that user's configuration.
 The server needs the `mcp` extra:
 
 ```bash
-pipx install "git-scan[mcp] @ git+https://github.com/echoark/git-scan.git@v0.6.0"
+pipx install "git-scan[mcp] @ git+https://github.com/echoark/git-scan.git@v0.7.0"
 ```
 
 This installs `git-scan` (the CLI) and `git-scan-mcp` (the server). An
