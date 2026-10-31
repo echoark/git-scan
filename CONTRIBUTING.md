@@ -8,7 +8,7 @@ git_scan/
     sources.py          # what a scan reads: staged diff, message, commit log, names
     scanner.py          # orchestration: config check, input, steps, marks, push scan
     config.py           # three-layer config, validation, pattern provenance
-    user_patterns.py    # patterns add/remove/restore/clear/list, settings
+    user_patterns.py    # patterns add/remove/restore/clear/list/exceptions, settings
     hooks.py            # hook installation and status: pre-commit, commit-msg, push gate
     marks.py            # marks on commits (git notes) and outgoing commits for a push
     entropy.py          # Shannon-entropy detector and exclusions
@@ -156,6 +156,13 @@ Rules:
   matches),
   `disabled`. `patterns edit` writes only the changed fields, which for a
   built-in means an override entry the merge applies.
+- **`patterns exceptions add / remove` change one `not_followed_by` value;
+  `edit --not-followed-by` replaces the list.** Both read the merged list
+  the scan applies and write the whole result into the target layer, since
+  the merge replaces a list field per entry: a project override therefore
+  restates the user's values beside the new one. An emptied list in an
+  override is written as `[]`, not dropped, so the lower layer's values
+  don't come back. `remove` checks every value before writing anything.
 - **`allowed_emails`** is a top-level list the email check ignores,
   managed by `git-scan emails allow / disallow / list`.
 - **`identity`** is a top-level list of `{remote, emails}` rules, managed by

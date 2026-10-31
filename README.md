@@ -191,6 +191,9 @@ Manage them afterwards:
 ```bash
 git-scan patterns list [--all]       # merged view with each entry's layer
 git-scan patterns edit ID [--category C] [--not-followed-by T]... [--exclude-file G]...
+git-scan patterns exceptions list ID             # one pattern's not-followed-by values
+git-scan patterns exceptions add ID VALUE...     # add some, keep the rest
+git-scan patterns exceptions remove ID VALUE...  # drop some, keep the rest
 git-scan patterns remove ID          # deletes yours, or turns off a built-in
 git-scan patterns restore ID         # turns a built-in back on
 git-scan patterns clear              # declare that you have no personal patterns
@@ -201,6 +204,22 @@ its source: a built-in is turned off in your layer, and with `--project` any
 pattern, yours included, is turned off for that repository only. `restore`
 (with the same `--project` if used) drops the override. `edit` with an empty value
 (`--exclude-file ''`) clears that field.
+
+**Exceptions: replace or add.** `edit --not-followed-by` *replaces* the
+pattern's whole exception list, so adding one exception that way means
+re-passing every existing value, and a forgotten one is silently dropped.
+`patterns exceptions` works on one value at a time: `list` prints the
+pattern's exceptions one per line (and nothing else), `add` appends the
+values not already present (adding one twice is a no-op), and `remove`
+drops the named values, failing if one is absent. `add` and `remove` print
+the resulting list. They take the same `--project` flag as `edit`, and a
+built-in pattern gets an override in your layer the same way.
+
+```bash
+git-scan patterns exceptions list my-employer
+git-scan patterns exceptions add my-employer ' Cloud'     # keeps '-sdk' etc.
+git-scan patterns exceptions remove my-employer '-sdk'
+```
 
 ### Allowed emails
 
