@@ -25,7 +25,7 @@ def discover_steps() -> List[tuple]:
 
 def run_all_steps(repo_path: str, config, scan_input=None, deep: bool = False,
                   only_step: str = None,
-                  include_untracked: bool = False) -> List[CheckResult]:
+                  include_untracked: bool = False, **kwargs) -> List[CheckResult]:
     """Run all discovered steps and collect results."""
     results = []
     for name, run_checks in discover_steps():
@@ -34,7 +34,7 @@ def run_all_steps(repo_path: str, config, scan_input=None, deep: bool = False,
         try:
             step_results = run_checks(
                 repo_path, config=config, scan_input=scan_input, deep=deep,
-                include_untracked=include_untracked,
+                include_untracked=include_untracked, **kwargs,
             )
             results.extend(step_results)
         except Exception as e:

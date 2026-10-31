@@ -243,7 +243,7 @@ def test_uuid_underscore_detected(tmp_path):
     assert not _scan_text(tmp_path, f"id = {uuid}").passed
 
 
-def test_judgment_entry_is_not_scanned(tmp_path):
+def _judgment_repo(tmp_path):
     repo = _init_repo(tmp_path)
     (repo / "git-scan.yaml").write_text(
         "patterns:\n"
@@ -253,13 +253,50 @@ def test_judgment_entry_is_not_scanned(tmp_path):
         "    judgment: true\n"
         "    note: only beside an address\n"
     )
+    return repo
+
+
+def test_judgment_match_is_not_a_finding_but_needs_acknowledgement(tmp_path):
+    repo = _judgment_repo(tmp_path)
     (repo / "notes.txt").write_text("Springfield is a common town name")
-    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "notes.txt"], check=True)
 
     report = run_scan(str(repo), only_step="patterns")
-    check = next(c for c in report.checks if c.name == "Patterns")
-    assert check.passed
-    assert "1 judgment-only, not scanned" in (check.info or "")
+    patterns = next(c for c in report.checks if c.name == "Patterns")
+    assert patterns.passed                              # the match is not a finding
+    judgment = next(c for c in report.checks if c.name == "Judgment")
+    assert not judgment.passed
+    text = "\n".join(judgment.findings)
+    assert "notes.txt:1 [city] Springfield" in text
+    assert "note: only beside an address" in text
+    assert "git-scan ack" in text
+    assert "1 match(es), not acknowledged" in judgment.info
+
+
+def test_acknowledgement_is_bound_to_the_staged_tree(tmp_path):
+    from git_scan.sdk import marks
+    repo = _judgment_repo(tmp_path)
+    (repo / "notes.txt").write_text("Springfield is a common town name")
+    subprocess.run(["git", "-C", str(repo), "add", "notes.txt"], check=True)
+    assert marks.record_ack(str(repo))
+
+    judgment = next(c for c in run_scan(str(repo), only_step="patterns").checks
+                    if c.name == "Judgment")
+    assert judgment.passed and "1 match(es) acknowledged" in judgment.info
+
+    (repo / "more.txt").write_text("another line")       # staging more voids it
+    subprocess.run(["git", "-C", str(repo), "add", "more.txt"], check=True)
+    judgment = next(c for c in run_scan(str(repo), only_step="patterns").checks
+                    if c.name == "Judgment")
+    assert not judgment.passed
+
+
+def test_no_judgment_entries_means_no_judgment_check(tmp_path):
+    repo = _init_repo(tmp_path)
+    (repo / "a.txt").write_text("plain\n")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    report = run_scan(str(repo), only_step="patterns")
+    assert not any(c.name == "Judgment" for c in report.checks)
 
 
 def test_ignore_case_matches_any_letter_case(tmp_path):

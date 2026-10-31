@@ -36,6 +36,7 @@ the MCP server.
 | Tokens and keys | GitHub, Google, AWS, OpenAI, and Slack tokens; private-key headers; generic API keys; UUIDs; long hex strings |
 | Entropy | random-looking strings that resemble secrets, with exclusions for lockfile hashes and the like |
 | Patterns | the strings you configure (see [Configuration](#configuration)) |
+| Judgment | matches on the entries you marked for judgment, reported for acknowledgement rather than as findings (see [Judgment entries and notes](#judgment-entries-and-notes)) |
 | Environment | your OS username, home directory name, git name and email, and values from a `.env` file in the repository |
 | Emails | addresses outside reserved example domains and your allowed list |
 | SSN / EIN | US tax identifier formats |
@@ -166,7 +167,7 @@ git-scan patterns add ID --pattern REGEX [--category CATEGORY] [OPTIONS]
 | `--exclude-file GLOB` | don't apply in files whose repository path matches (repeatable) |
 | `--ignore-case` | match regardless of letter case |
 | `--note TEXT` | guidance shown to a reviewer beside this entry (see [Judgment entries and notes](#judgment-entries-and-notes)) |
-| `--judgment` | hand the entry to a reviewer instead of the scanner |
+| `--judgment` | a match is a judgment call to acknowledge, not a finding |
 
 Examples by category:
 
@@ -230,25 +231,43 @@ git-scan patterns exceptions remove my-employer '-sdk'
 Some values are sensitive only in context. The last four digits of an
 account collide with line numbers and years; a city or a given name is
 also an ordinary word; an area code is any three digits. As a regex each
-would block ordinary commits, so a pattern list leaves them out, and a
-scanner alone never catches them.
+would block ordinary commits, so a pattern list leaves them out, and
+nothing catches them.
 
-A **judgment entry** keeps such a value in the configuration without
-scanning for it. It is marked `judgment: true` and is never compiled; the
-scanner skips it and reports how many it skipped. Its `note` says when the
-value is a finding. The entry exists for a reviewer that reads the
-configuration and weighs context, such as an agent run before a push:
+A **judgment entry** keeps such a value in the configuration with a
+different rule for a match: it is a judgment call, not a finding. The
+`Judgment` check lists every match with its note and refuses the commit
+until someone has looked and acknowledged them:
 
 ```bash
-git-scan patterns add card-a --pattern '1234' --category last4 --judgment \
+git-scan patterns add card-a --pattern '1234' --category last4 --judgment --word-boundary \
     --note 'a finding only beside account, card, checking or a **** mask'
-git-scan patterns edit my-town --judgment --note 'only beside an address'   # move an entry out of the scanner
-git-scan patterns edit my-town --no-judgment                                # and back (the text must then be a valid regex)
 ```
 
-Prefer `--judgment` over `patterns remove` for an entry that trips as a
-regex but still matters: the reviewer keeps it. A `--note` is allowed on
-any entry, scanned or not, for the same reader.
+```
+  [PASS] Patterns (3 personal, 17 built-in, 5 environment; 2 files)
+  [FAIL] Judgment (9 entries; 2 match(es), not acknowledged)
+         Each match below is a judgment call, not a finding. Look at every one;
+         fix the content, or if all of them are fine, acknowledge them with:
+           git-scan ack
+         README.md:14 [employer] Example Corp
+             note: a finding when the text says the author works there
+         tests/fixtures/ledger.json:7 [last4] 1234
+             note: a finding only beside account, card, checking or a **** mask
+```
+
+`git-scan ack` applies to exactly the staged content: stage anything more
+and it must be given again, after looking again. It clears judgment matches
+only; every other finding still refuses the commit. For a commit the hooks
+did not see, the push gate names `git-scan ack --commit <sha>`, which scans
+that commit with its judgment matches acknowledged and records it as
+scanned if everything else is clean.
+
+Judgment entries take the same options as any other (`--word-boundary`
+keeps four digits from matching inside a longer number). Move an entry
+between the two modes with `patterns edit ID --judgment` and
+`--no-judgment`. Prefer `--judgment` over `patterns remove` for an entry
+that trips as a regex but still matters: it keeps getting looked at.
 
 **Notes** carry guidance that belongs to no single entry:
 
@@ -260,9 +279,10 @@ git-scan notes remove 1
 
 **The reviewer's input.** `git-scan patterns list --json` prints your
 entries, scanned and judgment alike, each with its note, plus the notes, as
-JSON, and leaves the built-in token patterns out. Treat the output as you
-treat the configuration: it is the list of what must stay out of your
-repositories.
+JSON, and leaves the built-in token patterns out. It is the input for a
+reviewer that applies judgment where a regex can't, independently of any
+acknowledgement given at commit time. Treat the output as you treat the
+configuration: it is the list of what must stay out of your repositories.
 
 ### Allowed emails
 
@@ -422,7 +442,7 @@ This adds two hooks beside `pre-commit` and `commit-msg`:
 - `pre-push` runs `git-scan push-check`, which scans every commit the remote
   doesn't have yet in one pass (changes, message, author and committer, as
   `run --range` does) and refuses the push on findings, naming the commits;
-- `post-commit` marks each commit whose commit-time scan passed `scanned`.
+- `post-commit` records each commit whose commit-time scan passed as `scanned`.
 
 `scanned` is a cache: the gate skips commits that carry it and marks the
 clean ones it scans, so a commit is scanned once. A rebased or rewritten
@@ -435,26 +455,37 @@ marked even if it is then committed with `--no-verify`.
 git-scan: 3 commit(s) to push: 2 scanned now, 1 already scanned
 ```
 
-**Requiring another check.** Any other check (a manual review, an automated
-one) can require its own mark:
+**Requiring a review.** A judgment review of the unpushed commits, by a
+reviewer that reads the configuration (`patterns list --json`), can be made a
+condition of every push:
 
 ```bash
-git-scan hook install --pre-push --require-mark review
-git-scan mark review              # once the review has passed
+git-scan hook install --pre-push --require-review     # or: git-scan config require-review on
+git-scan review record result.json                    # after the review has passed
 ```
 
-`mark` marks the current commit. A required mark covers that commit and
-every unpushed commit before it, so marking the newest commit covers the
-batch. Required labels are kept in the user config (`push.require_marks`);
-a project's `git-scan.yaml` can add a requirement but not remove one. The
-scan does not stand in for a required mark: both must pass.
+`review record` takes the reviewer's result (JSON with `status`, `findings`
+and the commits it covered, bare or inside its report's fenced
+`privacy-guard-result` block; `-` reads stdin). It records the review only
+when the status is `completed`, there are no findings, and the covered
+commits are the ones this branch would push. One record on the newest
+commit covers every unpushed commit before it; a newer commit, or a
+rewrite, needs a new review. A push without a record is refused with the
+command to run. The scan does not stand in for the review, and the review
+does not stand in for the scan: both must pass. A project's `git-scan.yaml`
+can require the review but not lift the requirement.
 
-`git-scan push-check` run by hand checks the current branch against its
-upstream: would a push be accepted?
+Records are kept in the repository, are not pushed, and do not follow a
+rewritten commit. Nothing writes the `scanned` record but a passing scan,
+and nothing writes the review record but `review record` with a clean
+result.
 
-Marks are git notes under `refs/notes/git-scan`. Notes are not pushed by
-default, so marks stay on the machine that wrote them. A mark shows that
-the step ran, not how well; the gate catches a forgotten step.
+**Upgrading from 0.7 or earlier.** `git-scan mark` is gone, and so is
+`push.require_marks`: a configuration that still has it fails to load with
+the fix in the message. Turn the requirement into `git-scan config
+require-review on` (or reinstall with `--require-review`), and record each
+review with `git-scan review record` instead of marking it. Commits marked
+`scanned` before the upgrade stay scanned.
 
 **Limitation:** the check is made against the remote being pushed to. With
 several remotes, commits marked relative to one may be pushed to another

@@ -12,6 +12,7 @@ from git_scan.sdk.steps import get_step_names
 from git_scan.sdk import user_patterns as up
 from git_scan.sdk.hooks import install_hook, uninstall_hook, status, format_status, HookError
 from git_scan.sdk import marks
+from git_scan.sdk import review as review_sdk
 from git_scan.sdk.config import load_config, ConfigError, write_missing_config_help
 
 
@@ -156,20 +157,92 @@ def run(path, deep, step, unstaged, untracked, verbose, hide_skipped, commit, re
     click.echo(click.style(f"PASSED: {report.passed_count} check(s) clean", fg="green"))
 
 
-@cli.command("mark")
-@click.argument("label")
-def mark(label):
-    """Mark the current commit with LABEL.
+@cli.command("ack")
+@click.option("--commit", "rev", default=None, metavar="REV",
+              help="Acknowledge a commit already made instead of the staged change.")
+def ack(rev):
+    """Acknowledge the judgment matches of the staged change.
 
-    Run it after a check the push gate requires has passed (see
-    'git-scan hook install --pre-push --require-mark LABEL'). One mark on
-    the newest commit covers every unpushed commit before it.
+    A judgment entry (patterns add --judgment) names a value that is
+    sensitive only in context. When one appears in a change, the scan lists
+    every match with its note and refuses the commit until someone has
+    looked. Run this after looking, when every match is fine; fix the
+    content otherwise. The acknowledgement applies to exactly the staged
+    content: stage anything more and it must be given again. It clears
+    judgment matches only; every other finding still refuses the commit.
+
+    \b
+    --commit REV does the same for a commit the hooks did not see (the push
+    gate names the command). The commit is scanned with its judgment
+    matches acknowledged and, if everything else is clean, recorded as
+    scanned so the push proceeds.
+    """
+    if rev:
+        report = run_scan(repo_path=".", commit=rev, acknowledge_judgment=True)
+        if report.refusal:
+            click.echo("\n".join(report.refusal))
+            sys.exit(1)
+        _echo_checks(report, failed_only=True)
+        if report.failed:
+            click.echo(click.style("not acknowledged: the commit has findings that are not "
+                                   "judgment calls", fg="red", bold=True))
+            sys.exit(1)
+        judged = next((c for c in report.checks if c.name == "Judgment"), None)
+        what = judged.info if judged else "no judgment entries configured"
+        click.echo(f"acknowledged {rev}: {what}; marked scanned")
+        return
+    report = run_scan(repo_path=".", only_step="patterns")
+    judged = next((c for c in report.checks if c.name == "Judgment"), None)
+    if judged is None:
+        click.echo("nothing to acknowledge: no judgment entries are configured")
+        return
+    if judged.passed:
+        click.echo(f"nothing to acknowledge: {judged.info}")
+        return
+    tree = marks.record_ack(".")
+    if not tree:
+        _fail(marks.MarkError("not a git repository, or nothing is staged"))
+    shown = [f for f in judged.findings if not f.startswith(("Each match", "  git-scan", "    note:"))]
+    click.echo(f"acknowledged {len(shown)} judgment match(es) for the staged change:")
+    for f in shown:
+        click.echo(f"  {f}")
+    click.echo("Stage anything more and the acknowledgement must be given again.")
+
+
+@cli.group()
+def review():
+    """The privacy review's record, which the push gate can require."""
+
+
+@review.command("record")
+@click.argument("result_file")
+def review_record(result_file):
+    """Record a clean privacy review of the unpushed commits.
+
+    RESULT_FILE holds the reviewer's result: its 'privacy-guard-result' JSON,
+    bare or inside the fenced block of its report ('-' reads stdin). The
+    result is recorded only if its status is 'completed', it has no
+    findings, and it covers the commits this branch would push ('commits',
+    a list of ids, or 'scan_scope.unpushed_commits', a count). One record on
+    the newest commit covers every unpushed commit before it; a later commit,
+    or a rewrite, needs a new review.
+
+    With 'config require-review on', a push without this record is refused.
     """
     try:
-        sha = marks.add_mark(label)
-    except marks.MarkError as e:
+        if result_file == "-":
+            text = click.get_text_stream("stdin").read()
+        else:
+            with open(result_file, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+    except OSError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(2)
+    try:
+        done = review_sdk.record(review_sdk.load_result(text))
+    except (review_sdk.ReviewError, marks.MarkError) as e:
         _fail(e)
-    click.echo(f"marked {sha[:12]} '{label}'")
+    click.echo(f"recorded a clean review of {done['covered']} unpushed commit(s) on {done['sha'][:12]}")
 
 
 @cli.command("push-check")
@@ -180,8 +253,9 @@ def push_check(remote, url):
 
     Every commit the remote doesn't have yet is scanned in one pass (its
     changes, message, author and committer), except commits already marked
-    'scanned', which are skipped; clean commits are marked. Marks required
-    with 'hook install --require-mark' must also be present.
+    'scanned', which are skipped; clean commits are marked. With 'config
+    require-review on', a recorded review ('git-scan review record') must
+    cover them too.
 
     This is what the pre-push hook runs; git passes REMOTE and URL and the
     refs being pushed on standard input. Run by hand, it checks the current
@@ -193,10 +267,10 @@ def push_check(remote, url):
     else:
         lines = stdin.read().splitlines()
     try:
-        required = load_config(".").required_marks
+        require_review = load_config(".").review_required
     except ConfigError as e:
         _fail(e)
-    result = push_scan(lines, remote=remote, required=required)
+    result = push_scan(lines, remote=remote, require_review=require_review)
     if result.scan is not None and result.scan.refusal:
         click.echo("\n".join(result.scan.refusal), err=True)
         sys.exit(1)
@@ -660,12 +734,12 @@ _DIR = click.option("--hooks-dir", default=None,
 @click.option("--force", is_flag=True, help="Replace hooks that are not git-scan scripts.")
 @click.option("--pre-push", "pre_push", is_flag=True,
               help="Also refuse pushes of commits that were not scanned (the push gate).")
-@click.option("--require-mark", "require_mark", multiple=True, metavar="LABEL",
-              help="With --pre-push: also require this mark (repeatable).")
+@click.option("--require-review", "require_review", is_flag=True,
+              help="With --pre-push: also refuse a push until a privacy review is recorded.")
 @click.option("--missing-config-help", "missing_config_help", default=None, metavar="TEXT",
               help="Shown instead of setup instructions when a commit is refused "
                    "because the user config is missing.")
-def hook_install(local, hooks_dir, force, pre_push, require_mark, missing_config_help):
+def hook_install(local, hooks_dir, force, pre_push, require_review, missing_config_help):
     """Install the pre-commit and commit-msg hooks.
 
     pre-commit scans each staged change; commit-msg scans each commit
@@ -677,28 +751,28 @@ def hook_install(local, hooks_dir, force, pre_push, require_mark, missing_config
     \b
     --pre-push adds the push gate: a pre-push hook that scans every commit
     being pushed (skipping ones already marked 'scanned'; a post-commit
-    hook marks commits whose scan passed) and refuses the push on findings,
-    plus any mark named with --require-mark, which a separate check writes
-    with 'git-scan mark LABEL'.
+    hook marks commits whose scan passed) and refuses the push on findings.
+    --require-review makes it also refuse a push until a privacy review of
+    the unpushed commits is recorded with 'git-scan review record'.
     """
-    if require_mark and not pre_push:
-        _fail(click.UsageError("--require-mark needs --pre-push"))
+    if require_review and not pre_push:
+        _fail(click.UsageError("--require-review needs --pre-push"))
     try:
         click.echo(install_hook(hooks_dir, force=force, local=local, pre_push=pre_push))
         if missing_config_help:
             click.echo(f"missing-config help: {write_missing_config_help(missing_config_help)}")
-        if require_mark:
-            labels = up.require_marks(list(require_mark))
-            click.echo(f"push requires: scanned, {', '.join(labels)}")
-    except (HookError, up.PatternError) as e:
+        if require_review:
+            up.set_setting("require-review", True)
+            click.echo("push requires: a scan of every commit, and a recorded review")
+    except (HookError, up.PatternError, up.ConfigError) as e:
         _fail(e)
     if pre_push:
         click.echo("\n".join([
             "",
             "Every push now scans the commits it sends, skipping ones already marked",
             "'scanned' (committing through the hooks marks them).",
-        ] + ([f"Marks a separate check must add: {', '.join(require_mark)} "
-              "(git-scan mark <label> once it passes)."] if require_mark else [])))
+        ] + (["A push is also refused until a privacy review is recorded for its commits "
+              "(git-scan review record RESULT)."] if require_review else [])))
 
 
 @hook.command("uninstall")

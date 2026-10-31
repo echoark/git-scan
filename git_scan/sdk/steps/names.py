@@ -37,7 +37,7 @@ def _check(title: str, lines, compiled) -> CheckResult:
 def run_checks(repo_path: str, config=None, scan_input=None, **kwargs) -> List[CheckResult]:
     if scan_input is not None and scan_input.scope == "message":
         return []      # a message scan reads no names; the commit's own scan does
-    personal = [p for p in (config.patterns if config else [])
+    personal = [p for p in (config.scan_patterns if config else [])
                 if p.get("category") not in CONTENT_ONLY_CATEGORIES
                 and not p.get("word_boundary") and not p.get("not_followed_by")]
     compiled = compile_patterns(personal)

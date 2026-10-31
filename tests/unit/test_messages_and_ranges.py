@@ -242,13 +242,16 @@ def test_a_refused_push_marks_only_the_clean_commits(hooked):
     assert {s for s in (first, second, dirty, last) if marks.marks_on(s)} == {first, second, last}
 
 
-def test_a_push_still_requires_a_required_mark(hooked):
-    assert _run("hook", "install", "--pre-push", "--require-mark", "review").exit_code == 0
-    _commit(hooked, "a.txt", "clean\n", None, "--no-verify")
+def test_a_push_still_requires_a_recorded_review(hooked):
+    import json
+    assert _run("hook", "install", "--pre-push", "--require-review").exit_code == 0
+    sha = _commit(hooked, "a.txt", "clean\n", None, "--no-verify")
     refused = _push(hooked)
     assert refused.returncode != 0
-    assert "1 scanned now" in refused.stderr and "missing a required mark" in refused.stderr
-    assert _run("mark", "review").exit_code == 0
+    assert "1 scanned now" in refused.stderr and "no privacy review recorded" in refused.stderr
+    result = json.dumps({"status": "completed", "findings": [], "commits": [sha[:12]]})
+    r = _run("review", "record", "-", input=result)
+    assert r.exit_code == 0, r.output
     pushed = _push(hooked)
     assert pushed.returncode == 0, pushed.stderr
-    assert "0 scanned now, 1 already scanned; marks present: review" in pushed.stdout
+    assert "0 scanned now, 1 already scanned; review recorded" in pushed.stdout

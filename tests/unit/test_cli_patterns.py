@@ -347,13 +347,13 @@ def test_edit_not_followed_by_still_replaces_and_points_at_exceptions_add(tmp_pa
 
 def test_add_judgment_entry_with_note_and_ignore_case(tmp_path, monkeypatch):
     _repo(tmp_path, monkeypatch)
-    r = _run("patterns", "add", "card-a", "--pattern", "(1234", "--category", "last4",
+    r = _run("patterns", "add", "card-a", "--pattern", "1234", "--category", "last4",
              "--judgment", "--note", "only beside account or card")
-    assert r.exit_code == 0, r.output          # not a valid regex, allowed for judgment
+    assert r.exit_code == 0, r.output
     r = _run("patterns", "add", "me", "--pattern", "Jane", "--category", "name", "--ignore-case")
     assert r.exit_code == 0, r.output
     data = yaml.safe_load(_user_file().read_text())
-    assert {"id": "card-a", "pattern": "(1234", "category": "last4", "judgment": True,
+    assert {"id": "card-a", "pattern": "1234", "category": "last4", "judgment": True,
             "note": "only beside account or card"} in data["patterns"]
     assert {"id": "me", "pattern": "Jane", "category": "name", "ignore_case": True} in data["patterns"]
     out = _run("patterns", "list").output
@@ -400,11 +400,9 @@ def test_edit_moves_entry_between_scanner_and_judgment(tmp_path, monkeypatch):
     assert r.exit_code == 0, r.output
     entry = yaml.safe_load(_user_file().read_text())["patterns"][0]
     assert entry["judgment"] is True and entry["note"] == "only beside an address"
-    # back to the scanner: the text must then be a valid regex
-    _run("patterns", "edit", "town", "--pattern", "(")
-    r = _run("patterns", "edit", "town", "--no-judgment")
+    r = _run("patterns", "edit", "town", "--pattern", "(")     # a judgment entry is still a regex
     assert r.exit_code == 1 and "not a valid regex" in r.output
-    r = _run("patterns", "edit", "town", "--pattern", "Springfield", "--no-judgment", "--note", "")
+    r = _run("patterns", "edit", "town", "--no-judgment", "--note", "")
     assert r.exit_code == 0, r.output
     entry = yaml.safe_load(_user_file().read_text())["patterns"][0]
     assert "judgment" not in entry and "note" not in entry

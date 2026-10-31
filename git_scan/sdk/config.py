@@ -145,7 +145,7 @@ def validate_layer(data, path) -> None:
             if "pattern" in p:
                 if not isinstance(p["pattern"], str) or not p["pattern"]:
                     errors.append(f"{loc}: 'pattern' must be text")
-                elif not p.get("judgment"):
+                else:
                     try:
                         re.compile(p["pattern"])
                     except re.error as e:
@@ -229,17 +229,17 @@ def validate_layer(data, path) -> None:
 
     push = data.get("push", {})
     if not isinstance(push, dict):
-        errors.append("push: must be a mapping (require_marks: [labels])")
+        errors.append("push: must be a mapping (require_review: true)")
     else:
         for f in push:
-            if f != "require_marks":
-                errors.append(f"push: unknown field '{f}' (known: require_marks)")
-        marks = push.get("require_marks", [])
-        if (not isinstance(marks, list)
-                or not all(isinstance(m, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", m)
-                           for m in marks)):
-            errors.append("push.require_marks: must be a list of mark labels "
-                          "(letters, digits, '.', '_', '-')")
+            if f == "require_marks":
+                errors.append("push.require_marks is no longer supported: set "
+                              "push.require_review: true (git-scan config require-review on) "
+                              "and record each review with 'git-scan review record'")
+            elif f != "require_review":
+                errors.append(f"push: unknown field '{f}' (known: require_review)")
+        if "require_review" in push and not isinstance(push["require_review"], bool):
+            errors.append("push.require_review: must be true or false")
 
     if errors:
         lines = [f"Invalid config: {path}"] + [f"  {e}" for e in errors] + [
@@ -262,12 +262,13 @@ class MergedConfig:
 
     @property
     def scan_patterns(self) -> list[dict]:
-        """Active patterns the scanner compiles: everything but judgment entries."""
+        """Active entries whose match is a finding: everything but judgment entries."""
         return [p for p in self.patterns if not p.get("judgment")]
 
     @property
     def judgment_patterns(self) -> list[dict]:
-        """Active entries for a reviewer's judgment, never compiled to a regex."""
+        """Active entries whose match is a judgment call, reported for
+        acknowledgement rather than as a finding."""
         return [p for p in self.patterns if p.get("judgment")]
 
     @property
@@ -279,7 +280,7 @@ class MergedConfig:
     def notes(self) -> list[str]:
         """Free-text guidance for a reviewer, from every layer combined.
 
-        Read per layer, like ``required_marks``: merging replaces a list, so a
+        Read per layer, like ``review_required``: merging replaces a list, so a
         project layer could otherwise drop the user's notes.
         """
         seen: dict = {}
@@ -308,7 +309,7 @@ class MergedConfig:
     @property
     def pattern_counts(self) -> dict:
         """Active patterns by origin: built-in vs personal (user or project),
-        with judgment entries counted apart since they are never compiled."""
+        with judgment entries counted apart since their matches are not findings."""
         sources = self.pattern_sources
         counts = {"built-in": 0, "personal": 0, "judgment": 0}
         for p in self.patterns:
@@ -353,18 +354,14 @@ class MergedConfig:
         return self._entropy.get("min_len", 20)
 
     @property
-    def required_marks(self) -> list[str]:
-        """Marks a push requires, from every layer combined.
+    def review_required(self) -> bool:
+        """Whether a push needs a recorded review, from every layer combined.
 
-        Read per layer rather than from the merged view: merging replaces a
-        list, so a project layer could otherwise drop a requirement the user
-        layer sets. A layer can add a requirement, never remove one.
+        Read per layer rather than from the merged view: a layer can require
+        the review, never lift a requirement another layer set.
         """
-        labels: dict = {}
-        for layer in self.layers.values():
-            for n in ((layer or {}).get("push") or {}).get("require_marks", []):
-                labels.setdefault(n, None)
-        return list(labels)
+        return any(bool(((layer or {}).get("push") or {}).get("require_review"))
+                   for layer in self.layers.values())
 
 
 def load_config(repo_path: str = ".") -> MergedConfig:

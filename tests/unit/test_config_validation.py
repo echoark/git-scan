@@ -106,7 +106,7 @@ def test_judgment_note_ignore_case_and_notes_are_accepted(tmp_path):
     _user_file().write_text(
         "patterns:\n"
         "  - id: card\n"
-        "    pattern: '(1234'\n"       # not a regex; fine for a judgment entry
+        "    pattern: '1234'\n"
         "    judgment: true\n"
         "    note: only beside account\n"
         "  - id: me\n"
@@ -140,3 +140,23 @@ def test_notes_combine_across_layers(tmp_path):
     _user_file().write_text("patterns: []\nnotes:\n  - from the user\n")
     (repo / "git-scan.yaml").write_text("notes:\n  - from the project\n")
     assert load_config(str(repo)).notes == ["from the user", "from the project"]
+
+
+def test_require_marks_is_refused_with_the_migration_in_the_message(tmp_path):
+    _user_file().write_text("patterns: []\npush:\n  require_marks:\n    - review\n")
+    with pytest.raises(ConfigError) as e:
+        load_config(str(_repo(tmp_path)))
+    assert "require_marks is no longer supported" in str(e.value)
+    assert "require_review" in str(e.value) and "review record" in str(e.value)
+
+
+def test_review_requirement_accumulates_across_layers(tmp_path):
+    repo = _repo(tmp_path)
+    _user_file().write_text("patterns: []\npush:\n  require_review: true\n")
+    (repo / "git-scan.yaml").write_text("push:\n  require_review: false\n")
+    assert load_config(str(repo)).review_required is True
+    _user_file().write_text("patterns: []\n")
+    assert load_config(str(repo)).review_required is False
+    _user_file().write_text("patterns: []\npush:\n  require_review: yes please\n")
+    with pytest.raises(ConfigError, match="require_review: must be true or false"):
+        load_config(str(repo))

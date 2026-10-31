@@ -59,19 +59,18 @@ def add_pattern(id: str, pattern: str, category: Optional[str] = None,
                 note: Optional[str] = None) -> dict:
     """Add a pattern to the user (or project) layer. Fails on a duplicate id.
 
-    A judgment entry (``judgment=True``) is a value for a reviewer to weigh in
-    context, never compiled to a regex, so it needn't be one; ``note`` carries
-    the guidance that goes with it (and is allowed on any entry).
+    A judgment entry (``judgment=True``) is a value whose match is a judgment
+    call rather than a finding: it is reported for acknowledgement. ``note``
+    carries the guidance that goes with it (and is allowed on any entry).
     """
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", id):
         raise PatternError(f"'{id}' is not a valid id: use letters, digits, '.', '_' or '-'")
     if not pattern:
         raise PatternError("a pattern needs text")
-    if not judgment:
-        try:
-            re.compile(pattern)
-        except re.error as e:
-            raise PatternError(f"'{pattern}' is not a valid regex: {e}")
+    try:
+        re.compile(pattern)
+    except re.error as e:
+        raise PatternError(f"'{pattern}' is not a valid regex: {e}")
 
     path = target_path(repo_path, project)
     data = _read(path)
@@ -114,14 +113,11 @@ def edit_pattern(id: str, repo_path: str = ".", project: bool = False, **changes
     config = load_config(repo_path)
     if id not in config.pattern_sources:
         raise PatternError(f"no pattern '{id}'")
-    current = next((p for p in config.all_patterns if p.get("id") == id), {})
-    merged = {**current, **changes}
-    if "pattern" in changes or ("judgment" in changes and not changes["judgment"]):
-        if not merged.get("judgment"):
-            try:
-                re.compile(merged.get("pattern", ""))
-            except re.error as e:
-                raise PatternError(f"'{merged.get('pattern', '')}' is not a valid regex: {e}")
+    if "pattern" in changes:
+        try:
+            re.compile(changes["pattern"])
+        except re.error as e:
+            raise PatternError(f"'{changes['pattern']}' is not a valid regex: {e}")
     path = target_path(repo_path, project)
     data = _read(path)
     entries = _entries(data)
@@ -474,6 +470,8 @@ SETTINGS = {
     "entropy-enabled": ("entropy", "enabled", bool, "Run the entropy scan"),
     "entropy-threshold": ("entropy", "threshold", float, "Shannon entropy that flags a token"),
     "entropy-min-len": ("entropy", "min_len", int, "Shortest token the entropy scan considers"),
+    "require-review": ("push", "require_review", bool,
+                       "Refuse a push until a privacy review is recorded for its commits"),
 }
 
 
@@ -504,41 +502,6 @@ def set_setting(name: str, value, repo_path: str = ".", project: bool = False) -
     data = _read(path)
     data.setdefault(section, {})[key] = value
     _write(path, data)
-
-
-def require_marks(labels: List[str], repo_path: str = ".", project: bool = False) -> List[str]:
-    """Add mark labels a push must carry. Returns the layer's full list."""
-    for n in labels:
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", n):
-            raise PatternError(f"'{n}' is not a valid mark label: use letters, digits, "
-                               "'.', '_' or '-'")
-    path = target_path(repo_path, project)
-    data = _read(path)
-    push = data.setdefault("push", {})
-    current = list(push.get("require_marks", []))
-    for n in labels:
-        if n not in current:
-            current.append(n)
-    push["require_marks"] = current
-    _write(path, data)
-    return current
-
-
-def unrequire_marks(labels: List[str], repo_path: str = ".", project: bool = False) -> List[str]:
-    """Stop requiring mark labels in a layer. Returns the layer's remaining list."""
-    path = target_path(repo_path, project)
-    data = _read(path)
-    push = data.get("push") or {}
-    current = [n for n in push.get("require_marks", []) if n not in labels]
-    if push:
-        if current:
-            push["require_marks"] = current
-        else:
-            push.pop("require_marks", None)
-        if not push:
-            data.pop("push", None)
-        _write(path, data)
-    return current
 
 
 def layer_status(repo_path: str = ".") -> List[dict]:

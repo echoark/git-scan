@@ -1,17 +1,20 @@
-"""Marks on commits, and the push check that reads them.
+"""Marks on commits, the push check that reads them, and the records the
+pre-commit hooks leave for the post-commit hook.
 
-A mark is a short label recorded on a commit. git-scan writes one mark
-itself, ``scanned``, on every commit whose scan passed. Any other check (a
-manual review, an automated one) can require its own mark: the push check
-is told which labels to require (``push.require_marks`` in a config layer)
-and the check writes its mark with ``git-scan mark <label>``.
+A mark is a short label git-scan records on a commit, in repository-local
+metadata it manages itself. Two labels exist and nothing outside this
+module writes either:
 
-Storage: git notes under ``refs/notes/git-scan``, one label per line. Notes
-are not pushed by default, so marks stay on the machine that wrote them.
-Notes are not carried to rewritten commits either (amend, rebase,
-cherry-pick produce new commits), so a rewritten commit is unmarked until
-it is scanned or marked again. Callers never touch the notes directly:
-:func:`add_mark` / :func:`add_marks` write and :func:`marks_of` reads.
+- ``scanned``: the commit's own changes, message, and identities passed the
+  scan. Written by the post-commit hook for a commit made through the
+  hooks, and by a scan of existing commits for each clean one.
+- ``reviewed``: a privacy review covering this commit and every unpushed
+  commit before it was recorded (``review.record``, from the reviewer's own
+  result). The push check requires it when the config says so.
+
+Marks are not pushed and do not follow a rewritten commit (amend, rebase,
+cherry-pick produce new commits), so a rewritten commit is unmarked until it
+is scanned or reviewed again.
 
 The push check, for every commit the remote does not have yet:
 
@@ -19,17 +22,18 @@ The push check, for every commit the remote does not have yet:
   outgoing commit that lacks it (``scanner.push_scan``, one pass over all
   of them) and skips the ones that have it, so a rebase or a history
   rewrite costs one scan at push time rather than a refusal.
-- A required mark covers the marked commit and every unpushed commit in its
-  history. A review reads the whole unpushed range, so one mark on the tip
-  of a batch covers the batch.
+- ``reviewed`` on a commit covers it and every unpushed commit in its
+  history. A review reads the whole unpushed range, so one record on the
+  tip of a batch covers the batch.
 
-How ``scanned`` is written: the pre-commit hook runs before the commit
-exists, so a passing scan of the staged changes records the staged tree in
-the repository's git directory (:func:`record_passed_scan`); a refused
-commit message drops that record (:func:`forget_passed_scan`); the
-post-commit hook marks the new commit when its tree is the one that passed
-(:func:`mark_if_scanned`). A scan of existing commits (``git-scan run
---range`` / ``--commit``, or the push gate) marks each clean commit it read.
+Two records bridge the pre-commit hooks and the post-commit hook, both keyed
+to the staged tree so they apply to exactly one change: a passing staged
+scan records the tree (:func:`record_passed_scan`), and ``git-scan ack``
+records the tree whose judgment matches were acknowledged
+(:func:`record_ack`). A refused commit message drops the passed-scan record
+(:func:`forget_passed_scan`); the post-commit hook marks the new commit when
+its tree is the one that passed and consumes both records
+(:func:`mark_if_scanned`).
 """
 
 from __future__ import annotations
@@ -42,9 +46,11 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 
 NOTES_REF = "refs/notes/git-scan"
 SCANNED = "scanned"
+REVIEWED = "reviewed"
 ZERO = "0" * 40
 _LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 _PASSED_FILE = "git-scan-passed-tree"
+_ACK_FILE = "git-scan-ack-tree"
 
 
 class MarkError(ValueError):
@@ -111,7 +117,7 @@ def add_marks(label: str, commits: Iterable[str], repo_path: str = ".") -> None:
     ident = _out(repo_path, "var", "GIT_COMMITTER_IDENT")
     parent = _out(repo_path, "rev-parse", "--verify", "--quiet", NOTES_REF)
     cmds = [f"commit {NOTES_REF}", f"committer {ident}", "data <<EOM",
-            f"git-scan mark {label}", "EOM"]
+            f"git-scan {label}", "EOM"]
     if parent:
         cmds.append(f"from {parent}")
     for sha in todo:
@@ -156,14 +162,48 @@ def forget_passed_scan(repo_path: str = ".") -> None:
         (git_dir / _PASSED_FILE).unlink(missing_ok=True)
 
 
+def _staged_tree(repo_path: str) -> str:
+    return _out(repo_path, "write-tree")
+
+
+def record_ack(repo_path: str = ".") -> str:
+    """Remember that the judgment matches of the current staged tree were
+    acknowledged. Returns the tree id."""
+    tree = _staged_tree(repo_path)
+    git_dir = _git_dir(repo_path)
+    if tree and git_dir:
+        (git_dir / _ACK_FILE).write_text(tree + "\n")
+    return tree
+
+
+def ack_applies(repo_path: str = ".") -> bool:
+    """Whether an acknowledgement was recorded for exactly the current staged tree."""
+    git_dir = _git_dir(repo_path)
+    if not git_dir:
+        return False
+    record = git_dir / _ACK_FILE
+    if not record.exists():
+        return False
+    acked = record.read_text().strip()
+    return bool(acked) and acked == _staged_tree(repo_path)
+
+
+def forget_ack(repo_path: str = ".") -> None:
+    git_dir = _git_dir(repo_path)
+    if git_dir:
+        (git_dir / _ACK_FILE).unlink(missing_ok=True)
+
+
 def mark_if_scanned(repo_path: str = ".") -> bool:
     """Post-commit: mark HEAD ``scanned`` if its tree is the one that passed.
 
-    The record is consumed either way, so it can't mark a later commit.
+    Both staged records (passed scan, acknowledgement) are consumed either
+    way, so neither can apply to a later commit.
     """
     git_dir = _git_dir(repo_path)
     if not git_dir:
         return False
+    forget_ack(repo_path)
     record = git_dir / _PASSED_FILE
     if not record.exists():
         return False
@@ -182,13 +222,13 @@ class PushResult:
     """What a push would send, and what stands in its way.
 
     ``cached`` are outgoing commits already marked ``scanned``; ``scan`` is
-    the scan of the rest (``scanner.push_scan`` fills it); ``missing`` maps a
-    commit to the required marks it lacks.
+    the scan of the rest (``scanner.push_scan`` fills it); ``unreviewed``
+    are the outgoing commits no recorded review covers, when one is required.
     """
     checked: List[str] = field(default_factory=list)
     cached: List[str] = field(default_factory=list)
-    missing: Dict[str, List[str]] = field(default_factory=dict)
-    required: List[str] = field(default_factory=list)
+    unreviewed: List[str] = field(default_factory=list)
+    review_required: bool = False
     scan: Optional[Any] = None
 
     @property
@@ -197,7 +237,7 @@ class PushResult:
 
     @property
     def ok(self) -> bool:
-        return not self.missing and not (self.scan is not None and self.scan.failed)
+        return not self.unreviewed and not (self.scan is not None and self.scan.failed)
 
 
 def _rev_list(repo_path: str, tips: Iterable[str], exclude: Iterable[str]) -> List[str]:
@@ -219,10 +259,9 @@ def _exclusions(repo_path: str, remote: Optional[str], remote_shas: Iterable[str
     return ex
 
 
-def push_check(push_lines: Iterable[str], remote: Optional[str] = None,
-               required: Iterable[str] = (), repo_path: str = ".") -> PushResult:
-    """The commits a push would send: which are already scanned, and which
-    lack a required mark. (Scanning the rest is ``scanner.push_scan``.)
+def outgoing_commits(push_lines: Iterable[str], remote: Optional[str] = None,
+                     repo_path: str = ".") -> List[str]:
+    """The commits a push would send (full ids, newest first).
 
     ``push_lines`` are what git gives a pre-push hook on standard input:
     ``<local ref> <local sha> <remote ref> <remote sha>`` per ref. Deletions
@@ -238,26 +277,27 @@ def push_check(push_lines: Iterable[str], remote: Optional[str] = None,
             continue
         tips.append(local_sha)
         remote_shas.append(remote_sha)
+    return _rev_list(repo_path, tips, _exclusions(repo_path, remote, remote_shas))
 
-    required = [n for n in dict.fromkeys(required) if n != SCANNED]
-    result = PushResult(required=required)
-    exclude = _exclusions(repo_path, remote, remote_shas)
-    outgoing = _rev_list(repo_path, tips, exclude)
+
+def push_check(push_lines: Iterable[str], remote: Optional[str] = None,
+               require_review: bool = False, repo_path: str = ".") -> PushResult:
+    """The commits a push would send: which are already scanned, and which no
+    recorded review covers when one is required. (Scanning the rest is
+    ``scanner.push_scan``.)
+    """
+    result = PushResult(review_required=require_review)
+    outgoing = outgoing_commits(push_lines, remote, repo_path)
     result.checked = outgoing
     if not outgoing:
         return result
 
     marks = marks_of(outgoing, repo_path)
     result.cached = [s for s in outgoing if SCANNED in marks[s]]
-    covered: Dict[str, Set[str]] = {}
-    for label in required:
-        marked = [s for s in outgoing if label in marks[s]]
-        covered[label] = set(_rev_list(repo_path, marked, exclude))
-
-    for sha in outgoing:
-        lacking = [n for n in result.required if sha not in covered[n]]
-        if lacking:
-            result.missing[sha] = lacking
+    if require_review:
+        reviewed = [s for s in outgoing if REVIEWED in marks[s]]
+        covered = set(_rev_list(repo_path, reviewed, [])) if reviewed else set()
+        result.unreviewed = [s for s in outgoing if s not in covered]
     return result
 
 
@@ -286,22 +326,22 @@ def format_push_result(result: PushResult, repo_path: str = ".") -> str:
     summary = (f"{len(result.checked)} commit(s) to push: {scanned_now} scanned now, "
                f"{len(result.cached)} already scanned")
     if result.ok:
-        tail = f"; marks present: {', '.join(result.required)}" if result.required else ""
+        tail = "; review recorded" if result.review_required and result.checked else ""
         return f"git-scan: {summary}{tail}"
     lines = [f"git-scan: push refused ({summary})."]
     if result.scan is not None and result.scan.failed:
         lines += ["",
                   "The scan above found issues in commits being pushed. Fix the content in",
                   "those commits (git rebase -i, git commit --amend) and push again; a",
-                  "rewritten commit is scanned again on the next push."]
-    if result.missing:
-        lines += ["", f"{len(result.missing)} commit(s) missing a required mark:"]
-        for sha, labels in result.missing.items():
+                  "rewritten commit is scanned again on the next push. A 'Judgment' match",
+                  "is cleared, after looking at it, with: git-scan ack --commit <sha>"]
+    if result.unreviewed:
+        lines += ["", f"{len(result.unreviewed)} commit(s) with no privacy review recorded:"]
+        for sha in result.unreviewed:
             subject = _out(repo_path, "log", "-1", "--format=%s", sha)
             lines.append(f"  {sha[:12]}  {subject[:60]}")
-            for n in labels:
-                lines.append(f"      {n:<16} run the '{n}' check, then: git-scan mark {n}")
         lines += ["",
-                  "A required mark covers the marked commit and everything unpushed before "
-                  "it, so marking the newest commit covers the batch."]
+                  "Run the privacy review over the unpushed commits, then record its result:",
+                  "  git-scan review record RESULT.json",
+                  "A review recorded on the newest commit covers every unpushed commit before it."]
     return "\n".join(lines)
