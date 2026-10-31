@@ -41,9 +41,12 @@ CONFIG_FILENAME = "git-scan.yaml"
 
 LAYERS = ("built-in", "user", "project")
 
-TOP_LEVEL_KEYS = {"entropy", "thresholds", "patterns", "allowed_emails", "identity", "push"}
+TOP_LEVEL_KEYS = {"entropy", "thresholds", "patterns", "allowed_emails", "identity", "push",
+                  "notes", "review"}
+REVIEW_KEYS = {"runner", "model", "timeout", "batch_bytes", "relaxed"}
 PATTERN_FIELDS = {"id", "pattern", "category", "word_boundary",
-                  "not_followed_by", "exclude_files", "disabled"}
+                  "not_followed_by", "exclude_files", "disabled",
+                  "ignore_case", "judgment", "note"}
 THRESHOLD_KEYS = {"large_amount", "suspicious_nonround", "suspicious_any",
                   "cents_review"}
 ENTROPY_KEYS = {"enabled", "threshold", "min_len", "exclusions"}
@@ -148,9 +151,10 @@ def validate_layer(data, path) -> None:
                         re.compile(p["pattern"])
                     except re.error as e:
                         errors.append(f"{loc}: pattern is not a valid regex: {e}")
-            if "category" in p and not isinstance(p["category"], str):
-                errors.append(f"{loc}: 'category' must be text")
-            for flag in ("word_boundary", "disabled"):
+            for text_field in ("category", "note"):
+                if text_field in p and not isinstance(p[text_field], str):
+                    errors.append(f"{loc}: '{text_field}' must be text")
+            for flag in ("word_boundary", "disabled", "ignore_case", "judgment"):
                 if flag in p and not isinstance(p[flag], bool):
                     errors.append(f"{loc}: '{flag}' must be true or false")
             for field in ("not_followed_by", "exclude_files"):
@@ -158,6 +162,10 @@ def validate_layer(data, path) -> None:
                 if val is not None and (not isinstance(val, list)
                                         or not all(isinstance(x, str) for x in val)):
                     errors.append(f"{loc}: '{field}' must be a list of text")
+
+    notes = data.get("notes", [])
+    if not isinstance(notes, list) or not all(isinstance(n, str) and n for n in notes):
+        errors.append("notes: must be a list of text (run: git-scan notes add TEXT)")
 
     thresholds = data.get("thresholds", {})
     if not isinstance(thresholds, dict):
@@ -222,17 +230,33 @@ def validate_layer(data, path) -> None:
 
     push = data.get("push", {})
     if not isinstance(push, dict):
-        errors.append("push: must be a mapping (require_marks: [labels])")
+        errors.append("push: must be a mapping (require_review: true)")
     else:
         for f in push:
-            if f != "require_marks":
-                errors.append(f"push: unknown field '{f}' (known: require_marks)")
-        marks = push.get("require_marks", [])
-        if (not isinstance(marks, list)
-                or not all(isinstance(m, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", m)
-                           for m in marks)):
-            errors.append("push.require_marks: must be a list of mark labels "
-                          "(letters, digits, '.', '_', '-')")
+            if f == "require_marks":
+                errors.append("push.require_marks is no longer supported: set "
+                              "push.require_review: true (git-scan config require-review on) "
+                              "and record each review with 'git-scan review record'")
+            elif f != "require_review":
+                errors.append(f"push: unknown field '{f}' (known: require_review)")
+        if "require_review" in push and not isinstance(push["require_review"], bool):
+            errors.append("push.require_review: must be true or false")
+
+    review = data.get("review", {})
+    if not isinstance(review, dict):
+        errors.append("review: must be a mapping (runner, model, timeout, batch_bytes, relaxed)")
+    else:
+        for k, v in review.items():
+            if k not in REVIEW_KEYS:
+                errors.append(f"review.{k}: unknown (known: {', '.join(sorted(REVIEW_KEYS))})")
+            elif k in ("runner", "model") and (not isinstance(v, str) or not v):
+                errors.append(f"review.{k}: must be text")
+            elif k in ("timeout", "batch_bytes") and (not isinstance(v, int) or isinstance(v, bool)
+                                                       or v <= 0):
+                errors.append(f"review.{k}: must be a positive whole number")
+            elif k == "relaxed" and (not isinstance(v, list)
+                                     or not all(isinstance(x, str) and x for x in v)):
+                errors.append("review.relaxed: must be a list of remote prefixes")
 
     if errors:
         lines = [f"Invalid config: {path}"] + [f"  {e}" for e in errors] + [
@@ -254,9 +278,33 @@ class MergedConfig:
                 if not p.get("disabled")]
 
     @property
+    def scan_patterns(self) -> list[dict]:
+        """Active entries whose match is a finding: everything but judgment entries."""
+        return [p for p in self.patterns if not p.get("judgment")]
+
+    @property
+    def judgment_patterns(self) -> list[dict]:
+        """Active entries whose match is a judgment call, reported for
+        acknowledgement rather than as a finding."""
+        return [p for p in self.patterns if p.get("judgment")]
+
+    @property
     def all_patterns(self) -> list[dict]:
         """All patterns including disabled."""
         return self.raw.get("patterns", [])
+
+    @property
+    def notes(self) -> list[str]:
+        """Free-text guidance for a reviewer, from every layer combined.
+
+        Read per layer, like ``review_required``: merging replaces a list, so a
+        project layer could otherwise drop the user's notes.
+        """
+        seen: dict = {}
+        for layer in self.layers.values():
+            for n in (layer or {}).get("notes") or []:
+                seen.setdefault(n, None)
+        return list(seen)
 
     @property
     def user_patterns_defined(self) -> bool:
@@ -277,10 +325,14 @@ class MergedConfig:
 
     @property
     def pattern_counts(self) -> dict:
-        """Active patterns by origin: built-in vs personal (user or project)."""
+        """Active patterns by origin: built-in vs personal (user or project),
+        with judgment entries counted apart since their matches are not findings."""
         sources = self.pattern_sources
-        counts = {"built-in": 0, "personal": 0}
+        counts = {"built-in": 0, "personal": 0, "judgment": 0}
         for p in self.patterns:
+            if p.get("judgment"):
+                counts["judgment"] += 1
+                continue
             origin = sources.get(p.get("id"), "user")
             counts["built-in" if origin == "built-in" else "personal"] += 1
         return counts
@@ -319,18 +371,19 @@ class MergedConfig:
         return self._entropy.get("min_len", 20)
 
     @property
-    def required_marks(self) -> list[str]:
-        """Marks a push requires, from every layer combined.
+    def review(self) -> dict:
+        """The merged ``review`` section: runner, timeout, batch_bytes, relaxed."""
+        return dict(self.raw.get("review") or {})
 
-        Read per layer rather than from the merged view: merging replaces a
-        list, so a project layer could otherwise drop a requirement the user
-        layer sets. A layer can add a requirement, never remove one.
+    @property
+    def review_required(self) -> bool:
+        """Whether a push needs a recorded review, from every layer combined.
+
+        Read per layer rather than from the merged view: a layer can require
+        the review, never lift a requirement another layer set.
         """
-        labels: dict = {}
-        for layer in self.layers.values():
-            for n in ((layer or {}).get("push") or {}).get("require_marks", []):
-                labels.setdefault(n, None)
-        return list(labels)
+        return any(bool(((layer or {}).get("push") or {}).get("require_review"))
+                   for layer in self.layers.values())
 
 
 def load_config(repo_path: str = ".") -> MergedConfig:

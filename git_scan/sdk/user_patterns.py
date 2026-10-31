@@ -54,10 +54,19 @@ def _entries(data: dict) -> List[dict]:
 def add_pattern(id: str, pattern: str, category: Optional[str] = None,
                 word_boundary: bool = False, not_followed_by: Optional[List[str]] = None,
                 exclude_files: Optional[List[str]] = None,
-                repo_path: str = ".", project: bool = False) -> dict:
-    """Add a pattern to the user (or project) layer. Fails on a duplicate id."""
+                repo_path: str = ".", project: bool = False,
+                ignore_case: bool = False, judgment: bool = False,
+                note: Optional[str] = None) -> dict:
+    """Add a pattern to the user (or project) layer. Fails on a duplicate id.
+
+    A judgment entry (``judgment=True``) is a value whose match is a judgment
+    call rather than a finding: it is reported for acknowledgement. ``note``
+    carries the guidance that goes with it (and is allowed on any entry).
+    """
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", id):
         raise PatternError(f"'{id}' is not a valid id: use letters, digits, '.', '_' or '-'")
+    if not pattern:
+        raise PatternError("a pattern needs text")
     try:
         re.compile(pattern)
     except re.error as e:
@@ -78,13 +87,20 @@ def add_pattern(id: str, pattern: str, category: Optional[str] = None,
         entry["not_followed_by"] = list(not_followed_by)
     if exclude_files:
         entry["exclude_files"] = list(exclude_files)
+    if ignore_case:
+        entry["ignore_case"] = True
+    if judgment:
+        entry["judgment"] = True
+    if note:
+        entry["note"] = note
     entries.append(entry)
     data["patterns"] = entries
     _write(path, data)
     return entry
 
 
-EDITABLE = ("pattern", "category", "word_boundary", "not_followed_by", "exclude_files")
+EDITABLE = ("pattern", "category", "word_boundary", "not_followed_by", "exclude_files",
+            "ignore_case", "judgment", "note")
 
 
 def edit_pattern(id: str, repo_path: str = ".", project: bool = False, **changes) -> dict:
@@ -94,14 +110,14 @@ def edit_pattern(id: str, repo_path: str = ".", project: bool = False, **changes
     changes = {k: v for k, v in changes.items() if k in EDITABLE and v is not None}
     if not changes:
         raise PatternError("nothing to change")
+    config = load_config(repo_path)
+    if id not in config.pattern_sources:
+        raise PatternError(f"no pattern '{id}'")
     if "pattern" in changes:
         try:
             re.compile(changes["pattern"])
         except re.error as e:
             raise PatternError(f"'{changes['pattern']}' is not a valid regex: {e}")
-    config = load_config(repo_path)
-    if id not in config.pattern_sources:
-        raise PatternError(f"no pattern '{id}'")
     path = target_path(repo_path, project)
     data = _read(path)
     entries = _entries(data)
@@ -307,14 +323,77 @@ def list_patterns(repo_path: str = ".", include_disabled: bool = False) -> List[
     for p in config.all_patterns:
         if p.get("disabled") and not include_disabled:
             continue
-        rows.append({
+        row = {
             "id": p.get("id"),
             "pattern": p.get("pattern", ""),
             "category": p.get("category", ""),
             "layer": sources.get(p.get("id"), "user"),
             "disabled": bool(p.get("disabled")),
-        })
+            "judgment": bool(p.get("judgment")),
+        }
+        for optional in ("word_boundary", "ignore_case", "not_followed_by",
+                         "exclude_files", "note"):
+            if p.get(optional):
+                row[optional] = p[optional]
+        rows.append(row)
     return rows
+
+
+def export_patterns(repo_path: str = ".") -> dict:
+    """The catalog the privacy review sends to the reviewer: the active
+    personal entries (scan and judgment alike, with their notes) and the
+    free-text notes.
+
+    Built-in token patterns are left out: a reviewer knows those formats, and
+    the list is about what is personal to this configuration.
+    """
+    config = load_config(repo_path)
+    sources = config.pattern_sources
+    entries = []
+    for row in list_patterns(repo_path):
+        if row["layer"] == "built-in" or sources.get(row["id"]) == "built-in":
+            continue
+        row.pop("layer", None)
+        row.pop("disabled", None)
+        entries.append(row)
+    return {
+        "configured": config.user_patterns_defined,
+        "patterns": entries,
+        "notes": config.notes,
+    }
+
+
+# --- notes ------------------------------------------------------------------
+
+def list_notes(repo_path: str = ".") -> List[str]:
+    return load_config(repo_path).notes
+
+
+def add_note(text: str, repo_path: str = ".", project: bool = False) -> str:
+    text = " ".join(text.split())
+    if not text:
+        raise PatternError("a note needs text")
+    path = target_path(repo_path, project)
+    data = _read(path)
+    notes = [n for n in (data.get("notes") or []) if isinstance(n, str)]
+    if text in notes:
+        raise PatternError("that note is already there")
+    notes.append(text)
+    data["notes"] = notes
+    _write(path, data)
+    return f"added note {len(notes)} to {path}"
+
+
+def remove_note(number: int, repo_path: str = ".", project: bool = False) -> str:
+    path = target_path(repo_path, project)
+    data = _read(path)
+    notes = [n for n in (data.get("notes") or []) if isinstance(n, str)]
+    if not 1 <= number <= len(notes):
+        raise PatternError(f"no note {number} in {path} ({len(notes)} notes; see: git-scan notes list)")
+    notes.pop(number - 1)
+    data["notes"] = notes
+    _write(path, data)
+    return f"removed note {number} from {path}"
 
 
 # --- identity rules ---------------------------------------------------------
@@ -392,6 +471,13 @@ SETTINGS = {
     "entropy-enabled": ("entropy", "enabled", bool, "Run the entropy scan"),
     "entropy-threshold": ("entropy", "threshold", float, "Shannon entropy that flags a token"),
     "entropy-min-len": ("entropy", "min_len", int, "Shortest token the entropy scan considers"),
+    "require-review": ("push", "require_review", bool,
+                       "Refuse a push until the privacy review has passed for its commits"),
+    "review-runner": ("review", "runner", str,
+                      "The headless agent CLI that runs the privacy review: claude, agy, or a command"),
+    "review-model": ("review", "model", str,
+                     "The model the review runner is asked to use (passed as its --model)"),
+    "review-timeout": ("review", "timeout", int, "Seconds to wait for one batch of the review"),
 }
 
 
@@ -411,6 +497,10 @@ def set_setting(name: str, value, repo_path: str = ".", project: bool = False) -
                 value = False
             else:
                 raise PatternError(f"{name}: expected on or off")
+    elif typ is str:
+        value = str(value).strip()
+        if not value:
+            raise PatternError(f"{name}: expected text")
     else:
         try:
             value = typ(value)
@@ -424,42 +514,42 @@ def set_setting(name: str, value, repo_path: str = ".", project: bool = False) -
     _write(path, data)
 
 
-def require_marks(labels: List[str], repo_path: str = ".", project: bool = False) -> List[str]:
-    """Add mark labels a push must carry. Returns the layer's full list."""
-    for n in labels:
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", n):
-            raise PatternError(f"'{n}' is not a valid mark label: use letters, digits, "
-                               "'.', '_' or '-'")
-    path = target_path(repo_path, project)
-    data = _read(path)
-    push = data.setdefault("push", {})
-    current = list(push.get("require_marks", []))
-    for n in labels:
-        if n not in current:
-            current.append(n)
-    push["require_marks"] = current
-    _write(path, data)
-    return current
-
-
-def unrequire_marks(labels: List[str], repo_path: str = ".", project: bool = False) -> List[str]:
-    """Stop requiring mark labels in a layer. Returns the layer's remaining list."""
-    path = target_path(repo_path, project)
-    data = _read(path)
-    push = data.get("push") or {}
-    current = [n for n in push.get("require_marks", []) if n not in labels]
-    if push:
-        if current:
-            push["require_marks"] = current
-        else:
-            push.pop("require_marks", None)
-        if not push:
-            data.pop("push", None)
-        _write(path, data)
-    return current
-
-
 def layer_status(repo_path: str = ".") -> List[dict]:
     """Each layer's path and whether its file exists."""
     return [{"layer": name, "path": str(path), "exists": path.is_file()}
             for name, path in layer_paths(repo_path).items()]
+
+
+# --- relaxed remotes for the review ------------------------------------------------
+
+def relaxed_add(prefix: str, repo_path: str = ".", project: bool = False) -> List[str]:
+    prefix = prefix.strip().strip("/")
+    if not prefix or "://" in prefix or "@" in prefix:
+        raise PatternError(f"'{prefix}' is not a host/owner/repo prefix (e.g. github.com/octo/my-)")
+    path = target_path(repo_path, project)
+    data = _read(path)
+    review = data.setdefault("review", {})
+    current = [x for x in (review.get("relaxed") or []) if isinstance(x, str)]
+    if prefix not in current:
+        current.append(prefix)
+    review["relaxed"] = current
+    _write(path, data)
+    return current
+
+
+def relaxed_remove(prefix: str, repo_path: str = ".", project: bool = False) -> List[str]:
+    path = target_path(repo_path, project)
+    data = _read(path)
+    review = data.get("review") or {}
+    current = [x for x in (review.get("relaxed") or []) if isinstance(x, str)]
+    if prefix not in current:
+        raise PatternError(f"'{prefix}' is not in the relaxed list of {path}")
+    current.remove(prefix)
+    if current:
+        review["relaxed"] = current
+    else:
+        review.pop("relaxed", None)
+        if not review:
+            data.pop("review", None)
+    _write(path, data)
+    return current

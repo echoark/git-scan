@@ -1,5 +1,6 @@
 """CLI — thin wrapper around the SDK."""
 
+import json
 import os
 import re
 import sys
@@ -11,6 +12,7 @@ from git_scan.sdk.steps import get_step_names
 from git_scan.sdk import user_patterns as up
 from git_scan.sdk.hooks import install_hook, uninstall_hook, status, format_status, HookError
 from git_scan.sdk import marks
+from git_scan.sdk import review as review_sdk
 from git_scan.sdk.config import load_config, ConfigError, write_missing_config_help
 
 
@@ -155,20 +157,157 @@ def run(path, deep, step, unstaged, untracked, verbose, hide_skipped, commit, re
     click.echo(click.style(f"PASSED: {report.passed_count} check(s) clean", fg="green"))
 
 
-@cli.command("mark")
-@click.argument("label")
-def mark(label):
-    """Mark the current commit with LABEL.
+@cli.command("ack")
+@click.option("--commit", "rev", default=None, metavar="REV",
+              help="Acknowledge a commit already made instead of the staged change.")
+def ack(rev):
+    """Acknowledge the judgment matches of the staged change.
 
-    Run it after a check the push gate requires has passed (see
-    'git-scan hook install --pre-push --require-mark LABEL'). One mark on
-    the newest commit covers every unpushed commit before it.
+    A judgment entry (patterns add --judgment) names a value that is
+    sensitive only in context. When one appears in a change, the scan lists
+    every match with its note and refuses the commit until someone has
+    looked. Run this after looking, when every match is fine; fix the
+    content otherwise. The acknowledgement applies to exactly the staged
+    content: stage anything more and it must be given again. It clears
+    judgment matches only; every other finding still refuses the commit.
+
+    \b
+    --commit REV does the same for a commit the hooks did not see (the push
+    gate names the command). The commit is scanned with its judgment
+    matches acknowledged and, if everything else is clean, recorded as
+    scanned so the push proceeds.
+    """
+    if rev:
+        report = run_scan(repo_path=".", commit=rev, acknowledge_judgment=True)
+        if report.refusal:
+            click.echo("\n".join(report.refusal))
+            sys.exit(1)
+        _echo_checks(report, failed_only=True)
+        if report.failed:
+            click.echo(click.style("not acknowledged: the commit has findings that are not "
+                                   "judgment calls", fg="red", bold=True))
+            sys.exit(1)
+        judged = next((c for c in report.checks if c.name == "Judgment"), None)
+        what = judged.info if judged else "no judgment entries configured"
+        click.echo(f"acknowledged {rev}: {what}; marked scanned")
+        return
+    report = run_scan(repo_path=".", only_step="patterns")
+    judged = next((c for c in report.checks if c.name == "Judgment"), None)
+    if judged is None:
+        click.echo("nothing to acknowledge: no judgment entries are configured")
+        return
+    where = "the staged change"
+    if judged.passed:
+        # Nothing in the staged content; the match may be in the message git
+        # kept when the commit-msg hook refused it.
+        message = marks.pending_message(".")
+        judged = None
+        if message:
+            msg_report = run_scan(repo_path=".", only_step="patterns", message=message)
+            judged = next((c for c in msg_report.checks if c.name == "Judgment"), None)
+            where = "the staged change and its pending commit message"
+        if judged is None or judged.passed:
+            click.echo("nothing to acknowledge: no judgment matches in the staged change"
+                       + (" or its pending commit message" if message else ""))
+            return
+    tree = marks.record_ack(".")
+    if not tree:
+        _fail(marks.MarkError("not a git repository, or nothing is staged"))
+    shown = [f for f in judged.findings if not f.startswith(("Each match", "  git-scan", "    note:"))]
+    click.echo(f"acknowledged {len(shown)} judgment match(es) for {where}:")
+    for f in shown:
+        click.echo(f"  {f}")
+    click.echo("Stage anything more and the acknowledgement must be given again.")
+
+
+@cli.group(invoke_without_command=True)
+@click.option("--relaxed", is_flag=True,
+              help="Review as a private, personal repository. Allowed only for a remote "
+                   "listed with 'review relaxed add'.")
+@click.option("--publish", "publish", multiple=True, metavar="FILE",
+              help="Text published beside the push (a pull-request body) to review too (repeatable).")
+@click.option("--range", "rev_range", default=None, metavar="A..B",
+              help="Review these commits instead of the unpushed ones.")
+@click.option("--runner", default=None, metavar="NAME|CMD",
+              help="The headless agent CLI for this run (claude, agy, or a command).")
+@click.option("--timeout", type=int, default=None, metavar="SECONDS", help="Per batch.")
+@click.option("--quiet", is_flag=True, help="No progress lines on standard error.")
+@click.pass_context
+def review(ctx, relaxed, publish, rev_range, runner, timeout, quiet):
+    """Run the privacy review of the unpushed commits and record a clean result.
+
+    git-scan builds the reviewer's prompt itself: its packaged review
+    instructions, your personal patterns and notes, each commit's message
+    and patch, and any --publish text. It runs the configured headless agent
+    CLI with no tools (the prompt is the reviewer's whole world), validates
+    the JSON that comes back, and marks every commit of a clean batch
+    'reviewed'. With 'config require-review on', a push needs that mark on
+    every commit it sends.
+
+    \b
+    Findings are printed with the value and location; nothing is recorded
+    for that batch. A reviewer problem (not installed, failed, timed out,
+    unreadable output) is reported as such and records nothing. Commits
+    already reviewed are skipped, so a rerun costs only what is new. The
+    run takes a minute or more: start it as a background command if you can.
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+    say = (lambda _m: None) if quiet else (lambda m: click.echo(f"git-scan review: {m}", err=True))
+    try:
+        result = review_sdk.review(".", rev_range=rev_range, relaxed=relaxed,
+                                  publish=list(publish), runner=runner, timeout=timeout,
+                                  progress=say)
+    except (review_sdk.ReviewError, ConfigError, marks.MarkError) as e:
+        _fail(e)
+    for w in result.warnings:
+        click.echo(f"  warning: {w}")
+    if result.findings:
+        click.echo(click.style(f"  [FAIL] Privacy review ({result.mode}; {len(result.commits)} "
+                               f"commit(s); {len(result.findings)} finding(s))", fg="red"))
+        for f in result.findings:
+            note = f" ({f['note']})" if f.get("note") else ""
+            click.echo(f"         {f['location']} [{f['category']}/{f.get('severity', '?')}] "
+                       f"{f['value']}{note}")
+        click.echo(click.style("FAILED: fix the content in those commits and review again; "
+                               "nothing was recorded for them", fg="red", bold=True))
+        sys.exit(1)
+    n = len(result.commits)
+    skipped = f", {len(result.skipped)} already reviewed" if result.skipped else ""
+    if n:
+        click.echo(click.style(f"PASSED: privacy review ({result.mode}, {result.runner}) clean for "
+                               f"{n} commit(s){skipped}; recorded", fg="green"))
+    else:
+        click.echo(f"nothing new to review{skipped}")
+
+
+@review.command("relaxed")
+@click.argument("action", type=click.Choice(["add", "remove", "list"]))
+@click.argument("prefix", required=False)
+@click.option("--project", is_flag=True, help="Act on the repo's git-scan.yaml.")
+def review_relaxed(action, prefix, project):
+    """Remotes that may be reviewed as private, personal repositories.
+
+    \b
+      git-scan review relaxed add github.com/octo/my-     # every repo of octo's whose name starts with my-
+      git-scan review relaxed list
+      git-scan review relaxed remove github.com/octo/my-
+
+    A prefix is matched segment by segment against host/owner/repo. Nothing
+    else makes --relaxed available; the default for every repository is public.
     """
     try:
-        sha = marks.add_mark(label)
-    except marks.MarkError as e:
+        if action == "list":
+            for r in review_sdk.relaxed_list():
+                click.echo(f"  {r}")
+            return
+        if not prefix:
+            _fail(click.UsageError(f"'{action}' needs a prefix"))
+        rows = up.relaxed_add(prefix, project=project) if action == "add" \
+            else up.relaxed_remove(prefix, project=project)
+        click.echo(f"relaxed remotes: {', '.join(rows) if rows else '(none)'}")
+    except (up.PatternError, up.ConfigError) as e:
         _fail(e)
-    click.echo(f"marked {sha[:12]} '{label}'")
 
 
 @cli.command("push-check")
@@ -179,8 +318,9 @@ def push_check(remote, url):
 
     Every commit the remote doesn't have yet is scanned in one pass (its
     changes, message, author and committer), except commits already marked
-    'scanned', which are skipped; clean commits are marked. Marks required
-    with 'hook install --require-mark' must also be present.
+    'scanned', which are skipped; clean commits are marked. With 'config
+    require-review on', every commit must also carry a clean privacy
+    review ('git-scan review').
 
     This is what the pre-push hook runs; git passes REMOTE and URL and the
     refs being pushed on standard input. Run by hand, it checks the current
@@ -192,10 +332,10 @@ def push_check(remote, url):
     else:
         lines = stdin.read().splitlines()
     try:
-        required = load_config(".").required_marks
+        require_review = load_config(".").review_required
     except ConfigError as e:
         _fail(e)
-    result = push_scan(lines, remote=remote, required=required)
+    result = push_scan(lines, remote=remote, require_review=require_review)
     if result.scan is not None and result.scan.refusal:
         click.echo("\n".join(result.scan.refusal), err=True)
         sys.exit(1)
@@ -235,23 +375,36 @@ def patterns():
               help="Don't match when this text follows (repeatable).")
 @click.option("--exclude-file", multiple=True, metavar="GLOB",
               help="Don't apply in files matching this glob (repeatable).")
+@click.option("--ignore-case", is_flag=True, help="Match regardless of letter case.")
+@click.option("--judgment", is_flag=True,
+              help="A value for a reviewer to weigh in context; never scanned as a regex.")
+@click.option("--note", default=None, metavar="TEXT",
+              help="Guidance shown to a reviewer beside this entry.")
 @click.option("--project", is_flag=True, help="Write the repo's git-scan.yaml instead of yours.")
-def patterns_add(id, pattern, category, word_boundary, not_followed_by, exclude_file, project):
+def patterns_add(id, pattern, category, word_boundary, not_followed_by, exclude_file,
+                 ignore_case, judgment, note, project):
     """Add a pattern: a regex that must never appear in a commit.
 
     \b
     Examples:
-      git-scan patterns add my-name --pattern 'Jane Doe' --category name
+      git-scan patterns add my-name --pattern 'Jane Doe' --category name --ignore-case
       git-scan patterns add cust-acme --pattern 'Acme Corporation' --category customer
       git-scan patterns add my-co --pattern 'Example Corp' --category employer --not-followed-by ' Cloud'
+      git-scan patterns add card-a --pattern '1234' --category last4 --judgment \\
+          --note 'flag only beside account, card, checking or a **** mask'
 
     ID is a handle for later edits (letters, digits, '.', '_', '-'); keep it
     free of the pattern text, since ids can appear in a repository's
     git-scan.yaml.
+
+    A --judgment entry is for a reviewer that weighs context (see
+    the privacy review), not for the scanner alone: a value that collides
+    with ordinary text as a regex but is sensitive in context.
     """
     try:
         up.add_pattern(id, pattern, category, word_boundary, list(not_followed_by),
-                       list(exclude_file), project=project)
+                       list(exclude_file), project=project, ignore_case=ignore_case,
+                       judgment=judgment, note=note)
     except (up.PatternError, up.ConfigError) as e:
         _fail(e)
     click.echo(f"added '{id}'")
@@ -267,8 +420,13 @@ def patterns_add(id, pattern, category, word_boundary, not_followed_by, exclude_
                    "'patterns exceptions add'.")
 @click.option("--exclude-file", multiple=True, metavar="GLOB",
               help="Replaces the list of file globs the pattern skips (repeatable).")
+@click.option("--ignore-case/--no-ignore-case", default=None)
+@click.option("--judgment/--no-judgment", default=None,
+              help="Hand the entry to a reviewer, or back to the scanner.")
+@click.option("--note", default=None, metavar="TEXT", help="Replaces the note ('' clears it).")
 @click.option("--project", is_flag=True, help="Act on the repo's git-scan.yaml.")
-def patterns_edit(id, pattern, category, word_boundary, not_followed_by, exclude_file, project):
+def patterns_edit(id, pattern, category, word_boundary, not_followed_by, exclude_file,
+                  ignore_case, judgment, note, project):
     """Change a pattern's fields.
 
     \b
@@ -276,18 +434,22 @@ def patterns_edit(id, pattern, category, word_boundary, not_followed_by, exclude
       git-scan patterns edit my-co --not-followed-by ' Cloud' --not-followed-by '-sdk'
       git-scan patterns edit my-co --exclude-file 'docs/vendors.md'
       git-scan patterns edit my-co --exclude-file ''      (clears the list)
+      git-scan patterns edit my-town --judgment --note 'only beside an address'
 
     Lists replace the previous value: --not-followed-by sets the whole
     exception list, so an omitted value is dropped. To add or drop one
     exception and keep the rest, use 'patterns exceptions add / remove'.
     Editing a built-in writes an override into your layer rather than
-    touching the package.
+    touching the package. Prefer --judgment over 'patterns remove' for an
+    entry that trips as a regex but still matters: the reviewer keeps it.
     """
     try:
         up.edit_pattern(id, project=project, pattern=pattern, category=category,
                         word_boundary=word_boundary,
                         not_followed_by=list(not_followed_by) or None,
-                        exclude_files=list(exclude_file) or None)
+                        exclude_files=list(exclude_file) or None,
+                        ignore_case=ignore_case, judgment=judgment,
+                        note=note if note is None else (note or False))
     except (up.PatternError, up.ConfigError) as e:
         _fail(e)
     click.echo(f"updated '{id}'")
@@ -346,7 +508,53 @@ def patterns_list(include_disabled):
     for r in rows:
         state = "  (off; restore with: git-scan patterns restore " + r["id"] + ")" if r["disabled"] else ""
         cat = f" [{r['category']}]" if r["category"] else ""
-        click.echo(f"  {r['id']:<{width}}  {r['layer']:<8} {r['pattern']}{cat}{state}")
+        kind = "  (judgment)" if r["judgment"] else ""
+        click.echo(f"  {r['id']:<{width}}  {r['layer']:<8} {r['pattern']}{cat}{kind}{state}")
+
+
+# --- notes ------------------------------------------------------------------
+
+@cli.group()
+def notes():
+    """Free-text guidance for a reviewer that reads your configuration."""
+
+
+@notes.command("add")
+@click.argument("text")
+@click.option("--project", is_flag=True, help="Write the repo's git-scan.yaml instead of yours.")
+def notes_add(text, project):
+    """Add a note: guidance that belongs to no single entry.
+
+    \b
+    Example:
+      git-scan notes add 'a city name is a finding only beside an address or a property'
+    """
+    try:
+        click.echo(up.add_note(text, project=project))
+    except (up.PatternError, up.ConfigError) as e:
+        _fail(e)
+
+
+@notes.command("remove")
+@click.argument("number", type=int)
+@click.option("--project", is_flag=True, help="Act on the repo's git-scan.yaml.")
+def notes_remove(number, project):
+    """Remove a note by its number in 'notes list'."""
+    try:
+        click.echo(up.remove_note(number, project=project))
+    except (up.PatternError, up.ConfigError) as e:
+        _fail(e)
+
+
+@notes.command("list")
+def notes_list():
+    """Show the notes from every layer."""
+    try:
+        rows = up.list_notes()
+    except up.ConfigError as e:
+        _fail(e)
+    for i, n in enumerate(rows, 1):
+        click.echo(f"  {i}. {n}")
 
 
 @patterns.group("exceptions")
@@ -548,7 +756,10 @@ def _setting_command(name: str):
     def _cmd(value, project):
         if value is None:
             current = up.get_setting(name)
-            click.echo("on" if current is True else "off" if current is False else current)
+            if typ is bool:
+                click.echo("on" if current is True else "off")
+            else:
+                click.echo("unset" if current is None else current)
             return
         try:
             up.set_setting(name, value, project=project)
@@ -580,12 +791,12 @@ _DIR = click.option("--hooks-dir", default=None,
 @click.option("--force", is_flag=True, help="Replace hooks that are not git-scan scripts.")
 @click.option("--pre-push", "pre_push", is_flag=True,
               help="Also refuse pushes of commits that were not scanned (the push gate).")
-@click.option("--require-mark", "require_mark", multiple=True, metavar="LABEL",
-              help="With --pre-push: also require this mark (repeatable).")
+@click.option("--require-review", "require_review", is_flag=True,
+              help="With --pre-push: also refuse a push until a privacy review is recorded.")
 @click.option("--missing-config-help", "missing_config_help", default=None, metavar="TEXT",
               help="Shown instead of setup instructions when a commit is refused "
                    "because the user config is missing.")
-def hook_install(local, hooks_dir, force, pre_push, require_mark, missing_config_help):
+def hook_install(local, hooks_dir, force, pre_push, require_review, missing_config_help):
     """Install the pre-commit and commit-msg hooks.
 
     pre-commit scans each staged change; commit-msg scans each commit
@@ -597,28 +808,28 @@ def hook_install(local, hooks_dir, force, pre_push, require_mark, missing_config
     \b
     --pre-push adds the push gate: a pre-push hook that scans every commit
     being pushed (skipping ones already marked 'scanned'; a post-commit
-    hook marks commits whose scan passed) and refuses the push on findings,
-    plus any mark named with --require-mark, which a separate check writes
-    with 'git-scan mark LABEL'.
+    hook marks commits whose scan passed) and refuses the push on findings.
+    --require-review makes it also refuse a push until 'git-scan review' has
+    passed for the unpushed commits.
     """
-    if require_mark and not pre_push:
-        _fail(click.UsageError("--require-mark needs --pre-push"))
+    if require_review and not pre_push:
+        _fail(click.UsageError("--require-review needs --pre-push"))
     try:
         click.echo(install_hook(hooks_dir, force=force, local=local, pre_push=pre_push))
         if missing_config_help:
             click.echo(f"missing-config help: {write_missing_config_help(missing_config_help)}")
-        if require_mark:
-            labels = up.require_marks(list(require_mark))
-            click.echo(f"push requires: scanned, {', '.join(labels)}")
-    except (HookError, up.PatternError) as e:
+        if require_review:
+            up.set_setting("require-review", True)
+            click.echo("push requires: a scan of every commit, and a clean privacy review")
+    except (HookError, up.PatternError, up.ConfigError) as e:
         _fail(e)
     if pre_push:
         click.echo("\n".join([
             "",
             "Every push now scans the commits it sends, skipping ones already marked",
             "'scanned' (committing through the hooks marks them).",
-        ] + ([f"Marks a separate check must add: {', '.join(require_mark)} "
-              "(git-scan mark <label> once it passes)."] if require_mark else [])))
+        ] + (["A push is also refused until 'git-scan review' has passed for its commits."]
+             if require_review else [])))
 
 
 @hook.command("uninstall")

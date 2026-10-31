@@ -95,7 +95,8 @@ def _failing(results: Iterable[CheckResult]) -> bool:
     return any(not c.passed and not c.skipped for c in results)
 
 
-def _clean_commits(repo_path: str, config, scan_input: ScanInput) -> List[str]:
+def _clean_commits(repo_path: str, config, scan_input: ScanInput,
+                   acknowledged: bool = False) -> List[str]:
     """After a failed scan of commits: the ones whose own lines pass.
 
     Names belong to no commit, so a names finding leaves none clean.
@@ -105,7 +106,8 @@ def _clean_commits(repo_path: str, config, scan_input: ScanInput) -> List[str]:
     """
     names_only = ScanInput(content=[], names=scan_input.names, scope=scan_input.scope,
                            remote=scan_input.remote)
-    if _failing(run_all_steps(repo_path, config=config, scan_input=names_only)):
+    if _failing(run_all_steps(repo_path, config=config, scan_input=names_only,
+                              acknowledged=acknowledged)):
         return []
     clean: List[str] = []
 
@@ -113,7 +115,8 @@ def _clean_commits(repo_path: str, config, scan_input: ScanInput) -> List[str]:
         if not group:
             return
         if not _failing(run_all_steps(repo_path, config=config,
-                                      scan_input=scan_input.subset(group))):
+                                      scan_input=scan_input.subset(group),
+                                      acknowledged=acknowledged)):
             clean.extend(group)
         elif len(group) > 1:
             visit(group[:len(group) // 2])
@@ -137,6 +140,7 @@ def run_scan(
     rev_range: Optional[str] = None,
     commits: Optional[List[str]] = None,
     remote: Optional[str] = None,
+    acknowledge_judgment: bool = False,
 ) -> ScanReport:
     """Run all checks on a repository.
 
@@ -152,6 +156,8 @@ def run_scan(
         rev_range: Scan every commit in this range (``A..B``) instead of the staged diff
         commits: Scan exactly these commits instead of the staged diff
         remote: The remote the commits are for (identity rules), if known
+        acknowledge_judgment: Treat matches on judgment entries in the scanned
+            commits as acknowledged (``git-scan ack --commit``)
 
     A full scan that passes is remembered for the push gate: a staged scan
     records the staged tree (the post-commit hook marks the commit made
@@ -214,6 +220,7 @@ def run_scan(
     step_results = run_all_steps(
         repo_path, config=config, scan_input=scan_input, deep=deep,
         only_step=only_step, include_untracked=include_untracked,
+        acknowledged=acknowledge_judgment,
     )
 
     first = len(report.checks)
@@ -230,7 +237,8 @@ def run_scan(
     if only_step is None:
         if scan_input.scope == "commits":
             report.marked = (report.commits if not report.failed
-                             else _clean_commits(repo_path, config, scan_input))
+                             else _clean_commits(repo_path, config, scan_input,
+                                                 acknowledge_judgment))
             marks.add_marks(marks.SCANNED, report.marked, repo_path)
         elif scan_input.scope == "message":
             if report.failed:
@@ -242,15 +250,17 @@ def run_scan(
 
 
 def push_scan(push_lines: Iterable[str], remote: Optional[str] = None,
-              required: Iterable[str] = (), repo_path: str = ".") -> marks.PushResult:
-    """The push gate: scan what a push would send, and check required marks.
+              require_review: bool = False, repo_path: str = ".") -> marks.PushResult:
+    """The push gate: scan what a push would send, and check for a recorded
+    review when one is required.
 
     Every outgoing commit not yet marked ``scanned`` is scanned in one pass
     (patch, message, author and committer); clean ones are marked, so the
-    next push skips them. Required marks are checked as ``marks.push_check``
-    always has.
+    next push skips them. A recorded review covers the reviewed commit and
+    every unpushed commit before it.
     """
-    result = marks.push_check(push_lines, remote=remote, required=required, repo_path=repo_path)
+    result = marks.push_check(push_lines, remote=remote, require_review=require_review,
+                              repo_path=repo_path)
     if result.unscanned:
         result.scan = run_scan(repo_path, commits=result.unscanned, remote=remote)
     return result

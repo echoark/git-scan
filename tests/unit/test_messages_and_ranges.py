@@ -240,15 +240,3 @@ def test_a_refused_push_marks_only_the_clean_commits(hooked):
     refused = _push(hooked)
     assert refused.returncode != 0 and f"[commit {dirty[:12]}] c.txt:1" in refused.stderr
     assert {s for s in (first, second, dirty, last) if marks.marks_on(s)} == {first, second, last}
-
-
-def test_a_push_still_requires_a_required_mark(hooked):
-    assert _run("hook", "install", "--pre-push", "--require-mark", "review").exit_code == 0
-    _commit(hooked, "a.txt", "clean\n", None, "--no-verify")
-    refused = _push(hooked)
-    assert refused.returncode != 0
-    assert "1 scanned now" in refused.stderr and "missing a required mark" in refused.stderr
-    assert _run("mark", "review").exit_code == 0
-    pushed = _push(hooked)
-    assert pushed.returncode == 0, pushed.stderr
-    assert "0 scanned now, 1 already scanned; marks present: review" in pushed.stdout

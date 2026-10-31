@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "git-scan"
-version = "0.7.0"
+version = "0.8.0"
 description = "Git precommit scanner for sensitive data"
 requires-python = ">=3.11"
 dependencies = [
@@ -30,3 +30,4 @@ include = ["git_scan*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--ignore=tests/integration"

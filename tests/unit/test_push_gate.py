@@ -140,39 +140,68 @@ def test_an_amended_commit_is_scanned_again_at_push(gate):
     assert refused.returncode != 0 and "a.txt:1" in refused.stderr
 
 
-def test_a_required_mark_is_refused_until_marked_and_covers_the_batch(gate):
-    assert _run("hook", "install", "--pre-push", "--require-mark", "review").exit_code == 0
-    assert load_config(".").required_marks == ["review"]
-    first = _commit(gate, "a.txt")
-    _commit(gate, "b.txt")
+def test_a_project_layer_cannot_lift_the_review_requirement(gate):
+    _run("hook", "install", "--pre-push", "--require-review")
+    (gate / "git-scan.yaml").write_text("push:\n  require_review: false\n")
+    assert load_config(".").review_required is True
+
+
+def test_judgment_matches_in_a_commit_that_skipped_the_hook_are_cleared_by_ack(gate):
+    _run("patterns", "add", "town", "--pattern", "Springfield", "--category", "city",
+         "--judgment", "--note", "only beside an address")
+    sha = _commit(gate, "notes.txt", "Springfield is a common town name\n", "--no-verify")
     refused = _push(gate)
     assert refused.returncode != 0
-    assert "review" in refused.stderr and first[:12] in refused.stderr
-    assert "git-scan mark review" in refused.stderr
+    assert f"[commit {sha[:12]}] notes.txt:1 [city] Springfield" in refused.stderr
+    assert f"git-scan ack --commit {sha[:12]}" in refused.stderr
+    assert marks.marks_on(sha) == set()
 
-    r = _run("mark", "review")                              # one mark on the tip
-    assert r.exit_code == 0 and "marked" in r.output
+    r = _run("ack", "--commit", sha[:12])
+    assert r.exit_code == 0, r.output
+    assert "1 match(es) acknowledged" in r.output and "marked scanned" in r.output
+    assert marks.marks_on(sha) == {"scanned"}
     assert _push(gate).returncode == 0
 
 
-def test_only_unpushed_commits_are_checked(gate):
-    _run("hook", "install", "--pre-push", "--require-mark", "review")
-    _commit(gate, "a.txt")
-    _run("mark", "review")
-    assert _push(gate).returncode == 0
-    newer = _commit(gate, "b.txt")
-    refused = _push(gate)
-    assert refused.returncode != 0 and newer[:12] in refused.stderr
-    assert "1 commit(s) to push" in refused.stderr
-    assert "1 commit(s) missing a required mark" in refused.stderr
-    _run("mark", "review")
-    assert _push(gate).returncode == 0
+def test_ack_on_a_commit_does_not_clear_a_real_finding(gate):
+    _run("patterns", "add", "town", "--pattern", "Springfield", "--category", "city", "--judgment")
+    sha = _commit(gate, "x.txt", "Springfield ghp_" + "f" * 36 + "\n", "--no-verify")
+    r = _run("ack", "--commit", sha[:12])
+    assert r.exit_code == 1 and "not acknowledged" in r.output and "x.txt:1" in r.output
+    assert marks.marks_on(sha) == set()
 
 
-def test_a_project_layer_cannot_drop_a_required_mark(gate):
-    _run("hook", "install", "--pre-push", "--require-mark", "review")
-    (gate / "git-scan.yaml").write_text("push:\n  require_marks: []\n")
-    assert load_config(".").required_marks == ["review"]
+def test_staged_ack_lets_the_commit_through_the_hook_and_is_consumed(gate):
+    _run("patterns", "add", "town", "--pattern", "Springfield", "--category", "city",
+         "--judgment", "--note", "only beside an address")
+    (gate / "notes.txt").write_text("Springfield is a common town name\n")
+    _git(gate, "add", "notes.txt")
+    refused = _git(gate, "commit", "-q", "-m", "add notes", check=False)
+    assert refused.returncode != 0
+    assert "[city] Springfield" in refused.stdout + refused.stderr
+    assert "git-scan ack" in refused.stdout + refused.stderr
+
+    r = _run("ack")
+    assert r.exit_code == 0 and "acknowledged 1 judgment match(es)" in r.output, r.output
+    _git(gate, "commit", "-q", "-m", "add notes")
+    sha = _git(gate, "rev-parse", "HEAD").stdout.strip()
+    assert marks.marks_on(sha) == {"scanned"}
+
+    (gate / "more.txt").write_text("Springfield again\n")          # the ack was consumed
+    _git(gate, "add", "more.txt")
+    assert _git(gate, "commit", "-q", "-m", "more", check=False).returncode != 0
+    assert _run("ack").exit_code == 0
+    assert _git(gate, "commit", "-q", "-m", "more", check=False).returncode == 0
+
+
+def test_ack_with_nothing_to_acknowledge_says_so(gate):
+    r = _run("ack")
+    assert r.exit_code == 0 and "no judgment entries" in r.output
+    _run("patterns", "add", "town", "--pattern", "Springfield", "--category", "city", "--judgment")
+    (gate / "a.txt").write_text("plain\n")
+    _git(gate, "add", "a.txt")
+    r = _run("ack")
+    assert r.exit_code == 0 and "no judgment matches" in r.output
 
 
 def test_push_check_by_hand_reports_against_the_upstream(gate):
@@ -184,15 +213,13 @@ def test_push_check_by_hand_reports_against_the_upstream(gate):
     assert r.exit_code == 1 and "b.txt:1" in r.output and "push refused (1 commit(s)" in r.output
 
 
-def test_mark_rejects_a_bad_label(gate):
-    _commit(gate, "a.txt")
-    r = _run("mark", "no spaces")
-    assert r.exit_code == 1 and "not a valid mark label" in r.output
+def test_require_review_needs_pre_push(tmp_path):
+    r = _run("hook", "install", "--hooks-dir", str(tmp_path / "hooks"), "--require-review")
+    assert r.exit_code == 1 and "--require-review needs --pre-push" in r.output
 
 
-def test_require_mark_needs_pre_push(tmp_path):
-    r = _run("hook", "install", "--hooks-dir", str(tmp_path / "hooks"), "--require-mark", "x")
-    assert r.exit_code == 1 and "--require-mark needs --pre-push" in r.output
+def test_there_is_no_command_that_writes_a_mark(gate):
+    assert _run("mark", "scanned").exit_code == 2       # unknown command
 
 
 def test_deleting_a_remote_branch_is_not_checked(gate):
@@ -214,3 +241,28 @@ def test_install_records_missing_config_help_and_a_real_commit_shows_it(gate, tm
     assert "Commit refused" in blocked.stderr
     assert "Commits go through the review tool, which also sets this up." in blocked.stderr
     assert "patterns clear" not in blocked.stderr and "[PASS]" not in blocked.stderr
+
+
+def test_a_judgment_match_in_the_commit_message_is_refused_until_acknowledged(gate):
+    _run("patterns", "add", "town", "--pattern", "Springfield", "--category", "city",
+         "--judgment", "--note", "only beside an address")
+    (gate / "a.txt").write_text("clean\n")
+    _git(gate, "add", "a.txt")
+    refused = _git(gate, "commit", "-q", "-m", "Move the office to Springfield", check=False)
+    assert refused.returncode != 0
+    out = refused.stdout + refused.stderr
+    assert "commit message:1 [city] Springfield" in out and "git-scan ack" in out
+    assert _run("ack").exit_code == 0            # the staged tree is unchanged, so the ack covers the message too
+    assert _git(gate, "commit", "-q", "-m", "Move the office to Springfield", check=False).returncode == 0
+
+
+def test_the_judgment_check_lists_the_guidance_before_the_matches(gate):
+    _run("patterns", "add", "town", "--pattern", "Springfield", "--category", "city", "--judgment")
+    (gate / "a.txt").write_text("".join(f"Springfield line {i}\n" for i in range(12)))
+    _git(gate, "add", "a.txt")
+    r = _run("run")
+    assert r.exit_code == 1
+    lines = [ln.strip() for ln in r.output.splitlines()]
+    first = next(i for i, ln in enumerate(lines) if ln.startswith("Each match below"))
+    assert lines[first + 1] == "git-scan ack"      # the command is visible even when matches are cut at ten
+    assert "and" in r.output and "more (-v shows all)" in r.output
