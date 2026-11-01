@@ -135,8 +135,8 @@ where a net `git diff A B` would show nothing. Findings name the commit:
          [commit 1c5d7e0a9f32] author you@work.example is not allowed for github.com/octo-dev/app
 ```
 
-Clean commits are marked `scanned` (see [Push gate](#push-gate-optional)).
-`--commit REV` does the same for one commit.
+The gate remembers which commits came back clean (see [Push
+gate](#push-gate-optional)). `--commit REV` does the same for one commit.
 
 ## Configuration
 
@@ -443,14 +443,14 @@ This adds two hooks beside `pre-commit` and `commit-msg`:
 - `pre-push` runs `git-scan push-check`, which scans every commit the remote
   doesn't have yet in one pass (changes, message, author and committer, as
   `run --range` does) and refuses the push on findings, naming the commits;
-- `post-commit` records each commit whose commit-time scan passed as `scanned`.
+- `post-commit` remembers each commit whose commit-time scan passed.
 
-`scanned` is a cache: the gate skips commits that carry it and marks the
-clean ones it scans, so a commit is scanned once. A rebased or rewritten
-commit is a new commit without the mark; the gate scans it on the next
-push, so a rewrite of many commits costs one scan rather than a refusal.
-A message refused by the `commit-msg` hook keeps that commit from being
-marked even if it is then committed with `--no-verify`.
+The gate skips commits it has already seen clean and remembers the ones
+it clears, so a commit is scanned once. A rebased or rewritten commit is
+a new commit the gate has not seen; it is scanned on the next push, so a
+rewrite of many commits costs one scan rather than a refusal. A message
+refused by the `commit-msg` hook keeps that commit from being remembered
+even if it is then committed with `--no-verify`.
 
 ```
 git-scan: 3 commit(s) to push: 2 scanned now, 1 already scanned
@@ -473,11 +473,10 @@ can require the review but not lift the requirement.
 `push.require_marks`: a configuration that still has it fails to load with
 the fix in the message. Turn the requirement into `git-scan config
 require-review on` (or reinstall with `--require-review`); the review itself
-is `git-scan review`. Commits marked `scanned` before the upgrade stay
-scanned.
+is `git-scan review`. Commits the gate had already cleared stay cleared.
 
 **Limitation:** the check is made against the remote being pushed to. With
-several remotes, commits marked relative to one may be pushed to another
+several remotes, commits cleared relative to one may be pushed to another
 that is further behind; only the remote's own tracking refs and the tips
 git reports are treated as already present.
 

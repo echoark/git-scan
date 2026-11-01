@@ -41,7 +41,7 @@ Any other client: run `git-scan-mcp` as a stdio server.
 
 | Tool | Arguments | Returns |
 |---|---|---|
-| `scan_repo` | `repo_path` (default `.`), `only_step`, `include_unstaged`, `include_untracked`, `message`, `rev_range`, `deep` (reserved) | `passed`, `passed_count`, `failed_count`, and `checks`: one entry per check with `name`, `passed`, `findings`, and `info`. With `rev_range`, also `commits` (read) and `marked` (clean, now marked `scanned`) |
+| `scan_repo` | `repo_path` (default `.`), `only_step`, `include_unstaged`, `include_untracked`, `message`, `rev_range`, `deep` (reserved) | `passed`, `passed_count`, `failed_count`, and `checks`: one entry per check with `name`, `passed`, `findings`, and `info`. With `rev_range`, also `commits` (read) and `marked` (clean; the push gate will not scan them again) |
 | `hook_status` | `repo_path` (default `.`) | `global` and `local` (each `path` and `state` of the pre-commit hook), `hooks_path`, `effective` (the pre-commit hook git runs for that repository), and `hooks`: one row per hook in that directory (`pre-commit`, `commit-msg`, `post-commit`, `pre-push`), each with `hook`, `path`, `state`, and `protects`, a sentence saying what it protects or what goes unprotected |
 | `list_steps` | none | `steps`: the check module names `only_step` accepts |
 
