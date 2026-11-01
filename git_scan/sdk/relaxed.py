@@ -1,188 +1,146 @@
-"""Relaxed review: a marking on one exact repository, kept in the cache.
+"""Relaxed review: eligibility per repository, used review by review.
 
-Every repository is reviewed in public mode unless its exact ``origin``
-URL has been marked here. The marking lives in the XDG cache
-(``${XDG_CACHE_HOME:-~/.cache}/git-scan/relaxed.json``), never in a
-configuration layer, so no repository can grant it to itself and losing the
-cache only makes reviews stricter.
+Two separate things:
 
-Marking a GitHub remote needs a live REST answer of ``private`` for that
-repository (``gh api repos/OWNER/REPO --jq .visibility``); anything else,
-including no answer, refuses. The same check runs again at review time and
-falls back to public when it does not answer ``private``. A remote on any
-other host can only be marked on the owner's own statement that it is
-private, which the CLI takes at an interactive terminal. A repository with
-no remote, or one whose configuration declares it public-prospective, is
-never relaxed.
+* **Eligibility** says this repository may get a relaxed review. ``mark``
+  establishes it once per clone and writes it to the repository's own
+  ``.git/config`` (local to the clone, never pushed), keyed by the exact
+  ``origin`` URL. It needs a remote whose host says the repository is
+  private (github.com and registered ``github`` hosts are asked through
+  their REST API), or a host the user registered as ``other`` with
+  ``allow-relaxed``. A repository with no remote, on an unregistered host,
+  or declared public-prospective in any configuration layer is never
+  eligible.
+* **Use** is ``git-scan review --relaxed``, one review at a time.
+  ``check_use`` refuses unless the repository is eligible for the same
+  exact URL, and asks a verifying host again each time. Without the flag
+  every review is public.
+
+Nothing here writes git-scan's YAML configuration: per-repository state
+doesn't belong in a file that is backed up and meant to be verified as the
+user's, and a new clone or session simply marks again.
 """
 
 from __future__ import annotations
 
-import json
-import os
 import subprocess
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Dict, Optional, Tuple
+from dataclasses import dataclass
+from typing import Optional, Tuple
 
+from . import hosts
 from .config import MergedConfig, load_config
 from .steps.git_identity import is_local_remote, normalize_remote
 
-GITHUB_HOST = "github.com"
-VISIBILITY_TIMEOUT = 30   # seconds for the GitHub REST call
+KEY_URL = "git-scan.relaxed-remote"
+KEY_BASIS = "git-scan.relaxed-basis"
 
 
 class RelaxedError(ValueError):
-    """The repository can't be marked relaxed; the message says why."""
+    """Not eligible, or the relaxed review can't be used; the message says why."""
 
 
-def cache_path() -> Path:
-    xdg = os.environ.get("XDG_CACHE_HOME", "")
-    base = Path(xdg) if xdg else Path.home() / ".cache"
-    return base / "git-scan" / "relaxed.json"
+@dataclass
+class Marking:
+    url: str
+    basis: str            # "verified private by HOST" or "HOST vouched for by the user"
+    already: bool = False
 
 
-def _load() -> Dict[str, dict]:
-    try:
-        data = json.loads(cache_path().read_text())
-    except (OSError, ValueError):
-        return {}
-    return {k: v for k, v in data.items() if isinstance(v, dict)} if isinstance(data, dict) else {}
-
-
-def _save(data: Dict[str, dict]) -> None:
-    path = cache_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=1, sort_keys=True) + "\n")
+def _git(repo_path: str, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=repo_path, capture_output=True, text=True)
 
 
 def origin_url(repo_path: str = ".") -> Optional[str]:
-    res = subprocess.run(["git", "remote", "get-url", "origin"], cwd=repo_path,
-                         capture_output=True, text=True)
+    res = _git(repo_path, "remote", "get-url", "origin")
     url = res.stdout.strip() if res.returncode == 0 else ""
     return url or None
 
 
-def github_repo(url: str) -> Optional[Tuple[str, str]]:
-    """``(owner, repo)`` when ``url`` is a github.com repository, else None."""
-    remote = normalize_remote(url)
-    if not remote:
-        return None
-    parts = remote.split("/")
-    if parts[0] != GITHUB_HOST or len(parts) != 3:
-        return None
-    return parts[1], parts[2]
-
-
-def github_visibility(owner: str, repo: str) -> str:
-    """GitHub's answer for the repository's visibility, from the REST API.
-
-    Raises RelaxedError when there is no answer: gh missing, not signed in,
-    no network, an error status, or empty output.
-    """
-    try:
-        res = subprocess.run(["gh", "api", f"repos/{owner}/{repo}", "--jq", ".visibility"],
-                             capture_output=True, text=True, timeout=VISIBILITY_TIMEOUT)
-    except FileNotFoundError:
-        raise RelaxedError("the GitHub CLI (gh) is not installed, so GitHub can't be asked "
-                           "whether the repository is private")
-    except subprocess.TimeoutExpired:
-        raise RelaxedError(f"GitHub did not answer within {VISIBILITY_TIMEOUT}s")
-    if res.returncode != 0:
-        tail = (res.stderr or res.stdout).strip().splitlines()[-1:] or ["no output"]
-        raise RelaxedError(f"GitHub's visibility check failed: {tail[0]}")
-    answer = res.stdout.strip()
-    if not answer:
-        raise RelaxedError("GitHub's visibility check returned nothing")
-    return answer
-
-
 def public_prospective(config: MergedConfig) -> bool:
-    """Whether any layer declares the repository public-prospective.
-
-    Read per layer, like ``review_required``: a layer can declare it, never
-    lift a declaration another layer made.
-    """
+    """Whether any layer declares the repository public-prospective. Read
+    per layer, like ``review_required``: a layer can declare it, never lift
+    a declaration another layer made."""
     return any(bool(((layer or {}).get("review") or {}).get("public_prospective"))
                for layer in config.layers.values())
 
 
-def _checked_url(repo_path: str) -> str:
+def _parts(url: Optional[str]) -> Tuple[str, str, str]:
+    """``(host, owner, repo)`` of a remote URL; RelaxedError without one."""
+    if not url or is_local_remote(url):
+        raise RelaxedError("this repository has no remote (origin) on a git host; a repository "
+                           "without one never gets a relaxed review")
+    remote = normalize_remote(url)
+    parts = remote.split("/") if remote else []
+    if len(parts) < 3:
+        raise RelaxedError(f"can't read host/owner/repo from the remote '{url}'")
+    return parts[0], "/".join(parts[1:-1]), parts[-1]
+
+
+def _verify(url: str) -> str:
+    """Why this remote qualifies now; RelaxedError if it doesn't."""
+    host, owner, repo = _parts(url)
+    entry = hosts.get_host(host)
+    if entry is None:
+        raise RelaxedError(f"{host} is not a registered host. Register it with "
+                           f"'git-scan hosts add github|other {host}' (see git-scan hosts --help)")
+    provider = entry.provider
+    if provider is None:
+        raise RelaxedError(f"{host} is registered as '{entry.type}', a host type this git-scan "
+                           "doesn't know (a missing plugin?)")
+    if not provider.supported:
+        raise RelaxedError(f"{entry.type} hosts are not supported yet")
+    if provider.verifies:
+        try:
+            visibility = provider.visibility(host, owner, repo)
+        except hosts.HostError as e:
+            raise RelaxedError(str(e))
+        if visibility != "private":
+            raise RelaxedError(f"{host} reports {owner}/{repo} as '{visibility}', not private")
+        return f"verified private by {host}"
+    if entry.allow_relaxed:
+        return f"{host} vouched for by the user (no check possible)"
+    raise RelaxedError(f"{host} is a host git-scan can't ask, and it isn't registered with "
+                       "--allow-relaxed")
+
+
+def eligible_url(repo_path: str = ".") -> Optional[str]:
+    """The remote URL this clone is marked eligible for, if any."""
+    res = _git(repo_path, "config", "--local", "--get", KEY_URL)
+    return res.stdout.strip() or None if res.returncode == 0 else None
+
+
+def mark(repo_path: str = ".") -> Marking:
+    """Make this repository eligible for relaxed review, or report that it
+    already is (for the same exact remote URL)."""
     url = origin_url(repo_path)
-    if not url or is_local_remote(url) or not normalize_remote(url):
-        raise RelaxedError("this repository has no remote (origin) git-scan can identify; "
-                           "a repository without one is never reviewed as relaxed")
     if public_prospective(load_config(repo_path)):
         raise RelaxedError("this repository's configuration declares it public-prospective "
                            "(review.public_prospective), so it is always reviewed as public")
-    return url
-
-
-def mark(repo_path: str = ".", owner_statement: bool = False) -> dict:
-    """Mark the current repository's exact origin URL for relaxed review.
-
-    A github.com remote is marked only when GitHub answers ``private`` now;
-    ``owner_statement`` is ignored for it. Any other host is marked only with
-    ``owner_statement``: the owner's own statement that the repository is
-    private, which the CLI takes at an interactive terminal.
-    """
-    url = _checked_url(repo_path)
-    gh = github_repo(url)
-    if gh:
-        visibility = github_visibility(*gh)
-        if visibility != "private":
-            raise RelaxedError(f"GitHub reports {gh[0]}/{gh[1]} as '{visibility}', not private; "
-                               "it stays in public review")
-        basis = "github-private"
-    elif owner_statement:
-        basis = "owner-statement"
-    else:
-        raise RelaxedError(f"{normalize_remote(url)} is not on github.com, so its visibility "
-                           "can't be checked; only its owner can state that it is private, "
-                           "at an interactive terminal: git-scan review relax")
-    entry = {"basis": basis, "marked_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
-    data = _load()
-    data[url] = entry
-    _save(data)
-    return {"url": url, **entry}
+    if url and eligible_url(repo_path) == url:
+        basis = _git(repo_path, "config", "--local", "--get", KEY_BASIS).stdout.strip()
+        return Marking(url, basis, already=True)
+    basis = _verify(url)
+    _git(repo_path, "config", "--local", KEY_URL, url)
+    _git(repo_path, "config", "--local", KEY_BASIS, basis)
+    return Marking(url, basis)
 
 
 def unmark(repo_path: str = ".") -> bool:
-    """Drop the current repository's marking; False if it had none."""
-    url = origin_url(repo_path)
-    data = _load()
-    if not url or url not in data:
-        return False
-    del data[url]
-    _save(data)
-    return True
+    """Drop this clone's eligibility; False if it had none."""
+    had = eligible_url(repo_path) is not None
+    _git(repo_path, "config", "--local", "--unset", KEY_URL)
+    _git(repo_path, "config", "--local", "--unset", KEY_BASIS)
+    return had
 
 
-def marked() -> Dict[str, dict]:
-    """Every marking in the cache, by exact remote URL."""
-    return _load()
-
-
-def review_mode(repo_path: str, config: MergedConfig) -> Tuple[str, str]:
-    """``(mode, why)`` for a review now: ``relaxed`` only for a marked
-    repository that still qualifies; any doubt is ``public``."""
-    url = origin_url(repo_path)
-    if not url or is_local_remote(url) or not normalize_remote(url):
-        return "public", "no remote"
+def check_use(repo_path: str, config: MergedConfig) -> str:
+    """Why a relaxed review may run now; RelaxedError if it may not."""
     if public_prospective(config):
-        return "public", "declared public-prospective"
-    entry = _load().get(url)
-    if not entry:
-        return "public", "not marked relaxed"
-    gh = github_repo(url)
-    if gh:
-        try:
-            visibility = github_visibility(*gh)
-        except RelaxedError as e:
-            return "public", f"marked relaxed, but {e}"
-        if visibility != "private":
-            return "public", f"marked relaxed, but GitHub now reports it as '{visibility}'"
-        return "relaxed", "GitHub reports it private"
-    if entry.get("basis") == "owner-statement":
-        return "relaxed", "marked private by its owner"
-    return "public", "marking not recognized"
+        raise RelaxedError("this repository is declared public-prospective; its reviews are "
+                           "always public")
+    url = origin_url(repo_path)
+    _parts(url)
+    if eligible_url(repo_path) != url:
+        raise RelaxedError("this repository is not marked eligible for a relaxed review "
+                           "(git-scan relax)")
+    return _verify(url)

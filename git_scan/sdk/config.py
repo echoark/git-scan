@@ -249,10 +249,10 @@ def validate_layer(data, path) -> None:
     else:
         for k, v in review.items():
             if k == "relaxed":
-                errors.append("review.relaxed is no longer supported: every repository is "
-                              "reviewed as public unless it is marked relaxed, one exact "
-                              "repository at a time, with 'git-scan review relax' (kept in the "
-                              "cache, never in a config file). Delete the review.relaxed key from this file")
+                errors.append("review.relaxed is no longer supported: a relaxed review is "
+                              "asked for per review (git-scan review --relaxed) and only for "
+                              "a repository made eligible with 'git-scan relax'. Delete the "
+                              "review.relaxed key from this file")
             elif k not in REVIEW_KEYS:
                 errors.append(f"review.{k}: unknown (known: {', '.join(sorted(REVIEW_KEYS))})")
             elif k in ("runner", "model") and (not isinstance(v, str) or not v):

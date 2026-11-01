@@ -18,8 +18,6 @@ def isolate_config(tmp_path, monkeypatch):
     (test_config / "git-scan").mkdir(parents=True)
     (test_config / "git-scan" / "git-scan.yaml").write_text("patterns: []\n")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(test_config))
-    # Relaxed-review markings live in the cache; keep the developer's out.
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg_cache"))
 
     global_git = tmp_path / "gitconfig"
     global_git.write_text("[user]\n\tname = Test User\n\temail = test@example.com\n")

@@ -12,7 +12,8 @@ git_scan/
     hooks.py            # hook installation and status: pre-commit, commit-msg, push gate
     marks.py            # marks on commits, staged-tree records, outgoing commits for a push
     review.py           # the privacy review: prompt assembly, runner, result validation, marks
-    relaxed.py          # relaxed-review markings in the cache, GitHub visibility check
+    relaxed.py          # relaxed review: eligibility in .git/config, use per review
+    hosts.py            # git hosts and their providers (visibility checks), plugin discovery
     entropy.py          # Shannon-entropy detector and exclusions
     yaml_merge.py       # layer merge (managed snippet; see below)
     steps/              # one module per check; exposes run_checks(...)
@@ -287,23 +288,35 @@ records a review. Rules:
   marks none, so a rerun resumes. The runner is started with no tools and
   no user context (`--tools ""`, `--setting-sources ""` for `claude`), so
   the prompt is the reviewer's whole world and nothing on the machine can
-  steer the range, the catalog or the mode. The exposure mode is
-  git-scan's decision (`relaxed.review_mode`); see the next rule.
-- **Relaxed is a marking on one exact repository, never configuration.**
-  `sdk/relaxed.py` keeps markings in the XDG cache
-  (`${XDG_CACHE_HOME:-~/.cache}/git-scan/relaxed.json`), keyed by the exact
-  `origin` URL: no prefixes, no wildcards, nothing in any layer, so no
-  repository can grant itself relaxed and a lost cache only makes reviews
-  stricter. A github.com remote is marked only when `gh api
-  repos/OWNER/REPO --jq .visibility` answers `private` (REST; GraphQL is
-  blocked in some sandboxes), and the review asks again and falls back to
-  public on any other answer or none. Any other host is marked only on the
-  owner's statement that it is private, which the CLI takes at an
-  interactive terminal and refuses without one. No remote, or
+  steer the range, the catalog or the mode. The mode is public unless the
+  caller asks for relaxed and the repository passes `relaxed.check_use`;
+  see the next rule.
+- **Relaxed review: eligibility once, use per review.** `sdk/relaxed.py`
+  keeps the two apart. `git-scan relax` makes a clone eligible and writes
+  `git-scan.relaxed-remote` (the exact `origin` URL) and
+  `git-scan.relaxed-basis` to the repository's own `.git/config`; `git-scan
+  review --relaxed` (`check_use`) is refused unless the same URL is eligible,
+  and a verifying host is asked again every time. Without the flag a review
+  is public; a failed check refuses the review rather than running it in
+  another mode. No remote, an unregistered host, or
   `review.public_prospective` in any layer (read per layer, like
-  `review_required`), means public. There is no flag for the mode and none
-  may be added. Tests stand a stub `gh` on `PATH`; the sandbox points
-  `XDG_CACHE_HOME` at a temp directory.
+  `review_required`) is never eligible. In a relaxed review, `low` findings
+  are reported as notes and don't block; anything higher does.
+- **Hosts and providers.** `sdk/hosts.py` keeps registered hosts in the
+  global git config (`[git-scan-host "HOST"] type, allow-relaxed`); github.com
+  is built in. A type names a `HostProvider`: `github` asks `gh api` (REST;
+  GraphQL is blocked in some sandboxes; `--hostname` for Enterprise),
+  `bitbucket` is registered but unsupported, `other` can't be asked and is
+  eligible only with `allow-relaxed`. Plugins register providers under the
+  `git_scan.host_providers` entry point; a plugin can't replace a built-in
+  and a broken one is skipped. Adding a provider must never need a CLI or
+  storage change.
+- **Why none of it is in the YAML.** The user layer is the user's catalog,
+  backed up and meant to be verifiable as theirs; per-clone state and
+  machine-level host facts don't belong in it, and eligibility needs no
+  backup (a new clone or session marks again). Tests stand a stub `gh` on
+  `PATH`, and the sandbox's temp global git config keeps host registrations
+  off the developer's machine.
 - **A pre-commit hook runs before the commit exists.** A passing staged scan
   records the staged tree in the git directory; a refused commit message
   deletes that record; the post-commit hook marks HEAD only if its tree is
@@ -357,7 +370,6 @@ machine the tests run on:
 | Variable | Set to | Hides |
 |---|---|---|
 | `XDG_CONFIG_HOME` | a temp dir holding a user layer with `patterns: []` | the developer's personal patterns; also where `hooks.default_hooks_dir()` resolves |
-| `XDG_CACHE_HOME` | a temp dir | the developer's relaxed-review markings |
 | `GIT_CONFIG_GLOBAL` | a temp file with a test name and email | the developer's global git config, including `core.hooksPath` |
 | `GIT_CONFIG_NOSYSTEM` | `1` | the system git config |
 | `USER` | `testuser` | the developer's username in dynamic patterns |

@@ -58,6 +58,7 @@ class ReviewResult:
     commits: List[str] = field(default_factory=list)      # reviewed in this run
     skipped: List[str] = field(default_factory=list)      # already marked reviewed
     findings: List[dict] = field(default_factory=list)
+    notes: List[dict] = field(default_factory=list)       # low-severity, relaxed only: shown, not blocking
     warnings: List[str] = field(default_factory=list)
     batches: int = 0
     reports: List[str] = field(default_factory=list)      # one line per batch: what the reviewer said, by whom, how long
@@ -144,10 +145,16 @@ def commit_records(repo_path: str, commits: Sequence[str]) -> List[dict]:
     return records
 
 
-def exposure_mode(repo_path: str, config: MergedConfig) -> tuple:
-    """``(mode, why)``: git-scan's decision, never the caller's. Public unless
-    the repository is marked relaxed and still qualifies (see ``relaxed``)."""
-    return relaxed.review_mode(repo_path, config)
+def exposure_mode(repo_path: str, config: MergedConfig, relaxed_review: bool) -> tuple:
+    """``(mode, why)``. Public unless a relaxed review was asked for, and then
+    only if the repository is eligible now (see ``relaxed``); otherwise the
+    review is refused, never quietly run in another mode."""
+    if not relaxed_review:
+        return "public", "the default"
+    try:
+        return "relaxed", relaxed.check_use(repo_path, config)
+    except relaxed.RelaxedError as e:
+        raise ReviewError(f"no relaxed review: {e}")
 
 
 def build_prompt(mode: str, catalog: dict, records: List[dict],
@@ -247,7 +254,7 @@ def run_batch(argv: List[str], prompt: str, timeout: int) -> dict:
 
 
 def review(repo_path: str = ".", commits: Optional[List[str]] = None,
-           rev_range: Optional[str] = None,
+           rev_range: Optional[str] = None, relaxed_review: bool = False,
            publish: Sequence[str] = (), runner: Optional[str] = None,
            timeout: Optional[int] = None, batch_bytes: Optional[int] = None,
            progress: Optional[Callable[[str], None]] = None) -> ReviewResult:
@@ -259,7 +266,7 @@ def review(repo_path: str = ".", commits: Optional[List[str]] = None,
         raise ReviewError("no personal patterns are configured; set them up (or declare none "
                           "with: git-scan patterns clear) before reviewing")
     name, argv = resolve_runner(config, runner)
-    mode, why = exposure_mode(repo_path, config)
+    mode, why = exposure_mode(repo_path, config, relaxed_review)
     say(f"{mode} review ({why})")
     timeout = timeout or int(config.review.get("timeout") or DEFAULT_TIMEOUT)
     batch_bytes = batch_bytes or int(config.review.get("batch_bytes") or DEFAULT_BATCH_BYTES)
@@ -312,9 +319,14 @@ def review(repo_path: str = ".", commits: Optional[List[str]] = None,
         report = f"batch {i}/{len(batches)}{by}{secs}: {str(data.get('summary') or '').strip() or '(no summary)'}"
         result.reports.append(report)
         say(report)
-        if data["findings"]:
-            result.findings += data["findings"]
-            say(f"batch {i}/{len(batches)}: {len(data['findings'])} finding(s); not recorded")
+        blocking = data["findings"]
+        if mode == "relaxed":
+            notes = [f for f in blocking if str(f.get("severity", "")).lower() == "low"]
+            blocking = [f for f in blocking if f not in notes]
+            result.notes += notes
+        if blocking:
+            result.findings += blocking
+            say(f"batch {i}/{len(batches)}: {len(blocking)} finding(s); not recorded")
         else:
             marks.add_marks(marks.REVIEWED, shas, repo_path)
             say(f"batch {i}/{len(batches)}: clean; recorded")

@@ -14,7 +14,7 @@ from git_scan.sdk.hooks import install_hook, uninstall_hook, status, format_stat
 from git_scan.sdk import marks
 from git_scan.sdk import review as review_sdk
 from git_scan.sdk import relaxed as relaxed_sdk
-from git_scan.sdk.steps.git_identity import normalize_remote
+from git_scan.sdk import hosts as hosts_sdk
 from git_scan.sdk.config import load_config, ConfigError, write_missing_config_help
 
 
@@ -223,6 +223,9 @@ def ack(rev):
 
 
 @cli.group(invoke_without_command=True)
+@click.option("--relaxed", "relaxed_review", is_flag=True,
+              help="This review only: relaxed (personal content becomes notes). Refused unless "
+                   "the repository is eligible (git-scan relax) and still private.")
 @click.option("--publish", "publish", multiple=True, metavar="FILE",
               help="Text published beside the push (a pull-request body) to review too (repeatable).")
 @click.option("--range", "rev_range", default=None, metavar="A..B",
@@ -232,7 +235,7 @@ def ack(rev):
 @click.option("--timeout", type=int, default=None, metavar="SECONDS", help="Per batch.")
 @click.option("--quiet", is_flag=True, help="No progress lines on standard error.")
 @click.pass_context
-def review(ctx, publish, rev_range, runner, timeout, quiet):
+def review(ctx, relaxed_review, publish, rev_range, runner, timeout, quiet):
     """Run the privacy review of the unpushed commits and record a clean result.
 
     git-scan builds the reviewer's prompt itself: its packaged review
@@ -244,8 +247,10 @@ def review(ctx, publish, rev_range, runner, timeout, quiet):
     The reviewer's one-line summary of each batch is printed with the model
     and the time it took.
 
-    The mode is git-scan's decision: public for every repository, relaxed
-    only for one marked with 'git-scan review relax' that still qualifies.
+    Every review is public unless --relaxed is given, and that is refused
+    unless the repository is eligible (git-scan relax) and its host still
+    reports it private. In a relaxed review, low-severity notes are shown
+    but don't block.
 
     \b
     Findings are printed with the value and location; nothing is recorded
@@ -258,7 +263,7 @@ def review(ctx, publish, rev_range, runner, timeout, quiet):
         return
     say = (lambda _m: None) if quiet else (lambda m: click.echo(f"git-scan review: {m}", err=True))
     try:
-        result = review_sdk.review(".", rev_range=rev_range,
+        result = review_sdk.review(".", rev_range=rev_range, relaxed_review=relaxed_review,
                                   publish=list(publish), runner=runner, timeout=timeout,
                                   progress=say)
     except (review_sdk.ReviewError, ConfigError, marks.MarkError) as e:
@@ -267,6 +272,9 @@ def review(ctx, publish, rev_range, runner, timeout, quiet):
         click.echo(f"  reviewer: {line}")
     for w in result.warnings:
         click.echo(f"  warning: {w}")
+    for f in result.notes:
+        note = f" ({f['note']})" if f.get("note") else ""
+        click.echo(f"  note: {f['location']} [{f['category']}/low] {f['value']}{note}")
     if result.findings:
         click.echo(click.style(f"  [FAIL] Privacy review ({result.mode}; {len(result.commits)} "
                                f"commit(s); {len(result.findings)} finding(s))", fg="red"))
@@ -286,62 +294,85 @@ def review(ctx, publish, rev_range, runner, timeout, quiet):
         click.echo(f"nothing new to review{skipped}")
 
 
-@review.command("relax")
-@click.option("--remove", is_flag=True, help="Drop this repository's marking.")
-@click.option("--list", "list_", is_flag=True, help="Show every marking in the cache.")
-def review_relax(remove, list_):
-    """Mark this repository (its exact origin URL) for relaxed review.
+@cli.command("relax")
+@click.option("--remove", is_flag=True, help="Drop this repository's eligibility.")
+def relax(remove):
+    """Make this repository eligible for a relaxed review (once per clone).
 
-    Relaxed is for a private repository its owner keeps for personal
-    material. Every other repository is reviewed as public.
+    Eligibility only allows 'git-scan review --relaxed'; no review is relaxed
+    by default. It is recorded in this repository's .git/config for its exact
+    origin URL, and needs:
 
     \b
-    github.com: GitHub must report the repository 'private' now (gh api
-      repos/OWNER/REPO); any other answer, or none, refuses. The review
-      asks again each time and falls back to public if it isn't private.
-    Other hosts: only the owner can state that the repository is private,
-      by typing its HOST/OWNER/REPO at an interactive terminal. An agent
-      can't make that statement.
-    Never: a repository with no remote, or one whose git-scan.yaml declares
-      it public-prospective (git-scan config public-prospective on --project).
-
-    The marking is kept in ${XDG_CACHE_HOME:-~/.cache}/git-scan/, not in any
-    config file; a lost cache only makes reviews stricter.
+      github.com, or a host added as 'github': the host reports the
+        repository private (REST API through gh). Any other answer, or none,
+        refuses. The relaxed review asks again each time.
+      a host added as 'other' with --allow-relaxed: no check is possible;
+        the user has vouched for the host.
+    Never: no remote, an unregistered host, or a repository whose
+    git-scan.yaml declares it public-prospective.
     """
     try:
-        if list_:
-            rows = relaxed_sdk.marked()
-            if not rows:
-                click.echo("no repository is marked relaxed")
-            for url, entry in sorted(rows.items()):
-                click.echo(f"  {url}  ({entry.get('basis')}, {entry.get('marked_at')})")
-            return
         if remove:
-            if relaxed_sdk.unmark("."):
-                click.echo("relaxed marking removed; this repository is reviewed as public")
-            else:
-                click.echo("this repository was not marked relaxed")
+            click.echo("relaxed-review eligibility removed" if relaxed_sdk.unmark(".")
+                       else "this repository was not eligible")
             return
-        url = relaxed_sdk.origin_url(".")
-        statement = False
-        if url and not relaxed_sdk.github_repo(url):
-            path = normalize_remote(url)
-            if path:
-                if not sys.stdin.isatty():
-                    _fail(relaxed_sdk.RelaxedError(
-                        f"{path} is not on github.com, so its visibility can't be checked. "
-                        "Only its owner can state that it is private, by running "
-                        "'git-scan review relax' at an interactive terminal; an agent can't."))
-                typed = click.prompt(f"{path} is not on github.com. If you own it and it is "
-                                     f"private, type {path} to say so", default="",
-                                     show_default=False)
-                if typed.strip() != path:
-                    _fail(relaxed_sdk.RelaxedError("not confirmed; nothing was marked"))
-                statement = True
-        entry = relaxed_sdk.mark(".", owner_statement=statement)
-        click.echo(f"marked relaxed: {entry['url']} ({entry['basis']})")
+        m = relaxed_sdk.mark(".")
+        state = "already eligible" if m.already else "eligible"
+        click.echo(f"{state} for a relaxed review: {m.url} ({m.basis})")
+        click.echo("Each relaxed review is still asked for explicitly: git-scan review --relaxed")
     except (relaxed_sdk.RelaxedError, ConfigError) as e:
         _fail(e)
+
+
+@cli.group("hosts")
+def hosts_group():
+    """Git hosts and how git-scan learns whether a repository is private.
+
+    \b
+      git-scan hosts list
+      git-scan hosts add github git.corp.example          # GitHub Enterprise
+      git-scan hosts add other git.internal.example --allow-relaxed
+      git-scan hosts remove git.internal.example
+
+    github.com is built in. Types: github (asked through gh api), bitbucket
+    (not supported yet), other (can't be asked; --allow-relaxed vouches for
+    the whole host), and any installed plugin. Kept in the global git config.
+    """
+
+
+@hosts_group.command("list")
+def hosts_list():
+    """Registered hosts and their types."""
+    for h in hosts_sdk.list_hosts():
+        extra = " (built in)" if h.builtin else (", allow-relaxed" if h.allow_relaxed else "")
+        click.echo(f"  {h.host}  {h.type}{extra}")
+
+
+@hosts_group.command("add")
+@click.argument("kind", metavar="TYPE")
+@click.argument("host")
+@click.option("--allow-relaxed", is_flag=True,
+              help="For a host git-scan can't ask: vouch that its repositories may be made "
+                   "eligible for relaxed review without a check.")
+def hosts_add(kind, host, allow_relaxed):
+    """Register HOST as TYPE (github, bitbucket, other, or a plugin's type)."""
+    try:
+        h = hosts_sdk.add_host(kind, host, allow_relaxed=allow_relaxed)
+    except hosts_sdk.HostError as e:
+        _fail(e)
+    click.echo(f"added {h.host} ({h.type}{', allow-relaxed' if h.allow_relaxed else ''})")
+
+
+@hosts_group.command("remove")
+@click.argument("host")
+def hosts_remove(host):
+    """Forget HOST."""
+    try:
+        hosts_sdk.remove_host(host)
+    except hosts_sdk.HostError as e:
+        _fail(e)
+    click.echo(f"removed {host}")
 
 
 @cli.command("push-check")
