@@ -84,3 +84,18 @@ def test_planted_leaks_are_found_by_category_and_nothing_is_recorded(tmp_path, m
     assert "Dana" in out and f"{sha[:12]}:message" in out   # the person in the commit message
     assert "nothing was recorded" in out
     assert "reviewed" not in marks.marks_on(sha)
+
+
+@requires_claude
+def test_publish_text_alone_is_judged_and_nothing_is_recorded(tmp_path, monkeypatch):
+    repo = _repo(tmp_path, monkeypatch)                     # everything is pushed: no commit to review
+    clean = tmp_path / "clean.md"
+    clean.write_text("Thanks for the report. The fix is in the next release.\n")
+    r = _run("review", "--quiet", "--publish", str(clean))
+    assert r.exit_code == 0, r.output
+    assert "publish text only (clean.md)" in r.output and "nothing was recorded" in r.output
+    leak = tmp_path / "comment.md"
+    leak.write_text("Jane Doe asked me to post this from 12 Example Lane, Springfield.\n")
+    r = _run("review", "--quiet", "--publish", str(leak))
+    assert r.exit_code == 1, r.output
+    assert "Jane Doe" in r.output and "publish:comment.md" in r.output
