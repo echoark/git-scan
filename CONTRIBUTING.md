@@ -303,8 +303,12 @@ records a review. Rules:
   is public; a failed check refuses the review rather than running it in
   another mode. No remote, an unregistered host, or
   `review.public_prospective` in any layer (read per layer, like
-  `review_required`) is never eligible. In a relaxed review, `low` findings
-  are reported as notes and don't block; anything higher does.
+  `review_required`) is never eligible. What a finding does in each mode is
+  `review.sort_findings`, one table keyed by category (`NOTE_IN_RELAXED`,
+  `DROP_IN_RELAXED`, everything else blocks). The reviewer reports categories
+  and no severity: a model's grade varied between runs on identical text, so
+  the verdict must not depend on it. A category the table doesn't name, the
+  owner's own pattern categories included, blocks in both modes.
 - **Hosts and providers.** `sdk/hosts.py` keeps registered hosts in the
   global git config (`[git-scan-host "HOST"] type, allow-relaxed`); github.com
   is built in. A type names a `HostProvider`: `github` asks `gh api` (REST;

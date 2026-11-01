@@ -10,12 +10,11 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["category", "value", "location", "severity"],
+        "required": ["category", "value", "location"],
         "properties": {
           "category": {"type": "string"},
           "value": {"type": "string"},
           "location": {"type": "string"},
-          "severity": {"type": "string", "enum": ["high", "medium", "low"]},
           "note": {"type": "string"}
         }
       }

@@ -505,8 +505,8 @@ recorded for that batch:
 
 ```
   [FAIL] Privacy review (public; 2 commit(s); 2 finding(s))
-         3f9c2a1b7d0e:contacts.txt:1 [names/high] Jane Doe
-         3f9c2a1b7d0e:message [contextual/medium] ask Dana about the deploy
+         3f9c2a1b7d0e:contacts.txt:1 [names] Jane Doe
+         3f9c2a1b7d0e:message [contextual] ask Dana about the deploy
 FAILED: fix the content in those commits and review again; nothing was recorded for them
 ```
 
@@ -553,10 +553,17 @@ more per batch; an agent should start it as a background command.
 ### Relaxed review
 
 A relaxed review is for a private repository its owner keeps for personal
-material. Secrets, account identifiers and financial identifiers still
-block; names, emails and identity-revealing paths become low-severity notes,
-which are shown but don't block; personal framing is not judged. Two steps,
-kept apart on purpose:
+material. What a finding does depends on its category, decided by git-scan,
+not by the reviewer:
+
+| Category | Public review | Relaxed review |
+|---|---|---|
+| secrets, account identifiers, financial identifiers | blocks | blocks |
+| names, emails, identity-revealing paths, private-tracker and cross-repository references | blocks | a note: shown, doesn't block |
+| personal framing, history framing | blocks | dropped |
+| anything else, including your own pattern categories | blocks | blocks |
+
+Two steps, kept apart on purpose:
 
 ```bash
 git-scan relax                 # once per clone: make this repository eligible

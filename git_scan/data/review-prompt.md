@@ -36,11 +36,11 @@ you did not earn.
 | Real secrets, tokens, private keys, credentials | finding | finding |
 | Account, cloud or service identifiers tied to one account | finding | finding |
 | Financial identifiers (SSN, EIN, card, routing, real balances) | finding | finding |
-| Real personal names, emails, handles of the author or others | finding | `low` note |
-| Identity-revealing absolute paths (home dirs, usernames, workspace roots) | finding | `low` note |
+| Real personal names, emails, handles of the author or others | finding | note |
+| Identity-revealing absolute paths (home dirs, usernames, workspace roots) | finding | note |
 | Personal framing, personal-use-case descriptions | finding | skip |
 | History-exposé framing (who did what, session or agent chatter) | finding | skip |
-| Private tracker references; the author's other repositories | finding | `low` note |
+| Private tracker references; the author's other repositories | finding | note |
 
 ## The catalog
 
@@ -88,7 +88,9 @@ For each finding: `category` (secrets, account_ids, financial, names,
 emails, paths, personal_framing, history_expose, tracker_reference,
 cross_reference, employer, contextual, or a catalog category), the `value`
 found, its `location` (`<commit id>:<file>:<line>`, `<commit id>:message`,
-or `publish:<name>:<line>`), a `severity` (`high`, `medium`, `low`), and an
-optional `note`. List every commit id you reviewed in `commits_reviewed`.
+or `publish:<name>:<line>`), and an optional `note`. Give each finding the
+listed category that fits it best; git-scan decides from the category and the
+exposure mode what blocks, so report every finding you see, in either mode.
+List every commit id you reviewed in `commits_reviewed`.
 Put anything that limited the review in `warnings`. One sentence in
 `summary`.

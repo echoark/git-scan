@@ -41,6 +41,13 @@ SCHEMA_FILE = DATA / "review-schema.json"
 DEFAULT_TIMEOUT = 600          # seconds per batch
 DEFAULT_BATCH_BYTES = 200_000  # patch and message text per prompt
 
+# What a finding does in a relaxed review, by its category. The reviewer
+# reports categories; this table, not the reviewer, decides the verdict. Every
+# other category (secrets, account and financial identifiers, the owner's own
+# pattern categories, one the reviewer makes up) blocks in both modes.
+NOTE_IN_RELAXED = frozenset({"names", "emails", "paths", "tracker_reference", "cross_reference"})
+DROP_IN_RELAXED = frozenset({"personal_framing", "history_expose"})
+
 _FENCE = re.compile(r"```(?:json|privacy-guard-result)?\s*\n(.*?)\n\s*```", re.S)
 
 
@@ -58,7 +65,7 @@ class ReviewResult:
     commits: List[str] = field(default_factory=list)      # reviewed in this run
     skipped: List[str] = field(default_factory=list)      # already marked reviewed
     findings: List[dict] = field(default_factory=list)
-    notes: List[dict] = field(default_factory=list)       # low-severity, relaxed only: shown, not blocking
+    notes: List[dict] = field(default_factory=list)       # relaxed only: shown, not blocking (sort_findings)
     warnings: List[str] = field(default_factory=list)
     batches: int = 0
     text_only: List[str] = field(default_factory=list)    # publish texts reviewed with no commit; nothing recorded
@@ -323,11 +330,8 @@ def review(repo_path: str = ".", commits: Optional[List[str]] = None,
         report = f"batch {i}/{len(batches)}{by}{secs}: {str(data.get('summary') or '').strip() or '(no summary)'}"
         result.reports.append(report)
         say(report)
-        blocking = data["findings"]
-        if mode == "relaxed":
-            notes = [f for f in blocking if str(f.get("severity", "")).lower() == "low"]
-            blocking = [f for f in blocking if f not in notes]
-            result.notes += notes
+        blocking, notes = sort_findings(data["findings"], mode)
+        result.notes += notes
         if blocking:
             result.findings += blocking
             say(f"batch {i}/{len(batches)}: {len(blocking)} finding(s); not recorded")
@@ -352,6 +356,23 @@ def _review_text_only(result: ReviewResult, argv: List[str], mode: str, catalog:
     report = f"publish text{by}{secs}: {str(data.get('summary') or '').strip() or '(no summary)'}"
     result.reports.append(report)
     say(report)
-    result.findings += data["findings"]
+    blocking, notes = sort_findings(data["findings"], mode)
+    result.findings += blocking
+    result.notes += notes
     return result
 
+
+def sort_findings(findings: List[dict], mode: str) -> tuple:
+    """``(blocking, notes)`` for the findings of a review in ``mode``. Public:
+    every finding blocks. Relaxed: the categories in ``NOTE_IN_RELAXED`` become
+    notes, those in ``DROP_IN_RELAXED`` are dropped, and every other category,
+    known or not, blocks."""
+    if mode != "relaxed":
+        return list(findings), []
+    blocking, notes = [], []
+    for f in findings:
+        category = str(f.get("category", "")).strip().lower()
+        if category in DROP_IN_RELAXED:
+            continue
+        (notes if category in NOTE_IN_RELAXED else blocking).append(f)
+    return blocking, notes
