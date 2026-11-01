@@ -43,7 +43,7 @@ LAYERS = ("built-in", "user", "project")
 
 TOP_LEVEL_KEYS = {"entropy", "thresholds", "patterns", "allowed_emails", "identity", "push",
                   "notes", "review"}
-REVIEW_KEYS = {"runner", "model", "timeout", "batch_bytes", "relaxed"}
+REVIEW_KEYS = {"runner", "model", "timeout", "batch_bytes", "public_prospective"}
 PATTERN_FIELDS = {"id", "pattern", "category", "word_boundary",
                   "not_followed_by", "exclude_files", "disabled",
                   "ignore_case", "judgment", "note"}
@@ -244,19 +244,24 @@ def validate_layer(data, path) -> None:
 
     review = data.get("review", {})
     if not isinstance(review, dict):
-        errors.append("review: must be a mapping (runner, model, timeout, batch_bytes, relaxed)")
+        errors.append("review: must be a mapping (runner, model, timeout, batch_bytes, "
+                      "public_prospective)")
     else:
         for k, v in review.items():
-            if k not in REVIEW_KEYS:
+            if k == "relaxed":
+                errors.append("review.relaxed is no longer supported: a relaxed review is "
+                              "asked for per review (git-scan review --relaxed) and only for "
+                              "a repository made eligible with 'git-scan relax'. Delete the "
+                              "review.relaxed key from this file")
+            elif k not in REVIEW_KEYS:
                 errors.append(f"review.{k}: unknown (known: {', '.join(sorted(REVIEW_KEYS))})")
             elif k in ("runner", "model") and (not isinstance(v, str) or not v):
                 errors.append(f"review.{k}: must be text")
             elif k in ("timeout", "batch_bytes") and (not isinstance(v, int) or isinstance(v, bool)
                                                        or v <= 0):
                 errors.append(f"review.{k}: must be a positive whole number")
-            elif k == "relaxed" and (not isinstance(v, list)
-                                     or not all(isinstance(x, str) and x for x in v)):
-                errors.append("review.relaxed: must be a list of remote prefixes")
+            elif k == "public_prospective" and not isinstance(v, bool):
+                errors.append("review.public_prospective: must be true or false")
 
     if errors:
         lines = [f"Invalid config: {path}"] + [f"  {e}" for e in errors] + [
@@ -372,7 +377,7 @@ class MergedConfig:
 
     @property
     def review(self) -> dict:
-        """The merged ``review`` section: runner, timeout, batch_bytes, relaxed."""
+        """The merged ``review`` section: runner, model, timeout, batch_bytes."""
         return dict(self.raw.get("review") or {})
 
     @property

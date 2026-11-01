@@ -523,11 +523,9 @@ Rules the command keeps:
 - **Reviewed commits are skipped on a rerun**, so an interrupted run or a
   new commit costs only what is new. A rewritten commit is a new commit and
   is reviewed again.
-- **The default mode is public** for every repository. `--relaxed` (a
-  private repository kept for personal material: names and paths become
-  notes, framing is not judged) works only for a remote you listed:
-  `git-scan review relaxed add github.com/octo/my-` covers every repository
-  of octo's whose name starts with `my-`. Nothing else makes it available.
+- **Every review is public** unless `--relaxed` is given for that review,
+  and that is refused unless the repository is eligible (see
+  [Relaxed review](#relaxed-review)).
 - **Nothing accepts a result from outside.** The only writer of the review
   record is this command, after it has run the reviewer itself.
 
@@ -546,6 +544,75 @@ git-scan config review-timeout 900       # seconds per batch (default 600)
 Large pushes are reviewed in batches of about 200 KB of patch text each
 (`review.batch_bytes` in the configuration). The run takes a minute or
 more per batch; an agent should start it as a background command.
+
+### Relaxed review
+
+A relaxed review is for a private repository its owner keeps for personal
+material. Secrets, account identifiers and financial identifiers still
+block; names, emails and identity-revealing paths become low-severity notes,
+which are shown but don't block; personal framing is not judged. Two steps,
+kept apart on purpose:
+
+```bash
+git-scan relax                 # once per clone: make this repository eligible
+git-scan review --relaxed      # each time: ask for a relaxed review
+git-scan relax --remove        # no longer eligible
+```
+
+**Eligibility** (`git-scan relax`) is recorded in the repository's own
+`.git/config` (local to the clone, never pushed) for its exact `origin`
+URL. Running it again reports "already eligible". It needs one of:
+
+- **github.com, or a host added as `github`**: the host reports the
+  repository `private` (`gh api repos/OWNER/REPO --jq .visibility`, the REST
+  API). `public`, `internal`, an error, no network or no `gh` refuses.
+- **a host added as `other` with `--allow-relaxed`**: git-scan can't ask
+  such a host, so you vouch for the whole host. The output says that no
+  check was possible.
+
+Never eligible: a repository with no remote (or a filesystem-path remote),
+one on a host that isn't registered, or one whose `git-scan.yaml` declares
+it public-prospective.
+
+**Use** (`git-scan review --relaxed`) is asked for review by review. It is
+refused unless this exact remote is eligible, and a host that can be asked
+is asked again each time; a refusal says why and runs nothing. Without the
+flag, every review is public, so no review is ever relaxed by default.
+
+**Hosts.** Kept in the machine's global git config:
+
+```bash
+git-scan hosts list
+git-scan hosts add github git.corp.example                      # GitHub Enterprise
+git-scan hosts add other  git.internal.example --allow-relaxed  # you vouch for this host
+git-scan hosts remove git.internal.example
+```
+
+github.com is built in. A host's type names a provider: `github` (asked
+through `gh api`, with `--hostname` for Enterprise), `bitbucket` (listed,
+not supported yet), and `other` (can't be asked). Other providers, such as
+a company's own git server, can be added as plugins: a Python package that
+registers a `git_scan.host_providers` entry point naming a `HostProvider`
+subclass, after which `git-scan hosts add <its type> HOST` works with no
+change to git-scan.
+
+**Public-prospective.** A repository that may become public says so in its
+own `git-scan.yaml`; it can then never be made eligible or reviewed relaxed:
+
+```bash
+git-scan config public-prospective on --project
+```
+
+Any layer can declare it; none can lift it.
+
+Eligibility and hosts are never written to git-scan's YAML configuration.
+
+**Upgrading from 0.8.** `review.relaxed` (the list of remote prefixes) and
+`git-scan review relaxed add/remove/list` are gone: a configuration that
+still has `review.relaxed` fails to load until the key is deleted. Make
+each private repository eligible with `git-scan relax`, register any
+non-github.com host with `git-scan hosts add`, and pass `--relaxed` to the
+reviews that should be relaxed.
 
 ## MCP server
 

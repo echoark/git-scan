@@ -12,6 +12,8 @@ git_scan/
     hooks.py            # hook installation and status: pre-commit, commit-msg, push gate
     marks.py            # marks on commits, staged-tree records, outgoing commits for a push
     review.py           # the privacy review: prompt assembly, runner, result validation, marks
+    relaxed.py          # relaxed review: eligibility in .git/config, use per review
+    hosts.py            # git hosts and their providers (visibility checks), plugin discovery
     entropy.py          # Shannon-entropy detector and exclusions
     yaml_merge.py       # layer merge (managed snippet; see below)
     steps/              # one module per check; exposes run_checks(...)
@@ -286,9 +288,35 @@ records a review. Rules:
   marks none, so a rerun resumes. The runner is started with no tools and
   no user context (`--tools ""`, `--setting-sources ""` for `claude`), so
   the prompt is the reviewer's whole world and nothing on the machine can
-  steer the range, the catalog or the mode. Exposure mode is public unless
-  the remote matches a prefix in `review.relaxed`, and the caller can only
-  ask for relaxed, never force it.
+  steer the range, the catalog or the mode. The mode is public unless the
+  caller asks for relaxed and the repository passes `relaxed.check_use`;
+  see the next rule.
+- **Relaxed review: eligibility once, use per review.** `sdk/relaxed.py`
+  keeps the two apart. `git-scan relax` makes a clone eligible and writes
+  `git-scan.relaxed-remote` (the exact `origin` URL) and
+  `git-scan.relaxed-basis` to the repository's own `.git/config`; `git-scan
+  review --relaxed` (`check_use`) is refused unless the same URL is eligible,
+  and a verifying host is asked again every time. Without the flag a review
+  is public; a failed check refuses the review rather than running it in
+  another mode. No remote, an unregistered host, or
+  `review.public_prospective` in any layer (read per layer, like
+  `review_required`) is never eligible. In a relaxed review, `low` findings
+  are reported as notes and don't block; anything higher does.
+- **Hosts and providers.** `sdk/hosts.py` keeps registered hosts in the
+  global git config (`[git-scan-host "HOST"] type, allow-relaxed`); github.com
+  is built in. A type names a `HostProvider`: `github` asks `gh api` (REST;
+  GraphQL is blocked in some sandboxes; `--hostname` for Enterprise),
+  `bitbucket` is registered but unsupported, `other` can't be asked and is
+  eligible only with `allow-relaxed`. Plugins register providers under the
+  `git_scan.host_providers` entry point; a plugin can't replace a built-in
+  and a broken one is skipped. Adding a provider must never need a CLI or
+  storage change.
+- **Why none of it is in the YAML.** The user layer is the user's catalog,
+  backed up and meant to be verifiable as theirs; per-clone state and
+  machine-level host facts don't belong in it, and eligibility needs no
+  backup (a new clone or session marks again). Tests stand a stub `gh` on
+  `PATH`, and the sandbox's temp global git config keeps host registrations
+  off the developer's machine.
 - **A pre-commit hook runs before the commit exists.** A passing staged scan
   records the staged tree in the git directory; a refused commit message
   deletes that record; the post-commit hook marks HEAD only if its tree is
