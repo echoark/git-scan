@@ -478,6 +478,9 @@ SETTINGS = {
     "review-model": ("review", "model", str,
                      "The model the review runner is asked to use (passed as its --model)"),
     "review-timeout": ("review", "timeout", int, "Seconds to wait for one batch of the review"),
+    "public-prospective": ("review", "public_prospective", bool,
+                           "Declare the repository public-prospective: always reviewed as public "
+                           "(use with --project)"),
 }
 
 
@@ -518,38 +521,3 @@ def layer_status(repo_path: str = ".") -> List[dict]:
     """Each layer's path and whether its file exists."""
     return [{"layer": name, "path": str(path), "exists": path.is_file()}
             for name, path in layer_paths(repo_path).items()]
-
-
-# --- relaxed remotes for the review ------------------------------------------------
-
-def relaxed_add(prefix: str, repo_path: str = ".", project: bool = False) -> List[str]:
-    prefix = prefix.strip().strip("/")
-    if not prefix or "://" in prefix or "@" in prefix:
-        raise PatternError(f"'{prefix}' is not a host/owner/repo prefix (e.g. github.com/octo/my-)")
-    path = target_path(repo_path, project)
-    data = _read(path)
-    review = data.setdefault("review", {})
-    current = [x for x in (review.get("relaxed") or []) if isinstance(x, str)]
-    if prefix not in current:
-        current.append(prefix)
-    review["relaxed"] = current
-    _write(path, data)
-    return current
-
-
-def relaxed_remove(prefix: str, repo_path: str = ".", project: bool = False) -> List[str]:
-    path = target_path(repo_path, project)
-    data = _read(path)
-    review = data.get("review") or {}
-    current = [x for x in (review.get("relaxed") or []) if isinstance(x, str)]
-    if prefix not in current:
-        raise PatternError(f"'{prefix}' is not in the relaxed list of {path}")
-    current.remove(prefix)
-    if current:
-        review["relaxed"] = current
-    else:
-        review.pop("relaxed", None)
-        if not review:
-            data.pop("review", None)
-    _write(path, data)
-    return current

@@ -13,6 +13,8 @@ from git_scan.sdk import user_patterns as up
 from git_scan.sdk.hooks import install_hook, uninstall_hook, status, format_status, HookError
 from git_scan.sdk import marks
 from git_scan.sdk import review as review_sdk
+from git_scan.sdk import relaxed as relaxed_sdk
+from git_scan.sdk.steps.git_identity import normalize_remote
 from git_scan.sdk.config import load_config, ConfigError, write_missing_config_help
 
 
@@ -221,9 +223,6 @@ def ack(rev):
 
 
 @cli.group(invoke_without_command=True)
-@click.option("--relaxed", is_flag=True,
-              help="Review as a private, personal repository. Allowed only for a remote "
-                   "listed with 'review relaxed add'.")
 @click.option("--publish", "publish", multiple=True, metavar="FILE",
               help="Text published beside the push (a pull-request body) to review too (repeatable).")
 @click.option("--range", "rev_range", default=None, metavar="A..B",
@@ -233,7 +232,7 @@ def ack(rev):
 @click.option("--timeout", type=int, default=None, metavar="SECONDS", help="Per batch.")
 @click.option("--quiet", is_flag=True, help="No progress lines on standard error.")
 @click.pass_context
-def review(ctx, relaxed, publish, rev_range, runner, timeout, quiet):
+def review(ctx, publish, rev_range, runner, timeout, quiet):
     """Run the privacy review of the unpushed commits and record a clean result.
 
     git-scan builds the reviewer's prompt itself: its packaged review
@@ -244,6 +243,9 @@ def review(ctx, relaxed, publish, rev_range, runner, timeout, quiet):
     'config require-review on', a push needs that for every commit it sends.
     The reviewer's one-line summary of each batch is printed with the model
     and the time it took.
+
+    The mode is git-scan's decision: public for every repository, relaxed
+    only for one marked with 'git-scan review relax' that still qualifies.
 
     \b
     Findings are printed with the value and location; nothing is recorded
@@ -256,7 +258,7 @@ def review(ctx, relaxed, publish, rev_range, runner, timeout, quiet):
         return
     say = (lambda _m: None) if quiet else (lambda m: click.echo(f"git-scan review: {m}", err=True))
     try:
-        result = review_sdk.review(".", rev_range=rev_range, relaxed=relaxed,
+        result = review_sdk.review(".", rev_range=rev_range,
                                   publish=list(publish), runner=runner, timeout=timeout,
                                   progress=say)
     except (review_sdk.ReviewError, ConfigError, marks.MarkError) as e:
@@ -284,32 +286,61 @@ def review(ctx, relaxed, publish, rev_range, runner, timeout, quiet):
         click.echo(f"nothing new to review{skipped}")
 
 
-@review.command("relaxed")
-@click.argument("action", type=click.Choice(["add", "remove", "list"]))
-@click.argument("prefix", required=False)
-@click.option("--project", is_flag=True, help="Act on the repo's git-scan.yaml.")
-def review_relaxed(action, prefix, project):
-    """Remotes that may be reviewed as private, personal repositories.
+@review.command("relax")
+@click.option("--remove", is_flag=True, help="Drop this repository's marking.")
+@click.option("--list", "list_", is_flag=True, help="Show every marking in the cache.")
+def review_relax(remove, list_):
+    """Mark this repository (its exact origin URL) for relaxed review.
+
+    Relaxed is for a private repository its owner keeps for personal
+    material. Every other repository is reviewed as public.
 
     \b
-      git-scan review relaxed add github.com/octo/my-     # every repo of octo's whose name starts with my-
-      git-scan review relaxed list
-      git-scan review relaxed remove github.com/octo/my-
+    github.com: GitHub must report the repository 'private' now (gh api
+      repos/OWNER/REPO); any other answer, or none, refuses. The review
+      asks again each time and falls back to public if it isn't private.
+    Other hosts: only the owner can state that the repository is private,
+      by typing its HOST/OWNER/REPO at an interactive terminal. An agent
+      can't make that statement.
+    Never: a repository with no remote, or one whose git-scan.yaml declares
+      it public-prospective (git-scan config public-prospective on --project).
 
-    A prefix is matched segment by segment against host/owner/repo. Nothing
-    else makes --relaxed available; the default for every repository is public.
+    The marking is kept in ${XDG_CACHE_HOME:-~/.cache}/git-scan/, not in any
+    config file; a lost cache only makes reviews stricter.
     """
     try:
-        if action == "list":
-            for r in review_sdk.relaxed_list():
-                click.echo(f"  {r}")
+        if list_:
+            rows = relaxed_sdk.marked()
+            if not rows:
+                click.echo("no repository is marked relaxed")
+            for url, entry in sorted(rows.items()):
+                click.echo(f"  {url}  ({entry.get('basis')}, {entry.get('marked_at')})")
             return
-        if not prefix:
-            _fail(click.UsageError(f"'{action}' needs a prefix"))
-        rows = up.relaxed_add(prefix, project=project) if action == "add" \
-            else up.relaxed_remove(prefix, project=project)
-        click.echo(f"relaxed remotes: {', '.join(rows) if rows else '(none)'}")
-    except (up.PatternError, up.ConfigError) as e:
+        if remove:
+            if relaxed_sdk.unmark("."):
+                click.echo("relaxed marking removed; this repository is reviewed as public")
+            else:
+                click.echo("this repository was not marked relaxed")
+            return
+        url = relaxed_sdk.origin_url(".")
+        statement = False
+        if url and not relaxed_sdk.github_repo(url):
+            path = normalize_remote(url)
+            if path:
+                if not sys.stdin.isatty():
+                    _fail(relaxed_sdk.RelaxedError(
+                        f"{path} is not on github.com, so its visibility can't be checked. "
+                        "Only its owner can state that it is private, by running "
+                        "'git-scan review relax' at an interactive terminal; an agent can't."))
+                typed = click.prompt(f"{path} is not on github.com. If you own it and it is "
+                                     f"private, type {path} to say so", default="",
+                                     show_default=False)
+                if typed.strip() != path:
+                    _fail(relaxed_sdk.RelaxedError("not confirmed; nothing was marked"))
+                statement = True
+        entry = relaxed_sdk.mark(".", owner_statement=statement)
+        click.echo(f"marked relaxed: {entry['url']} ({entry['basis']})")
+    except (relaxed_sdk.RelaxedError, ConfigError) as e:
         _fail(e)
 
 

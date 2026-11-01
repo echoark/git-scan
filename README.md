@@ -523,11 +523,10 @@ Rules the command keeps:
 - **Reviewed commits are skipped on a rerun**, so an interrupted run or a
   new commit costs only what is new. A rewritten commit is a new commit and
   is reviewed again.
-- **The default mode is public** for every repository. `--relaxed` (a
-  private repository kept for personal material: names and paths become
-  notes, framing is not judged) works only for a remote you listed:
-  `git-scan review relaxed add github.com/octo/my-` covers every repository
-  of octo's whose name starts with `my-`. Nothing else makes it available.
+- **The default mode is public** for every repository. The mode is
+  git-scan's decision, never the caller's: there is no flag for it. Relaxed
+  is only for one repository marked as described in
+  [Relaxed review](#relaxed-review).
 - **Nothing accepts a result from outside.** The only writer of the review
   record is this command, after it has run the reviewer itself.
 
@@ -546,6 +545,51 @@ git-scan config review-timeout 900       # seconds per batch (default 600)
 Large pushes are reviewed in batches of about 200 KB of patch text each
 (`review.batch_bytes` in the configuration). The run takes a minute or
 more per batch; an agent should start it as a background command.
+
+### Relaxed review
+
+Relaxed mode is for a private repository its owner keeps for personal
+material: names and paths become notes, and framing is not judged. Every
+other repository is reviewed as public. A repository is relaxed only when it
+has been marked, one exact repository at a time:
+
+```bash
+git-scan review relax             # mark this repository (its exact origin URL)
+git-scan review relax --list      # every marking on this machine
+git-scan review relax --remove    # back to public
+```
+
+- **GitHub remotes** are marked only when GitHub reports the repository
+  `private` at that moment (`gh api repos/OWNER/REPO --jq .visibility`, the
+  REST API). Any other answer (`public`, `internal`), an error, no network,
+  or no `gh` refuses. The review asks GitHub again every time, and a
+  repository that is no longer reported private is reviewed as public.
+- **Other hosts** can't be checked, so only the repository's owner can mark
+  one, by typing its `host/owner/repo` at an interactive terminal to say
+  that it is private. With no terminal (an agent's shell, a script) the
+  command refuses. An agent can't make that statement.
+- **A repository with no remote** (or a filesystem-path remote) is never
+  relaxed.
+- **Public-prospective.** A repository that may become public declares it
+  in its own `git-scan.yaml`, and is then always reviewed as public and
+  can't be marked:
+
+  ```bash
+  git-scan config public-prospective on --project
+  ```
+
+  A configuration layer can declare it but never lift it, and no
+  configuration can make a repository relaxed.
+
+The markings are kept in `${XDG_CACHE_HOME:-~/.cache}/git-scan/relaxed.json`,
+not in any configuration file. A fresh machine or cloud session starts with
+none, which is intended: losing the cache only makes reviews stricter.
+
+**Upgrading from 0.8.** `git-scan review --relaxed` and `git-scan review
+relaxed add/remove/list` are gone, and so is the `review.relaxed` list of
+remote prefixes: a configuration that still has it fails to load until the
+key is deleted. Mark each private repository with `git-scan review relax`
+instead.
 
 ## MCP server
 

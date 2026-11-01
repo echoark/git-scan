@@ -6,6 +6,7 @@ behavior, marks, and the push gate that depends on them."""
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -14,7 +15,7 @@ import pytest
 from click.testing import CliRunner
 
 from git_scan.cli.main import cli
-from git_scan.sdk import marks, review
+from git_scan.sdk import marks, relaxed, review
 from git_scan.sdk.hooks import install_hook
 
 STUB = '''import json, os, sys
@@ -231,26 +232,160 @@ def test_no_runner_is_a_clear_error_and_nothing_to_review_says_so(repo, monkeypa
     assert r.exit_code == 1 and "nothing to review" in r.output
 
 
-def test_relaxed_mode_needs_a_configured_remote_prefix(repo, tmp_path):
-    _commit(repo, "a.txt")
-    _git(repo, "remote", "set-url", "origin", "https://github.com/octo/my-notes.git")
-    r = _run("review", "--relaxed")
-    assert r.exit_code == 1 and "relaxed mode is not configured" in r.output
-    assert _run("review", "relaxed", "add", "github.com/octo/my-").exit_code == 0
-    assert "github.com/octo/my-" in _run("review", "relaxed", "list").output
-    _git(repo, "remote", "set-url", "origin", str(tmp_path / "remote.git"))   # push target back
-    # the remote URL is read for the mode only; a local remote never matches a prefix
-    r = _run("review", "--relaxed")
-    assert r.exit_code == 1 and "relaxed mode is not configured" in r.output
+# --- relaxed review: a marking on one exact repository ------------------------------
+
+GH_STUB = '''import os, sys
+answer = os.environ.get("STUB_GH", "private")
+log = os.environ.get("STUB_GH_LOG")
+if log:
+    open(log, "a").write(" ".join(sys.argv[1:]) + "\\n")
+if answer == "fail":
+    print("gh: Could not resolve to a Repository", file=sys.stderr); sys.exit(1)
+print(answer)
+'''
+
+GITHUB_URL = "https://github.com/octo/notes.git"
 
 
-def test_relaxed_reaches_the_prompt_when_the_remote_matches(repo, tmp_path):
+@pytest.fixture
+def gh(tmp_path, monkeypatch):
+    """A stand-in for the GitHub CLI on PATH: answers the visibility query
+    with $STUB_GH (or fails with 'fail') and logs its arguments."""
+    bin_dir = tmp_path / "ghbin"
+    bin_dir.mkdir()
+    script = bin_dir / "gh"
+    script.write_text(f"#!{sys.executable}\n" + GH_STUB)
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("STUB_GH_LOG", str(tmp_path / "gh.log"))
+    monkeypatch.setenv("STUB_GH", "private")
+    return tmp_path / "gh.log"
+
+
+def _cache(tmp_path):
+    p = tmp_path / "xdg_cache" / "git-scan" / "relaxed.json"
+    return json.loads(p.read_text()) if p.exists() else {}
+
+
+def test_every_repository_is_public_and_there_is_no_relaxed_flag(repo, tmp_path, gh):
     _commit(repo, "a.txt")
-    _run("review", "relaxed", "add", "github.com/octo/my-")
-    _git(repo, "remote", "set-url", "origin", "https://github.com/octo/my-notes.git")
-    r = _run("review", "--relaxed")            # the mode reads the remote URL; nothing is pushed
+    _git(repo, "remote", "set-url", "origin", GITHUB_URL)
+    assert _run("review", "--relaxed").exit_code == 2
+    assert _run("review", "relaxed", "list").exit_code == 2
+    r = _run("review")                        # GitHub would say private; nothing is marked
+    assert r.exit_code == 0, r.output
+    assert "# Exposure mode\n\npublic" in _prompts(tmp_path)[0]
+    assert "public review (not marked relaxed)" in r.output
+
+
+def test_a_github_repository_reported_private_is_marked_by_exact_url(repo, tmp_path, gh):
+    _commit(repo, "a.txt")
+    _git(repo, "remote", "set-url", "origin", GITHUB_URL)
+    user_layer = (tmp_path / "xdg_config" / "git-scan" / "git-scan.yaml").read_text()
+    r = _run("review", "relax")
+    assert r.exit_code == 0, r.output and "marked relaxed" in r.output
+    assert "api repos/octo/notes --jq .visibility" in gh.read_text()
+    assert _cache(tmp_path)[GITHUB_URL]["basis"] == "github-private"
+    assert (tmp_path / "xdg_config" / "git-scan" / "git-scan.yaml").read_text() == user_layer
+    assert not (repo / "git-scan.yaml").exists()
+    assert GITHUB_URL in _run("review", "relax", "--list").output
+    r = _run("review")
     assert r.exit_code == 0, r.output
     assert "# Exposure mode\n\nrelaxed" in _prompts(tmp_path)[0]
+    assert gh.read_text().count("--jq .visibility") == 2          # asked again at review time
+
+
+@pytest.mark.parametrize("answer", ["public", "internal", "fail", ""])
+def test_marking_refuses_unless_github_answers_private(repo, tmp_path, gh, monkeypatch, answer):
+    _git(repo, "remote", "set-url", "origin", GITHUB_URL)
+    monkeypatch.setenv("STUB_GH", answer)
+    r = _run("review", "relax")
+    assert r.exit_code == 1
+    assert _cache(tmp_path) == {}
+
+
+def test_marking_refuses_when_gh_is_missing(repo, tmp_path, monkeypatch):
+    _git(repo, "remote", "set-url", "origin", GITHUB_URL)
+    dirs = {str(Path(sys.executable).parent), str(Path(shutil.which("git")).parent)}
+    if any((Path(d) / "gh").exists() for d in dirs):
+        pytest.skip("gh is installed beside git or python")
+    monkeypatch.setenv("PATH", os.pathsep.join(sorted(dirs)))
+    r = _run("review", "relax")
+    assert r.exit_code == 1 and "not installed" in r.output
+    assert _cache(tmp_path) == {}
+
+
+@pytest.mark.parametrize("now", ["public", "fail"])
+def test_a_marked_repository_falls_back_to_public_when_github_no_longer_says_private(
+        repo, tmp_path, gh, monkeypatch, now):
+    _commit(repo, "a.txt")
+    _git(repo, "remote", "set-url", "origin", GITHUB_URL)
+    assert _run("review", "relax").exit_code == 0
+    monkeypatch.setenv("STUB_GH", now)
+    r = _run("review")
+    assert r.exit_code == 0, r.output
+    assert "# Exposure mode\n\npublic" in _prompts(tmp_path)[0]
+    assert "marked relaxed, but" in r.output
+
+
+def test_the_marking_covers_one_exact_url(repo, tmp_path, gh):
+    _commit(repo, "a.txt")
+    _git(repo, "remote", "set-url", "origin", GITHUB_URL)
+    assert _run("review", "relax").exit_code == 0
+    _git(repo, "remote", "set-url", "origin", "https://github.com/octo/notes-public.git")
+    assert _run("review").exit_code == 0
+    assert "# Exposure mode\n\npublic" in _prompts(tmp_path)[0]
+
+
+def test_no_remote_or_a_path_remote_is_never_relaxed(repo, tmp_path, gh):
+    assert _run("review", "relax").exit_code == 1                  # a filesystem path
+    _git(repo, "remote", "remove", "origin")
+    r = _run("review", "relax")
+    assert r.exit_code == 1 and "no remote" in r.output
+    assert _cache(tmp_path) == {}
+
+
+def test_another_host_needs_the_owners_statement_at_a_terminal(repo, tmp_path, gh):
+    _commit(repo, "a.txt")
+    url = "git@git.example.org:octo/notes.git"
+    _git(repo, "remote", "set-url", "origin", url)
+    r = _run("review", "relax")                                     # no terminal: an agent's shell
+    assert r.exit_code == 1 and "interactive terminal" in r.output
+    assert _cache(tmp_path) == {}
+    with pytest.raises(relaxed.RelaxedError):
+        relaxed.mark(str(repo))                                      # no statement, no marking
+    relaxed.mark(str(repo), owner_statement=True)                   # what the CLI does after the owner types it
+    assert _cache(tmp_path)[url]["basis"] == "owner-statement"
+    assert _run("review").exit_code == 0
+    assert "# Exposure mode\n\nrelaxed" in _prompts(tmp_path)[0]
+    assert not gh.exists()                                          # GitHub is never asked about another host
+    assert _run("review", "relax", "--remove").exit_code == 0
+    assert _cache(tmp_path) == {}
+
+
+def test_public_prospective_forces_public_and_a_project_layer_cannot_relax(repo, tmp_path, gh):
+    _commit(repo, "a.txt")
+    _git(repo, "remote", "set-url", "origin", GITHUB_URL)
+    assert _run("review", "relax").exit_code == 0
+    assert _run("config", "public-prospective", "on", "--project").exit_code == 0
+    r = _run("review")
+    assert r.exit_code == 0, r.output
+    assert "# Exposure mode\n\npublic" in _prompts(tmp_path)[0]
+    assert "public-prospective" in r.output
+    r = _run("review", "relax")
+    assert r.exit_code == 1 and "public-prospective" in r.output
+    # declared in the user layer, a project layer saying off does not lift it
+    assert _run("config", "public-prospective", "off", "--project").exit_code == 0
+    assert _run("config", "public-prospective", "on").exit_code == 0
+    assert _run("review", "relax").exit_code == 1
+
+
+def test_a_config_with_review_relaxed_fails_with_the_migration(repo):
+    (repo / "git-scan.yaml").write_text("review:\n  relaxed:\n    - github.com/octo/my-\n")
+    r = _run("run")
+    assert r.exit_code == 1
+    assert "review.relaxed is no longer supported" in r.output
+    assert "git-scan review relax" in r.output
 
 
 def test_review_record_is_gone_and_there_is_no_json_export(repo):

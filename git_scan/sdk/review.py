@@ -29,10 +29,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
 
-from . import marks
+from . import marks, relaxed
 from .config import load_config, MergedConfig
 from .sources import LOG_ARGS
-from .steps.git_identity import normalize_remote
 from .user_patterns import export_patterns
 
 DATA = Path(__file__).parent.parent / "data"
@@ -55,6 +54,7 @@ class ReviewError(ValueError):
 class ReviewResult:
     mode: str
     runner: str
+    mode_reason: str = ""
     commits: List[str] = field(default_factory=list)      # reviewed in this run
     skipped: List[str] = field(default_factory=list)      # already marked reviewed
     findings: List[dict] = field(default_factory=list)
@@ -113,11 +113,6 @@ def resolve_runner(config: MergedConfig, override: Optional[str] = None) -> tupl
 
 # --- what gets reviewed ---------------------------------------------------------
 
-def _out(repo_path: str, *args: str) -> str:
-    res = subprocess.run(["git", *args], cwd=repo_path, capture_output=True, text=True)
-    return res.stdout.strip() if res.returncode == 0 else ""
-
-
 def unpushed(repo_path: str = ".") -> List[str]:
     lines, remote = marks.current_branch_push(repo_path=repo_path)
     return marks.outgoing_commits(lines, remote, repo_path)
@@ -149,35 +144,10 @@ def commit_records(repo_path: str, commits: Sequence[str]) -> List[dict]:
     return records
 
 
-def _prefix_matches(prefix: str, remote: str) -> bool:
-    """``host/owner/name-prefix`` against ``host/owner/repo``: every segment
-    but the last must match exactly (host case-insensitively); the last is a
-    prefix of the repository name, so ``github.com/octo/my-`` covers every
-    repository of octo's whose name starts with ``my-``."""
-    rule = [s for s in prefix.strip("/").split("/") if s]
-    parts = remote.split("/")
-    if not rule or len(rule) > len(parts):
-        return False
-    if rule[0].lower() != parts[0].lower():
-        return False
-    if rule[1:-1] != parts[1:len(rule) - 1]:
-        return False
-    return len(rule) == 1 or parts[len(rule) - 1].startswith(rule[-1])
-
-
-def exposure_mode(repo_path: str, config: MergedConfig, relaxed: bool) -> str:
-    """``relaxed`` only when asked for and the remote matches a configured
-    prefix; the caller can tighten to public, never loosen."""
-    if not relaxed:
-        return "public"
-    url = _out(repo_path, "remote", "get-url", "origin")
-    remote = normalize_remote(url) if url else None
-    prefixes = config.review.get("relaxed") or []
-    if remote and any(_prefix_matches(p, remote) for p in prefixes):
-        return "relaxed"
-    raise ReviewError("relaxed mode is not configured for this remote"
-                      + (f" ({remote})" if remote else "")
-                      + ". Add it with: git-scan review relaxed add HOST/OWNER/PREFIX")
+def exposure_mode(repo_path: str, config: MergedConfig) -> tuple:
+    """``(mode, why)``: git-scan's decision, never the caller's. Public unless
+    the repository is marked relaxed and still qualifies (see ``relaxed``)."""
+    return relaxed.review_mode(repo_path, config)
 
 
 def build_prompt(mode: str, catalog: dict, records: List[dict],
@@ -277,7 +247,7 @@ def run_batch(argv: List[str], prompt: str, timeout: int) -> dict:
 
 
 def review(repo_path: str = ".", commits: Optional[List[str]] = None,
-           rev_range: Optional[str] = None, relaxed: bool = False,
+           rev_range: Optional[str] = None,
            publish: Sequence[str] = (), runner: Optional[str] = None,
            timeout: Optional[int] = None, batch_bytes: Optional[int] = None,
            progress: Optional[Callable[[str], None]] = None) -> ReviewResult:
@@ -289,7 +259,8 @@ def review(repo_path: str = ".", commits: Optional[List[str]] = None,
         raise ReviewError("no personal patterns are configured; set them up (or declare none "
                           "with: git-scan patterns clear) before reviewing")
     name, argv = resolve_runner(config, runner)
-    mode = exposure_mode(repo_path, config, relaxed)
+    mode, why = exposure_mode(repo_path, config)
+    say(f"{mode} review ({why})")
     timeout = timeout or int(config.review.get("timeout") or DEFAULT_TIMEOUT)
     batch_bytes = batch_bytes or int(config.review.get("batch_bytes") or DEFAULT_BATCH_BYTES)
 
@@ -302,7 +273,7 @@ def review(repo_path: str = ".", commits: Optional[List[str]] = None,
     if not wanted:
         raise ReviewError("nothing to review: no unpushed commits on this branch")
     marked = marks.marks_of(wanted, repo_path)
-    result = ReviewResult(mode=mode, runner=name)
+    result = ReviewResult(mode=mode, runner=name, mode_reason=why)
     result.skipped = [s for s in wanted if marks.REVIEWED in marked[s]]
     todo = [s for s in wanted if marks.REVIEWED not in marked[s]]
     if not todo:
@@ -348,9 +319,3 @@ def review(repo_path: str = ".", commits: Optional[List[str]] = None,
             marks.add_marks(marks.REVIEWED, shas, repo_path)
             say(f"batch {i}/{len(batches)}: clean; recorded")
     return result
-
-
-# --- relaxed remotes ----------------------------------------------------------------
-
-def relaxed_list(repo_path: str = ".") -> List[str]:
-    return list(load_config(repo_path).review.get("relaxed") or [])
