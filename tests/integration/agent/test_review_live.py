@@ -99,3 +99,39 @@ def test_publish_text_alone_is_judged_and_nothing_is_recorded(tmp_path, monkeypa
     r = _run("review", "--quiet", "--publish", str(leak))
     assert r.exit_code == 1, r.output
     assert "Jane Doe" in r.output and "publish:comment.md" in r.output
+
+
+def _relaxed_repo(tmp_path, monkeypatch):
+    """A repository whose origin is on a host the user vouched for, so it can be
+    made eligible for a relaxed review with no network check. The initial
+    commit is already on a remote-tracking ref, so only new commits go out."""
+    repo = _repo(tmp_path, monkeypatch)
+    _git(repo, "remote", "set-url", "origin", "git@git.internal.example:me/notes.git")
+    assert _run("hosts", "add", "other", "git.internal.example", "--allow-relaxed").exit_code == 0
+    assert _run("relax").exit_code == 0
+    return repo
+
+
+@requires_claude
+def test_personal_framing_blocks_public_and_is_dropped_in_relaxed(tmp_path, monkeypatch):
+    repo = _relaxed_repo(tmp_path, monkeypatch)
+    sha = _commit(repo, "workflow.md",
+                  "# How the owner works\n\nHe reviews every change on his phone before bed, "
+                  "and he keeps his notes for the week in this file.\n",
+                  "Describe the owner's weekly routine")
+    r = _run("review", "--quiet")
+    assert r.exit_code == 1, r.output                          # public: framing blocks
+    assert "reviewed" not in marks.marks_on(sha)
+    r = _run("review", "--quiet", "--relaxed")
+    assert r.exit_code == 0, r.output                          # relaxed: dropped or a note, never blocks
+    assert "reviewed" in marks.marks_on(sha)
+
+
+@requires_claude
+def test_a_token_still_blocks_a_relaxed_review(tmp_path, monkeypatch):
+    repo = _relaxed_repo(tmp_path, monkeypatch)
+    sha = _commit(repo, "settings.txt", f"token = {TOKEN}\n", "Add settings")
+    r = _run("review", "--quiet", "--relaxed")
+    assert r.exit_code == 1, r.output
+    assert f"{sha[:12]}:settings.txt" in r.output
+    assert "reviewed" not in marks.marks_on(sha)

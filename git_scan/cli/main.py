@@ -249,8 +249,9 @@ def review(ctx, relaxed_review, publish, rev_range, runner, timeout, quiet):
 
     Every review is public unless --relaxed is given, and that is refused
     unless the repository is eligible (git-scan relax) and its host still
-    reports it private. In a relaxed review, low-severity notes are shown
-    but don't block.
+    reports it private. In a relaxed review, names, emails, paths and private
+    references are shown as notes and don't block; personal framing is not
+    judged; everything else blocks. The category decides, not the reviewer.
 
     \b
     Findings are printed with the value and location; nothing is recorded
@@ -277,13 +278,13 @@ def review(ctx, relaxed_review, publish, rev_range, runner, timeout, quiet):
         click.echo(f"  warning: {w}")
     for f in result.notes:
         note = f" ({f['note']})" if f.get("note") else ""
-        click.echo(f"  note: {f['location']} [{f['category']}/low] {f['value']}{note}")
+        click.echo(f"  note: {f['location']} [{f['category']}] {f['value']}{note}")
     if result.findings:
         click.echo(click.style(f"  [FAIL] Privacy review ({result.mode}; {len(result.commits)} "
                                f"commit(s); {len(result.findings)} finding(s))", fg="red"))
         for f in result.findings:
             note = f" ({f['note']})" if f.get("note") else ""
-            click.echo(f"         {f['location']} [{f['category']}/{f.get('severity', '?')}] "
+            click.echo(f"         {f['location']} [{f['category']}] "
                        f"{f['value']}{note}")
         click.echo(click.style("FAILED: fix the publish text and review it again; nothing is recorded "
                                "for text" if result.text_only and not result.commits else

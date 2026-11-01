@@ -33,7 +33,7 @@ if mode in ("clean", "partial"):
 elif mode == "finding":
     print(json.dumps({"status": "completed", "commits_reviewed": seen, "summary": "one",
                       "findings": [{"category": "names", "value": "Jane Doe",
-                                    "location": "abc:notes.txt:1", "severity": "high"}]}))
+                                    "location": "abc:notes.txt:1"}]}))
 elif mode == "envelope":          # a CLI envelope carrying the result as text
     print(json.dumps({"type": "result", "subtype": "success", "is_error": False,
                       "duration_ms": 4321, "modelUsage": {"stub-model-1": {}},
@@ -125,7 +125,7 @@ def test_findings_are_printed_and_nothing_is_recorded(repo, monkeypatch):
     sha = _commit(repo, "a.txt")
     r = _run("review")
     assert r.exit_code == 1
-    assert "abc:notes.txt:1 [names/high] Jane Doe" in r.output
+    assert "abc:notes.txt:1 [names] Jane Doe" in r.output
     assert "nothing was recorded" in r.output
     assert marks.marks_on(sha) == {"scanned"}
 
@@ -246,7 +246,7 @@ def test_publish_text_with_no_unpushed_commit_is_reviewed_and_a_finding_fails(re
     monkeypatch.setenv("STUB_MODE", "finding")
     r = _run("review", "--quiet", "--publish", str(tmp_path / "comment.md"))
     assert r.exit_code == 1
-    assert "[names/high] Jane Doe" in r.output and "fix the publish text" in r.output
+    assert "[names] Jane Doe" in r.output and "fix the publish text" in r.output
     assert "reviewed" not in marks.marks_on(sha)
 
 
@@ -293,11 +293,11 @@ def _eligible(repo):
     return _git(repo, "config", "--local", "--get", "git-scan.relaxed-remote", check=False).stdout.strip()
 
 
-def _relaxed_stub(monkeypatch, severity):
-    """The stub reviewer reports one finding of this severity."""
+def _relaxed_stub(monkeypatch, category):
+    """The stub reviewer reports one finding of this category."""
     monkeypatch.setenv("STUB_MODE", "finding")
     stub = Path(os.environ["STUB_PROMPT_OUT"]).parent / "stub.py"
-    stub.write_text(STUB.replace('"severity": "high"', f'"severity": "{severity}"'))
+    stub.write_text(STUB.replace('"category": "names"', f'"category": "{category}"'))
 
 
 def test_every_review_is_public_without_the_flag(repo, tmp_path, gh):
@@ -438,12 +438,12 @@ def test_a_plugin_provider_is_used_like_a_built_in(repo, tmp_path, monkeypatch):
     assert r.exit_code == 0 and "verified private by src.corp.example" in r.output
 
 
-def test_in_a_relaxed_review_low_notes_do_not_block(repo, tmp_path, gh, monkeypatch):
+def test_in_a_relaxed_review_a_name_is_a_note_and_does_not_block(repo, tmp_path, gh, monkeypatch):
     first = _commit(repo, "a.txt")
     _git(repo, "remote", "set-url", "origin", GITHUB_URL)
     assert _run("relax").exit_code == 0
-    _relaxed_stub(monkeypatch, "low")
-    r = _run("review")                                           # public: a low finding blocks
+    _relaxed_stub(monkeypatch, "names")
+    r = _run("review")                                           # public: a name blocks
     assert r.exit_code == 1 and "[FAIL]" in r.output
     r = _run("review", "--relaxed")
     assert r.exit_code == 0, r.output
@@ -451,13 +451,55 @@ def test_in_a_relaxed_review_low_notes_do_not_block(repo, tmp_path, gh, monkeypa
     assert marks.marks_on(first) >= {"reviewed"}
 
 
-def test_in_a_relaxed_review_higher_findings_still_block(repo, gh, monkeypatch):
-    _commit(repo, "a.txt")
+@pytest.mark.parametrize("category", ["secrets", "account_ids", "financial", "last4", "made_up"])
+def test_in_a_relaxed_review_these_categories_still_block(repo, gh, monkeypatch, category):
+    """Secrets and identifiers block; so does any category the table doesn't
+    name, the owner's own pattern categories included (fail closed)."""
+    sha = _commit(repo, "a.txt")
     _git(repo, "remote", "set-url", "origin", GITHUB_URL)
     assert _run("relax").exit_code == 0
-    _relaxed_stub(monkeypatch, "medium")
+    _relaxed_stub(monkeypatch, category)
     r = _run("review", "--relaxed")
-    assert r.exit_code == 1 and "[FAIL]" in r.output
+    assert r.exit_code == 1 and "[FAIL]" in r.output and f"[{category}]" in r.output
+    assert "reviewed" not in marks.marks_on(sha)
+
+
+@pytest.mark.parametrize("category", ["personal_framing", "history_expose"])
+def test_in_a_relaxed_review_framing_is_dropped_even_when_the_reviewer_reports_it(repo, gh, monkeypatch,
+                                                                              category):
+    sha = _commit(repo, "a.txt")
+    _git(repo, "remote", "set-url", "origin", GITHUB_URL)
+    assert _run("relax").exit_code == 0
+    _relaxed_stub(monkeypatch, category)
+    assert _run("review").exit_code == 1                         # public: framing blocks
+    r = _run("review", "--relaxed")
+    assert r.exit_code == 0, r.output                            # relaxed: dropped, not even a note
+    assert "note:" not in r.output and "reviewed" in marks.marks_on(sha)
+
+
+def test_relaxed_publish_text_alone_follows_the_same_table(repo, tmp_path, gh, monkeypatch):
+    _commit(repo, "a.txt")
+    _git(repo, "remote", "set-url", "origin", GITHUB_URL)
+    _git(repo, "push", "-q", "origin", "main", check=False)
+    assert _run("relax").exit_code == 0
+    (tmp_path / "body.md").write_text("A pull-request body.\n")
+    _relaxed_stub(monkeypatch, "names")
+    r = _run("review", "--relaxed", "--publish", str(tmp_path / "body.md"))
+    assert r.exit_code == 0 and "note:" in r.output, r.output
+
+
+def test_the_verdict_table():
+    found = [{"category": c} for c in ("secrets", "names", "personal_framing", "employer")]
+    assert review.sort_findings(found, "public") == (found, [])
+    blocking, notes = review.sort_findings(found, "relaxed")
+    assert [f["category"] for f in blocking] == ["secrets", "employer"]
+    assert [f["category"] for f in notes] == ["names"]
+
+
+def test_no_severity_is_asked_for_or_shown(repo, tmp_path):
+    schema = json.loads((Path(review.__file__).parent.parent / "data" / "review-schema.json").read_text())
+    assert "severity" not in json.dumps(schema)
+    assert "severity" not in (Path(review.__file__).parent.parent / "data" / "review-prompt.md").read_text()
 
 
 def test_public_prospective_refuses_eligibility_and_relaxed_reviews(repo, tmp_path, gh):
