@@ -10,7 +10,7 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["category", "value", "location"],
+        "required": ["category", "value", "location", "note"],
         "properties": {
           "category": {"type": "string"},
           "value": {"type": "string"},

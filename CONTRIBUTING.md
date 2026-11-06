@@ -307,7 +307,10 @@ records a review. Rules:
   `review.sort_findings`, one table keyed by category (`NOTE_IN_RELAXED`,
   `DROP_IN_RELAXED`, everything else blocks). The reviewer reports categories
   and no severity: a model's grade varied between runs on identical text, so
-  the verdict must not depend on it. A category the table doesn't name, the
+  the verdict must not depend on it. Every finding carries a `note` naming
+  the rule it breaks (the schema requires it), and `warnings` are only for
+  what limited the review: a reviewer that passed something it was unsure
+  about and explained the call in a warning turned a finding into a footnote. A category the table doesn't name, the
   owner's own pattern categories included, blocks in both modes.
 - **Hosts and providers.** `sdk/hosts.py` keeps registered hosts in the
   global git config (`[git-scan-host "HOST"] type, allow-relaxed`); github.com

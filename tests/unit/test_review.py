@@ -502,6 +502,22 @@ def test_no_severity_is_asked_for_or_shown(repo, tmp_path):
     assert "severity" not in (Path(review.__file__).parent.parent / "data" / "review-prompt.md").read_text()
 
 
+def test_every_finding_must_say_which_rule_it_breaks():
+    data = Path(review.__file__).parent.parent / "data"
+    schema = json.loads((data / "review-schema.json").read_text())
+    assert "note" in schema["properties"]["findings"]["items"]["required"]
+    prompt = (data / "review-prompt.md").read_text()
+    assert "names the rule below that it breaks" in prompt
+    assert "report it as one" in prompt                       # unsure means a finding, not a warning
+    assert "Never use them to explain a call" in prompt
+
+
+def test_maintainer_process_framing_is_a_public_finding():
+    prompt = (Path(review.__file__).parent.parent / "data" / "review-prompt.md").read_text()
+    assert "Maintainer-process framing, findings in `public`" in prompt
+    assert "written for the project's users and" in prompt
+
+
 def test_public_prospective_refuses_eligibility_and_relaxed_reviews(repo, tmp_path, gh):
     _commit(repo, "a.txt")
     _git(repo, "remote", "set-url", "origin", GITHUB_URL)

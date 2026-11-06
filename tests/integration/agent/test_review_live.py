@@ -101,6 +101,25 @@ def test_publish_text_alone_is_judged_and_nothing_is_recorded(tmp_path, monkeypa
     assert "Jane Doe" in r.output and "publish:comment.md" in r.output
 
 
+@requires_claude
+def test_maintainer_logistics_fail_a_public_review_and_user_facing_text_passes(tmp_path, monkeypatch):
+    _repo(tmp_path, monkeypatch)                            # everything is pushed: publish text alone
+    logistics = tmp_path / "pr-body.md"
+    logistics.write_text(
+        "Moves the helper skill into this repository.\n\n"
+        "The old copy is removed from its previous home in a separate change, "
+        "and the symlinks on my laptop get cleaned up after that.\n")
+    r = _run("review", "--quiet", "--publish", str(logistics))
+    assert r.exit_code == 1, r.output
+    assert "[personal_framing]" in r.output and "publish:pr-body.md" in r.output
+    user_facing = tmp_path / "user-facing.md"
+    user_facing.write_text(
+        "Moves the helper skill into this repository.\n\n"
+        "If you installed it from the old location, switch to this path.\n")
+    r = _run("review", "--quiet", "--publish", str(user_facing))
+    assert r.exit_code == 0, r.output
+
+
 def _relaxed_repo(tmp_path, monkeypatch):
     """A repository whose origin is on a host the user vouched for, so it can be
     made eligible for a relaxed review with no network check. The initial

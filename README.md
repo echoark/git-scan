@@ -484,7 +484,8 @@ git reports are treated as already present.
 
 Regexes catch secret formats and the strings you listed. They cannot tell a
 colleague's name in a commit message from a word, a personal use case in a
-README from documentation, or an employer from a vendor. `git-scan review`
+README from documentation, a maintainer's notes about their own machines and
+chores from what a change means for its users, or an employer from a vendor. `git-scan review`
 puts a judgment reviewer in front of every push for exactly those:
 
 ```bash
@@ -512,6 +513,9 @@ FAILED: fix the content in those commits and review again; nothing was recorded 
 
 Rules the command keeps:
 
+- **Every finding says why.** Its note names the rule it breaks. When the
+  reviewer is unsure, it reports a finding rather than passing with a
+  warning; warnings say only what limited the review.
 - **The reviewer's own account is shown.** Each batch ends with the
   reviewer's one-line summary, the model that answered and the time it
   took, so a clean result is never just the word clean. A result that does
