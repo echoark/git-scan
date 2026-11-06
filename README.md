@@ -645,6 +645,21 @@ commits), `hook_status`, and `list_steps`. Registration for
 other clients, the tools' arguments and results, and notes for agents are
 in [MCP server](docs/MCP.md).
 
+## Agent skill: safe-commit
+
+[`skills/safe-commit/`](skills/safe-commit/SKILL.md) is an agent skill
+([agentskills.io](https://agentskills.io) format) that takes an agent through
+committing and pushing with git-scan: staging, the scan, the review, and the
+push. Install it from a clone of this repository wherever your agent reads
+skills; for Claude Code, for example:
+
+```bash
+ln -s "$PWD/skills/safe-commit" ~/.claude/skills/safe-commit
+```
+
+Its maintainer notes are in [docs/safe-commit.md](docs/safe-commit.md); they
+do not ship with the skill.
+
 ## Git identity
 
 Optional. The commit's author email must be one you have allowed for the
