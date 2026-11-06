@@ -4,9 +4,31 @@ A scanner for sensitive data in git repositories: credentials, personal
 identifiers, or any string you decide must never reach a repository. It
 reads the change you are about to commit, its commit message, and every
 file, branch, and tag name, and reports what matches. Install it as git
-hooks to block such commits (and, optionally, such pushes), run it by hand
-on work in progress or a range of commits, or let an agent run it through
-the MCP server.
+hooks to block such commits and, with the push gate, such pushes; run it by
+hand on work in progress or a range of commits; and give your coding agent
+the safe-commit skill, which takes the agent through committing and pushing
+with git-scan.
+
+**Contents:** [How it fits together](#how-it-fits-together) ·
+[Getting started](#getting-started) · [Using it](#using-it) ·
+[Features](#features) · reference: [Usage](#usage), [Checks](#checks),
+[Configuration](#configuration), [Hook installation](#hook-installation),
+[The privacy review](#the-privacy-review), [Git identity](#git-identity),
+[MCP server](#mcp-server) · [Upgrading](#upgrading) ·
+[Contributing](#contributing)
+
+## How it fits together
+
+| Part | What it does | When it runs |
+|---|---|---|
+| Commit hooks | The scan: built-in detectors, entropy, and your own patterns, over what each commit changes, its message, and every file, branch and tag name | Every `git commit` |
+| Privacy review (`git-scan review`) | A judgment reviewer, a headless agent CLI, reads the unpushed commits and any pull-request text for what a regex can't catch: names in prose, personal framing, private references | Before a push |
+| Push gate | Refuses a push of commits that were not scanned, or, when you require it, not reviewed | Every `git push` |
+| safe-commit skill | The procedure an agent follows: stage, commit, review, push or open a pull request, and bring every finding to you | When you ask an agent to commit |
+| MCP server (optional) | The same scan as tools an agent can call | When an agent calls it |
+
+The CLI and hooks work on their own; the skill is for working with an AI
+coding agent.
 
 ## Features
 
@@ -29,48 +51,40 @@ the MCP server.
 - **No network.** Every check runs locally, including the git identity
   check, which enforces only the rules you set.
 
-## Checks
+## Getting started
 
-| Check | Looks for |
-|---|---|
-| Tokens and keys | GitHub, Google, AWS, OpenAI, and Slack tokens; private-key headers; generic API keys; UUIDs; long hex strings |
-| Entropy | random-looking strings that resemble secrets, with exclusions for lockfile hashes and the like |
-| Patterns | the strings you configure (see [Configuration](#configuration)) |
-| Judgment | matches on the entries you marked for judgment, reported for acknowledgement rather than as findings (see [Judgment entries and notes](#judgment-entries-and-notes)) |
-| Environment | your OS username, home directory name, git name and email, and values from a `.env` file in the repository |
-| Emails | addresses outside reserved example domains and your allowed list |
-| SSN / EIN | US tax identifier formats |
-| Google Drive IDs | document and folder IDs in Drive URLs |
-| Dollar amounts | large, non-round, or cents-precise figures, with thresholds you can set |
-| Names | patterns, usernames, emails, and SSN/EINs in file, branch, and tag names |
-| Git identity | the commit's author email is one you allowed for the remote; for commits already made, every author and committer email (see [Git identity](#git-identity)) |
-
-Commit messages go through the same content checks as changed lines, with
-the same rules. One consequence: a full 40-character commit SHA in a
-message is refused like any long hex string (`hex-40`). Cite commits by a
-short SHA instead; 12 characters is plenty.
-
-## Installation
+### 1. Install the CLI
 
 Requires Python 3.11+ and git.
 
 ```bash
 pipx install git+https://github.com/echoark/git-scan.git
-git-scan hook install
 ```
 
 That installs the default branch. To pin a machine to a release, append
 `@vX.Y.Z` to the URL with a tag from the repository's releases.
 
-`hook install` writes one-line `pre-commit` and `commit-msg` hooks to
-`~/.config/git/hooks` and points git's global `core.hooksPath` there, so
-every repository on the machine is covered, including ones cloned later.
-See [Hook installation](#hook-installation) for the other levels.
+### 2. Install the hooks
 
-## Quick start
+```bash
+git-scan hook install --pre-push --require-review
+```
+
+This writes the commit hooks and the push gate to `~/.config/git/hooks` and
+points git's global `core.hooksPath` there, so every repository on the
+machine is covered, including ones cloned later. `--require-review` makes
+every push wait for a clean privacy review. Leave out `--pre-push` and
+`--require-review` for commit-time scanning only. See [Hook
+installation](#hook-installation) for the other levels.
+
+The review runs a headless agent CLI, `claude` or `agy`, on whatever login
+it already has; install one and sign in. See [The privacy
+review](#the-privacy-review).
+
+### 3. Add your patterns
 
 A scan refuses to run until you have decided about personal patterns, so
-the first step is to add some (or opt out):
+add some (or opt out):
 
 ```bash
 git-scan patterns add my-name --pattern 'Jane Doe' --category name
@@ -83,6 +97,66 @@ To run without any personal patterns:
 ```bash
 git-scan patterns clear
 ```
+
+[Configuration](#configuration) covers judgment entries, notes, allowed
+emails and thresholds.
+
+### 4. Install the safe-commit skill (for agents)
+
+[`skills/safe-commit/`](skills/safe-commit/SKILL.md) is an agent skill
+([agentskills.io](https://agentskills.io) format). Install it from a clone
+of this repository, once per machine, in the way your agent reads skills:
+
+| Agent | Install |
+|---|---|
+| Claude Code | `ln -s "$PWD/skills/safe-commit" ~/.claude/skills/safe-commit` |
+| Claude app (claude.ai, desktop, mobile) | `cd skills && zip -r ../safe-commit.skill safe-commit`, then open `safe-commit.skill` in the Claude desktop app or save it from a file card in a conversation. Skills saved to the account also reach Claude Code. |
+| Gemini CLI | `gemini skills link "$PWD/skills/safe-commit"` |
+| Antigravity CLI (`agy`) | `ln -s "$PWD/skills/safe-commit" ~/.gemini/config/skills/safe-commit` |
+
+Use one channel per agent: the same skill installed twice loads twice. Its
+maintainer notes are in [docs/safe-commit.md](docs/safe-commit.md); they do
+not ship with the skill.
+
+## Using it
+
+### With an agent
+
+Ask the agent to commit ("commit this", "commit and push"). With the
+safe-commit skill it:
+
+- asks once per session whether a pull-request process is fine. With yes,
+  it pushes a branch and opens the pull request when every check comes
+  back clean; with no, it works on the default branch and waits for your
+  yes before every push;
+- stages files by name and commits, so the commit hooks scan;
+- runs `git-scan review` on the unpushed commits and the pull-request text;
+- brings every finding to you with git-scan's output, the flagged line in
+  context, and ways to resolve it, and changes only what you pick;
+- asks before any relaxed review, and never gets around the hooks.
+
+Without the skill an agent still meets the same hooks and push gate, and
+their messages say what to run next; the skill is what makes it stop and
+bring findings to you.
+
+### By hand: one commit, end to end
+
+```bash
+git add src/app.py README.md            # stage by name
+git commit -m "Add the export command"  # the commit hooks scan
+git-scan review --publish pr-body.md    # the unpushed commits, plus the PR text you will post
+git push origin HEAD                    # the push gate checks the scan and the review
+```
+
+- **A finding refuses the commit.** It names the file and line: fix the
+  content and commit again.
+- **A Judgment match refuses the commit** until you have looked. If every
+  match is fine in context, run `git-scan ack` and commit again (see
+  [Judgment entries and notes](#judgment-entries-and-notes)).
+- **A review finding** names the commit, file and line, or the publish
+  text: fix the content (amend, or add a commit) and review again.
+- **Text posted after the push** (an edited pull-request body, a comment, an
+  issue): `git-scan review --publish FILE` reviews it alone.
 
 ## Usage
 
@@ -137,6 +211,27 @@ where a net `git diff A B` would show nothing. Findings name the commit:
 
 The gate remembers which commits came back clean (see [Push
 gate](#push-gate-optional)). `--commit REV` does the same for one commit.
+
+## Checks
+
+| Check | Looks for |
+|---|---|
+| Tokens and keys | GitHub, Google, AWS, OpenAI, and Slack tokens; private-key headers; generic API keys; UUIDs; long hex strings |
+| Entropy | random-looking strings that resemble secrets, with exclusions for lockfile hashes and the like |
+| Patterns | the strings you configure (see [Configuration](#configuration)) |
+| Judgment | matches on the entries you marked for judgment, reported for acknowledgement rather than as findings (see [Judgment entries and notes](#judgment-entries-and-notes)) |
+| Environment | your OS username, home directory name, git name and email, and values from a `.env` file in the repository |
+| Emails | addresses outside reserved example domains and your allowed list |
+| SSN / EIN | US tax identifier formats |
+| Google Drive IDs | document and folder IDs in Drive URLs |
+| Dollar amounts | large, non-round, or cents-precise figures, with thresholds you can set |
+| Names | patterns, usernames, emails, and SSN/EINs in file, branch, and tag names |
+| Git identity | the commit's author email is one you allowed for the remote; for commits already made, every author and committer email (see [Git identity](#git-identity)) |
+
+Commit messages go through the same content checks as changed lines, with
+the same rules. One consequence: a full 40-character commit SHA in a
+message is refused like any long hex string (`hex-40`). Cite commits by a
+short SHA instead; 12 characters is plenty.
 
 ## Configuration
 
@@ -461,19 +556,13 @@ made a condition of every push:
 
 ```bash
 git-scan hook install --pre-push --require-review     # or: git-scan config require-review on
-git-scan review                                       # before pushing; a minute or more
+git-scan review                                       # before pushing
 ```
 
 A push is refused while any commit it sends lacks a clean review, with the
 command to run. The scan does not stand in for the review and the review
 does not stand in for the scan: both must pass. A project's `git-scan.yaml`
 can require the review but not lift the requirement.
-
-**Upgrading from 0.7 or earlier.** `git-scan mark` is gone, and so is
-`push.require_marks`: a configuration that still has it fails to load with
-the fix in the message. Turn the requirement into `git-scan config
-require-review on` (or reinstall with `--require-review`); the review itself
-is `git-scan review`. Commits the gate had already cleared stay cleared.
 
 **Limitation:** the check is made against the remote being pushed to. With
 several remotes, commits cleared relative to one may be pushed to another
@@ -547,12 +636,14 @@ prompt on stdin and prints the result JSON:
 ```bash
 git-scan config review-runner claude
 git-scan config review-runner "my-reviewer --json"
+git-scan config review-model MODEL       # the model the runner is asked to use (its --model)
 git-scan config review-timeout 900       # seconds per batch (default 600)
 ```
 
 Large pushes are reviewed in batches of about 200 KB of patch text each
-(`review.batch_bytes` in the configuration). The run takes a minute or
-more per batch; an agent should start it as a background command.
+(`review.batch_bytes` in the configuration). A small batch takes seconds; a
+large one can take a few minutes, so an agent should start the review as a
+background command.
 
 ### Relaxed review
 
@@ -623,42 +714,6 @@ Any layer can declare it; none can lift it.
 
 Eligibility and hosts are never written to git-scan's YAML configuration.
 
-**Upgrading from 0.8.** `review.relaxed` (the list of remote prefixes) and
-`git-scan review relaxed add/remove/list` are gone: a configuration that
-still has `review.relaxed` fails to load until the key is deleted. Make
-each private repository eligible with `git-scan relax`, register any
-non-github.com host with `git-scan hosts add`, and pass `--relaxed` to the
-reviews that should be relaxed.
-
-## MCP server
-
-An agent can run the same scan through a stdio MCP server, `git-scan-mcp`,
-installed with the `mcp` extra:
-
-```bash
-pipx install "git-scan[mcp] @ git+https://github.com/echoark/git-scan.git"
-claude mcp add --scope user git-scan -- git-scan-mcp
-```
-
-It exposes `scan_repo` (the staged change, a commit message, or a range of
-commits), `hook_status`, and `list_steps`. Registration for
-other clients, the tools' arguments and results, and notes for agents are
-in [MCP server](docs/MCP.md).
-
-## Agent skill: safe-commit
-
-[`skills/safe-commit/`](skills/safe-commit/SKILL.md) is an agent skill
-([agentskills.io](https://agentskills.io) format) that takes an agent through
-committing and pushing with git-scan: staging, the scan, the review, and the
-push. Install it from a clone of this repository wherever your agent reads
-skills; for Claude Code, for example:
-
-```bash
-ln -s "$PWD/skills/safe-commit" ~/.claude/skills/safe-commit
-```
-
-Its maintainer notes are in [docs/safe-commit.md](docs/safe-commit.md); they
-do not ship with the skill.
 
 ## Git identity
 
@@ -740,6 +795,36 @@ address is refused until that repository sets its own `user.email` (or the
 commit uses the noreply address), and the same for the customer's
 organization. Repositories under owners with no rule are reported as
 skipped, so you can add rules as you meet them.
+
+## MCP server
+
+An agent can run the same scan through a stdio MCP server, `git-scan-mcp`,
+installed with the `mcp` extra:
+
+```bash
+pipx install "git-scan[mcp] @ git+https://github.com/echoark/git-scan.git"
+claude mcp add --scope user git-scan -- git-scan-mcp
+```
+
+It exposes `scan_repo` (the staged change, a commit message, or a range of
+commits), `hook_status`, and `list_steps`. Registration for
+other clients, the tools' arguments and results, and notes for agents are
+in [MCP server](docs/MCP.md).
+
+## Upgrading
+
+**Upgrading from 0.7 or earlier.** `git-scan mark` is gone, and so is
+`push.require_marks`: a configuration that still has it fails to load with
+the fix in the message. Turn the requirement into `git-scan config
+require-review on` (or reinstall with `--require-review`); the review itself
+is `git-scan review`. Commits the gate had already cleared stay cleared.
+
+**Upgrading from 0.8.** `review.relaxed` (the list of remote prefixes) and
+`git-scan review relaxed add/remove/list` are gone: a configuration that
+still has `review.relaxed` fails to load until the key is deleted. Make
+each private repository eligible with `git-scan relax`, register any
+non-github.com host with `git-scan hosts add`, and pass `--relaxed` to the
+reviews that should be relaxed.
 
 ## Contributing
 
