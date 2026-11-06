@@ -23,12 +23,19 @@ git_scan/
   data/review-prompt.md # the reviewer's instructions, sent with every batch
   data/review-schema.json # the result shape the runner is held to
 tests/unit/             # sociable unit tests
+skills/safe-commit/     # the agent skill for committing with git-scan (ships as is)
 docs/MCP.md             # MCP server: install, registration, tools
+docs/safe-commit.md     # the skill's maintainer notes (never shipped with it)
 ```
 
 All behavior lives in `git_scan/sdk/`. The CLI and MCP layers parse input,
 call the SDK, and format output. Logic found in `cli/` or `mcp/` moves to
 the SDK.
+
+The safe-commit skill lives here so the tool and its procedure change
+together: a change to anything an agent sees (a refusal, a command, the
+review's output) updates `skills/safe-commit/` in the same pull request.
+Read `docs/safe-commit.md` before changing the skill.
 
 ## Development setup
 
