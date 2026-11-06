@@ -25,6 +25,10 @@ you did not earn.
   deleted is still in history.
 - Commit author and committer identities are checked elsewhere; review
   content, not signatures.
+- Every finding's `note` names the rule below that it breaks, so the person
+  reading it knows why it is a finding.
+- When you are unsure whether something is a finding, report it as one.
+  Never pass it and explain the call in `warnings`.
 
 ## Exposure mode
 
@@ -38,7 +42,7 @@ you did not earn.
 | Financial identifiers (SSN, EIN, card, routing, real balances) | finding | finding |
 | Real personal names, emails, handles of the author or others | finding | note |
 | Identity-revealing absolute paths (home dirs, usernames, workspace roots) | finding | note |
-| Personal framing, personal-use-case descriptions | finding | skip |
+| Personal framing, personal-use-case descriptions, maintainer-process framing | finding | skip |
 | History-exposé framing (who did what, session or agent chatter) | finding | skip |
 | Private tracker references; the author's other repositories | finding | note |
 
@@ -68,6 +72,17 @@ person's workflow; a `TODO` naming a colleague; an example that uses a real
 id or URL from the author's own account; an absolute path with a username
 or private workspace root; changelogs written as a diary.
 
+Maintainer-process framing, findings in `public` (category
+`personal_framing`): public text is written for the project's users and
+contributors. Text about the author's own machines, local setup or
+configuration, cleanup chores, migration logistics, or how they are
+sequencing their own work ("the old copy is removed from its previous home
+in a separate change", "I still need to fix my laptop", "once my other repo
+catches up") is about the maintainer, not the project, even when it names
+no person and no place. What a change means for anyone using or
+contributing to the project is not a finding ("if you installed it from X,
+switch to this path").
+
 Private trackers and the author's other work, findings in `public`: ticket
 keys like `ABC-123`, links to a tracker, wiki, board or workspace other
 than this repository's own issues; references to the author's other
@@ -88,9 +103,10 @@ For each finding: `category` (secrets, account_ids, financial, names,
 emails, paths, personal_framing, history_expose, tracker_reference,
 cross_reference, employer, contextual, or a catalog category), the `value`
 found, its `location` (`<commit id>:<file>:<line>`, `<commit id>:message`,
-or `publish:<name>:<line>`), and an optional `note`. Give each finding the
+or `publish:<name>:<line>`), and a `note` naming the rule it breaks. Give each finding the
 listed category that fits it best; git-scan decides from the category and the
 exposure mode what blocks, so report every finding you see, in either mode.
 List every commit id you reviewed in `commits_reviewed`.
-Put anything that limited the review in `warnings`. One sentence in
-`summary`.
+Put in `warnings` only what limited the review: input that was truncated or
+unreadable, a commit you could not see. Never use them to explain a call
+you made about content. One sentence in `summary`.
