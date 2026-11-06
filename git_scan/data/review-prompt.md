@@ -42,7 +42,7 @@ you did not earn.
 | Financial identifiers (SSN, EIN, card, routing, real balances) | finding | finding |
 | Real personal names, emails, handles of the author or others | finding | note |
 | Identity-revealing absolute paths (home dirs, usernames, workspace roots) | finding | note |
-| Personal framing, personal-use-case descriptions, maintainer-process framing | finding | skip |
+| Personal framing, personal-use-case descriptions, the author's own setup and chores | finding | skip |
 | History-exposé framing (who did what, session or agent chatter) | finding | skip |
 | Private tracker references; the author's other repositories | finding | note |
 
@@ -72,16 +72,19 @@ person's workflow; a `TODO` naming a colleague; an example that uses a real
 id or URL from the author's own account; an absolute path with a username
 or private workspace root; changelogs written as a diary.
 
-Maintainer-process framing, findings in `public` (category
-`personal_framing`): public text is written for the project's users and
-contributors. Text about the author's own machines, local setup or
-configuration, cleanup chores, migration logistics, or how they are
-sequencing their own work ("the old copy is removed from its previous home
-in a separate change", "I still need to fix my laptop", "once my other repo
-catches up") is about the maintainer, not the project, even when it names
-no person and no place. What a change means for anyone using or
-contributing to the project is not a finding ("if you installed it from X,
-switch to this path").
+The author's own setup and chores, findings in `public` (reported as
+`personal_framing`): a sentence about the author's own machines, local
+setup, personal chores, or how they are sequencing their own work, even
+when it names no person and no place ("in a separate change", "I still
+need to fix my laptop", "once my other repo catches up"). Public text is
+written for the project's users and contributors. Not findings: the
+project's documented process (how to release, how to contribute), and a
+notice to whoever uses or contributes to the project about a change that
+can affect their own installs or work ("the package is now published as
+`new-name`; install that instead", "the `old-name` command is deprecated;
+use `new-name`", "this setting goes away in 2.0"). Such a notice is still
+checked against every other rule, and the author's own detail inside it is
+still a finding.
 
 Private trackers and the author's other work, findings in `public`: ticket
 keys like `ABC-123`, links to a tracker, wiki, board or workspace other

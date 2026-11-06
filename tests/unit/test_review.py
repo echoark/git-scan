@@ -512,10 +512,11 @@ def test_every_finding_must_say_which_rule_it_breaks():
     assert "Never use them to explain a call" in prompt
 
 
-def test_maintainer_process_framing_is_a_public_finding():
-    prompt = (Path(review.__file__).parent.parent / "data" / "review-prompt.md").read_text()
-    assert "Maintainer-process framing, findings in `public`" in prompt
-    assert "written for the project's users and" in prompt
+def test_the_authors_own_setup_and_chores_are_a_public_finding():
+    prompt = " ".join((Path(review.__file__).parent.parent / "data" / "review-prompt.md").read_text().split())
+    assert "The author's own setup and chores, findings in `public`" in prompt
+    assert "written for the project's users and contributors" in prompt
+    assert "a notice to whoever uses or contributes" in prompt     # a deprecation notice is not this finding
 
 
 def test_public_prospective_refuses_eligibility_and_relaxed_reviews(repo, tmp_path, gh):

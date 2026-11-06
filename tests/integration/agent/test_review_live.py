@@ -102,7 +102,7 @@ def test_publish_text_alone_is_judged_and_nothing_is_recorded(tmp_path, monkeypa
 
 
 @requires_claude
-def test_maintainer_logistics_fail_a_public_review_and_user_facing_text_passes(tmp_path, monkeypatch):
+def test_the_authors_own_chores_fail_a_public_review_and_a_deprecation_notice_passes(tmp_path, monkeypatch):
     _repo(tmp_path, monkeypatch)                            # everything is pushed: publish text alone
     logistics = tmp_path / "pr-body.md"
     logistics.write_text(
@@ -115,7 +115,8 @@ def test_maintainer_logistics_fail_a_public_review_and_user_facing_text_passes(t
     user_facing = tmp_path / "user-facing.md"
     user_facing.write_text(
         "Moves the helper skill into this repository.\n\n"
-        "If you installed it from the old location, switch to this path.\n")
+        "The helper is now published as `new-helper`; install that instead. "
+        "The `old-helper` command is deprecated and goes away in 2.0.\n")
     r = _run("review", "--quiet", "--publish", str(user_facing))
     assert r.exit_code == 0, r.output
 
