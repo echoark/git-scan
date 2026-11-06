@@ -14,8 +14,7 @@ with git-scan.
 [Features](#features) · reference: [Usage](#usage), [Checks](#checks),
 [Configuration](#configuration), [Hook installation](#hook-installation),
 [The privacy review](#the-privacy-review), [Git identity](#git-identity),
-[MCP server](#mcp-server) · [Upgrading](#upgrading) ·
-[Contributing](#contributing)
+[MCP server](#mcp-server) · [Contributing](#contributing)
 
 ## How it fits together
 
@@ -810,21 +809,6 @@ It exposes `scan_repo` (the staged change, a commit message, or a range of
 commits), `hook_status`, and `list_steps`. Registration for
 other clients, the tools' arguments and results, and notes for agents are
 in [MCP server](docs/MCP.md).
-
-## Upgrading
-
-**Upgrading from 0.7 or earlier.** `git-scan mark` is gone, and so is
-`push.require_marks`: a configuration that still has it fails to load with
-the fix in the message. Turn the requirement into `git-scan config
-require-review on` (or reinstall with `--require-review`); the review itself
-is `git-scan review`. Commits the gate had already cleared stay cleared.
-
-**Upgrading from 0.8.** `review.relaxed` (the list of remote prefixes) and
-`git-scan review relaxed add/remove/list` are gone: a configuration that
-still has `review.relaxed` fails to load until the key is deleted. Make
-each private repository eligible with `git-scan relax`, register any
-non-github.com host with `git-scan hosts add`, and pass `--relaxed` to the
-reviews that should be relaxed.
 
 ## Contributing
 
