@@ -184,7 +184,12 @@ commit until someone has looked. Look at every listed line. If one is a
 real leak, fix the content. If every match is fine in its context, run
 `git-scan ack` and commit again; the acknowledgement covers exactly the
 staged content and nothing later. Never acknowledge a match you have not
-looked at, and never acknowledge to save the trouble of fixing.
+looked at, and never acknowledge to save the trouble of fixing. `git-scan
+ack` asks the person at the terminal to confirm; where none can answer,
+pass `--yes`, which is your statement that you looked at every match and
+is recorded (`git-scan audit`). `--yes` belongs to `ack` alone: every
+other command that takes it changes git-scan's configuration or hooks,
+which is the user's (rule 3).
 
 ## Step 6: Verify a clean working tree
 
@@ -226,7 +231,8 @@ mode. Making a clone eligible is a last resort and the user's decision:
 - Run `git-scan relax` only when the public review is actually blocking
   the work, and only with the user's consent in this conversation. Never
   ahead of time or "to be safe", and never on your own because the
-  content looks personal.
+  content looks personal. It asks for confirmation; the user's consent in
+  this conversation is what `--yes` stands for, and it is recorded.
 - Do it only if the user's own rules or instructions identify the
   repository as personal; if nothing does, ask. Never for a repository the
   host reports as public: git-scan refuses, and a refusal is the answer.

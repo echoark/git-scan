@@ -12,7 +12,7 @@ from .config import load_config, ConfigError, read_missing_config_help, user_con
 from .sources import collect, ScanInput, RevisionError
 from .utils import CheckResult
 from .steps import run_all_steps, get_step_names
-from . import marks, relaxed
+from . import gates, marks, relaxed
 
 
 class InvalidStepError(ValueError):
@@ -193,6 +193,12 @@ def run_scan(
         config = load_config(repo_path)
     except ConfigError as e:
         report.checks.append(CheckResult("Configuration", False, str(e).splitlines()))
+        return report
+    stale = gates.check_lock()
+    if stale:
+        # The catalog changed since a person locked it: nothing runs until
+        # someone has looked (git-scan lock, at a terminal).
+        report.checks.append(CheckResult("Configuration lock", False, [stale]))
         return report
 
     if only_step is None:

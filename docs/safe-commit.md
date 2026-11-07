@@ -65,6 +65,18 @@ judgment matches only and is the committing agent's call; the review sees
 the same entries and judges every line on its own, so an acknowledgement
 never settles the review.
 
+## Gate-loosening commands
+
+git-scan refuses `ack`, `relax` and every other command that loosens a
+gate unless a person confirms it at a terminal or the caller passes
+`--yes`, and records each one (`git-scan audit`). An agent never has a
+terminal, so the skill tells it that `--yes` on `ack` is its own statement
+that it looked, and that `--yes` on anything else changes the user's
+configuration and is theirs to give. The harness is the gate that makes
+that stick: git-scan's `docs/agent-permissions.md` gives the permission
+rules that make these commands prompt the human whatever the agent says.
+Needs git-scan 0.11.0 or later.
+
 ## Exposure mode
 
 A clone has one exposure, read by the commit scan and the review alike:

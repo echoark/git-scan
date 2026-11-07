@@ -20,6 +20,22 @@ Notable changes to git-scan, newest first. Versions follow
   never policy.
 - `git-scan review --public` reviews as public whatever the clone's
   exposure. The result of the MCP `scan_repo` tool carries the exposure.
+- **Gates an agent cannot loosen unilaterally.** Every command that loosens
+  a gate (`ack`, `relax`, `patterns edit / remove / clear / exceptions`,
+  `emails allow`, a `config` change that doesn't only turn a requirement
+  on, `hook uninstall`, `hook install --force`) prints a one-line notice,
+  asks the person at the terminal to confirm (`--yes` confirms
+  non-interactively and takes responsibility) and writes an audit record;
+  `git-scan audit` lists who did what, when, in which repository and how
+  it was confirmed. `git-scan lock` records the catalog's hash, and a scan
+  or review whose catalog changed since fails closed until a person locks
+  it again at a terminal; a change made with `--yes` leaves the lock stale
+  on purpose. `git-scan ack --range A..B` acknowledges every commit in a
+  range. `docs/agent-permissions.md` gives the harness rules that make
+  these commands prompt the human, and `.github/workflows/gate.yml` is a
+  reusable GitHub Action that re-scans (and optionally reviews) every push
+  or pull request from a catalog in a secret. The README says what each
+  layer can and cannot enforce.
 
 ### Changed
 

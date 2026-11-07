@@ -241,20 +241,20 @@ def test_exceptions_add_keeps_existing_values_and_is_idempotent(tmp_path, monkey
     _run("patterns", "add", "co", "--pattern", "Vendorco", "--not-followed-by", " Cloud")
     r = _run("patterns", "exceptions", "add", "co", "-sdk")
     assert r.exit_code == 0, r.output
-    assert r.output == " Cloud\n-sdk\n"                      # the resulting list
+    assert r.stdout == " Cloud\n-sdk\n"                      # the resulting list
     assert _entry(_user_file(), "co")["not_followed_by"] == [" Cloud", "-sdk"]
     r = _run("patterns", "exceptions", "add", "co", "-sdk", " Cloud")
-    assert r.exit_code == 0 and r.output == " Cloud\n-sdk\n"
+    assert r.exit_code == 0 and r.stdout == " Cloud\n-sdk\n"
     assert _entry(_user_file(), "co")["not_followed_by"] == [" Cloud", "-sdk"]
 
 
 def test_exceptions_list_prints_one_value_per_line_and_nothing_else(tmp_path, monkeypatch):
     _repo(tmp_path, monkeypatch)
     _run("patterns", "add", "co", "--pattern", "Vendorco")
-    assert _run("patterns", "exceptions", "list", "co").output == ""
+    assert _run("patterns", "exceptions", "list", "co").stdout == ""
     _run("patterns", "exceptions", "add", "co", " Cloud", "-sdk")
     r = _run("patterns", "exceptions", "list", "co")
-    assert r.exit_code == 0 and r.output == " Cloud\n-sdk\n"
+    assert r.exit_code == 0 and r.stdout == " Cloud\n-sdk\n"
     r = _run("patterns", "exceptions", "list", "nope")
     assert r.exit_code == 1 and "no pattern 'nope'" in r.output
 
@@ -264,7 +264,7 @@ def test_exceptions_remove_drops_named_values_and_fails_on_an_absent_one(tmp_pat
     _run("patterns", "add", "co", "--pattern", "Vendorco", "--not-followed-by", " Cloud",
          "--not-followed-by", "-sdk")
     r = _run("patterns", "exceptions", "remove", "co", "-sdk")
-    assert r.exit_code == 0 and r.output == " Cloud\n"
+    assert r.exit_code == 0 and r.stdout == " Cloud\n"
     assert _entry(_user_file(), "co")["not_followed_by"] == [" Cloud"]
     before = _user_file().read_text()
     r = _run("patterns", "exceptions", "remove", "co", "-sdk")
@@ -274,7 +274,7 @@ def test_exceptions_remove_drops_named_values_and_fails_on_an_absent_one(tmp_pat
     r = _run("patterns", "exceptions", "remove", "co", " Cloud", "-x")      # one absent: none removed
     assert r.exit_code == 1 and _user_file().read_text() == before
     r = _run("patterns", "exceptions", "remove", "co", " Cloud")
-    assert r.exit_code == 0 and r.output == ""
+    assert r.exit_code == 0 and r.stdout == ""
     assert "not_followed_by" not in _entry(_user_file(), "co")
 
 
@@ -295,29 +295,29 @@ def test_exceptions_project_writes_the_repo_file_with_the_full_list(tmp_path, mo
     repo = _repo(tmp_path, monkeypatch)
     _run("patterns", "add", "co", "--pattern", "Vendorco", "--not-followed-by", " Cloud")
     r = _run("patterns", "exceptions", "add", "co", "-sdk", "--project")
-    assert r.exit_code == 0 and r.output == " Cloud\n-sdk\n", r.output
+    assert r.exit_code == 0 and r.stdout == " Cloud\n-sdk\n", r.output
     # the project override carries the user's value too, since the merge replaces lists
     assert yaml.safe_load((repo / "git-scan.yaml").read_text()) == {
         "patterns": [{"id": "co", "not_followed_by": [" Cloud", "-sdk"]}]}
     assert _entry(_user_file(), "co")["not_followed_by"] == [" Cloud"]      # user layer untouched
-    assert _run("patterns", "exceptions", "list", "co").output == " Cloud\n-sdk\n"
+    assert _run("patterns", "exceptions", "list", "co").stdout == " Cloud\n-sdk\n"
     # removing the user's value in the project leaves an explicit empty override there
     r = _run("patterns", "exceptions", "remove", "co", " Cloud", "-sdk", "--project")
-    assert r.exit_code == 0 and r.output == ""
+    assert r.exit_code == 0 and r.stdout == ""
     assert yaml.safe_load((repo / "git-scan.yaml").read_text()) == {
         "patterns": [{"id": "co", "not_followed_by": []}]}
-    assert _run("patterns", "exceptions", "list", "co").output == ""
+    assert _run("patterns", "exceptions", "list", "co").stdout == ""
 
 
 def test_exceptions_on_a_builtin_write_a_user_layer_override(tmp_path, monkeypatch):
     _repo(tmp_path, monkeypatch)
     r = _run("patterns", "exceptions", "add", "github-pat", "_example")
-    assert r.exit_code == 0 and r.output == "_example\n", r.output
+    assert r.exit_code == 0 and r.stdout == "_example\n", r.output
     data = yaml.safe_load(_user_file().read_text())
     assert data["patterns"] == [{"id": "github-pat", "not_followed_by": ["_example"]}]
-    assert _run("patterns", "exceptions", "list", "github-pat").output == "_example\n"
+    assert _run("patterns", "exceptions", "list", "github-pat").stdout == "_example\n"
     r = _run("patterns", "exceptions", "remove", "github-pat", "_example")
-    assert r.exit_code == 0 and r.output == ""
+    assert r.exit_code == 0 and r.stdout == ""
     assert yaml.safe_load(_user_file().read_text())["patterns"] == [
         {"id": "github-pat", "not_followed_by": []}]
     assert _run("run", str(tmp_path / "repo")).exit_code == 0          # the override is valid config
@@ -334,7 +334,7 @@ def test_exceptions_reject_unknown_pattern_and_empty_value(tmp_path, monkeypatch
     assert _run("patterns", "exceptions", "add", "co").exit_code == 2        # VALUE is required
     # values that look like options are values; '--' also works
     r = _run("patterns", "exceptions", "add", "co", "--", "-sdk", "--project")
-    assert r.exit_code == 0 and r.output == "-sdk\n--project\n", r.output
+    assert r.exit_code == 0 and r.stdout == "-sdk\n--project\n", r.output
     assert not (Path.cwd() / "git-scan.yaml").exists()
 
 

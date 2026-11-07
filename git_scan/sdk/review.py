@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
 
-from . import marks, relaxed
+from . import gates, marks, relaxed
 from .config import load_config, MergedConfig, POLICIES
 from .sources import LOG_ARGS
 from .steps.patterns import compile_patterns
@@ -305,6 +305,9 @@ def review(repo_path: str = ".", commits: Optional[List[str]] = None,
     if not config.user_patterns_defined:
         raise ReviewError("no personal patterns are configured; set them up (or declare none "
                           "with: git-scan patterns clear) before reviewing")
+    stale = gates.check_lock()
+    if stale:
+        raise ReviewError(f"no review: {stale}")
     name, argv = resolve_runner(config, runner)
     mode, why = exposure_mode(repo_path, config, relaxed_review, public_review)
     say(f"{mode} review ({why})")

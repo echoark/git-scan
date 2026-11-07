@@ -1,0 +1,131 @@
+# A server-side gate: the git-scan scan (and optionally the privacy review)
+# of the commits a push or pull request brings, run by GitHub with the
+# catalog from an encrypted secret. Independent of anything on a developer's
+# machine: no local marks, no acknowledgements, no hooks that could have been
+# skipped. See README, "Server-side gate".
+#
+# Call it from a workflow in the repository to protect:
+#
+#   name: git-scan
+#   on:
+#     pull_request:
+#     push:
+#       branches: [main]
+#   jobs:
+#     gate:
+#       uses: echoark/git-scan/.github/workflows/gate.yml@main
+#       secrets:
+#         GIT_SCAN_CONFIG: ${{ secrets.GIT_SCAN_CONFIG }}
+#         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}   # only with review: true
+#       with:
+#         review: true
+#
+# GIT_SCAN_CONFIG holds the user layer (git-scan.yaml) as text. Keep it to
+# the entries the repository needs; a secret is encrypted at rest and masked
+# in logs, but it is still sent to the runner.
+
+name: git-scan gate
+
+on:
+  workflow_call:
+    inputs:
+      git-scan-ref:
+        description: The git-scan tag or branch to install
+        type: string
+        default: main
+      review:
+        description: Also run the privacy review (needs ANTHROPIC_API_KEY)
+        type: boolean
+        default: false
+      review-model:
+        description: The model the review runner is asked to use
+        type: string
+        default: ""
+      acknowledge-judgment:
+        description: >-
+          Treat judgment matches as acknowledged, on the understanding that a
+          person reads the pull request. Off, a judgment match fails the job
+          and is listed for a look.
+        type: boolean
+        default: false
+    secrets:
+      GIT_SCAN_CONFIG:
+        description: The user configuration (git-scan.yaml) as text
+        required: true
+      ANTHROPIC_API_KEY:
+        description: For the review runner, when review is on
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install git-scan
+        run: python -m pip install --quiet "git+https://github.com/echoark/git-scan.git@${{ inputs.git-scan-ref }}"
+
+      - name: Write the catalog from the secret
+        env:
+          GIT_SCAN_CONFIG: ${{ secrets.GIT_SCAN_CONFIG }}
+        run: |
+          mkdir -p ~/.config/git-scan
+          printf '%s\n' "$GIT_SCAN_CONFIG" > ~/.config/git-scan/git-scan.yaml
+          git-scan config path
+
+      - name: Find the commits this event brings
+        id: range
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then
+            base="$BASE_SHA"
+          elif [ -n "$BEFORE" ] && ! echo "$BEFORE" | grep -Eq '^0+$' && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            base="$BEFORE"
+          else
+            base="$(git rev-parse 'HEAD~1' 2>/dev/null || true)"
+          fi
+          if [ -z "$base" ]; then
+            echo "range=HEAD" >> "$GITHUB_OUTPUT"
+          else
+            echo "range=$base..HEAD" >> "$GITHUB_OUTPUT"
+          fi
+          echo "scanning ${base:-the root commit}..HEAD"
+
+      - name: Scan the commits
+        if: ${{ !inputs.acknowledge-judgment }}
+        run: git-scan run --range "${{ steps.range.outputs.range }}" -v
+
+      - name: Scan the commits, judgment matches acknowledged
+        if: ${{ inputs.acknowledge-judgment }}
+        run: git-scan ack --range "${{ steps.range.outputs.range }}" --yes
+
+      - name: Install the review runner
+        if: ${{ inputs.review }}
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Review the commits
+        if: ${{ inputs.review }}
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          REVIEW_MODEL: ${{ inputs.review-model }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "review: true needs the ANTHROPIC_API_KEY secret" >&2
+            exit 1
+          fi
+          if [ -n "$REVIEW_MODEL" ]; then
+            git-scan config review-model "$REVIEW_MODEL" --yes
+          fi
+          git-scan review --public --range "${{ steps.range.outputs.range }}"

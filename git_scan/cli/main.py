@@ -15,7 +15,35 @@ from git_scan.sdk import marks
 from git_scan.sdk import review as review_sdk
 from git_scan.sdk import relaxed as relaxed_sdk
 from git_scan.sdk import hosts as hosts_sdk
+from git_scan.sdk import gates
 from git_scan.sdk.config import load_config, ConfigError, write_missing_config_help
+
+
+_YES = click.option("--yes", is_flag=True,
+                    help="This loosens a gate: confirm it non-interactively and take responsibility "
+                         "for it; the confirmation is recorded (git-scan audit).")
+
+
+def _confirm(what: str, yes: bool) -> str:
+    """Notice and confirmation for a gate-loosening command; exits when not confirmed."""
+    try:
+        return gates.confirm(what, yes)
+    except gates.GateRefused as e:
+        _fail(e)
+
+
+def _record(action: str, detail: str, how: str) -> None:
+    gates.record(action, detail, ".", how)
+
+
+def _after_write(how=None, project: bool = False) -> None:
+    """After a command wrote the user layer: keep the catalog lock current
+    for a person's change, or say that it is now stale."""
+    if project:
+        return
+    message = gates.touch_lock(how)
+    if message:
+        click.echo(f"git-scan: {message}", err=True)
 
 
 @click.group(invoke_without_command=True)
@@ -165,7 +193,11 @@ def run(path, deep, step, unstaged, untracked, verbose, hide_skipped, commit, re
 @cli.command("ack")
 @click.option("--commit", "rev", default=None, metavar="REV",
               help="Acknowledge a commit already made instead of the staged change.")
-def ack(rev):
+@click.option("--range", "rev_range", default=None, metavar="A..B",
+              help="Acknowledge every commit in a range (a server-side gate where a person "
+                   "reads the pull request).")
+@_YES
+def ack(rev, rev_range, yes):
     """Acknowledge the judgment matches of the staged change.
 
     A judgment entry (patterns add --judgment) names a value that is
@@ -180,10 +212,18 @@ def ack(rev):
     --commit REV does the same for a commit the hooks did not see (the push
     gate names the command). The commit is scanned with its judgment
     matches acknowledged and, if everything else is clean, recorded as
-    scanned so the push proceeds.
+    scanned so the push proceeds. --range A..B does it for every commit in
+    the range.
+
+    This loosens a gate: it asks for confirmation at a terminal, needs
+    --yes anywhere else, and is recorded (git-scan audit).
     """
-    if rev:
-        report = run_scan(repo_path=".", commit=rev, acknowledge_judgment=True)
+    if rev and rev_range:
+        _fail(click.UsageError("choose one of --commit and --range"))
+    if rev or rev_range:
+        target = f"commit {rev}" if rev else f"the commits in {rev_range}"
+        how = _confirm(f"acknowledge the judgment matches of {target}", yes)
+        report = run_scan(repo_path=".", commit=rev, rev_range=rev_range, acknowledge_judgment=True)
         if report.refusal:
             click.echo("\n".join(report.refusal))
             sys.exit(1)
@@ -194,11 +234,16 @@ def ack(rev):
             sys.exit(1)
         judged = next((c for c in report.checks if c.name == "Judgment"), None)
         what = judged.info if judged else "no judgment entries configured"
-        click.echo(f"acknowledged {rev}: {what}; clean, the push gate will not scan it again")
+        _record("ack", f"{target}: {what}", how)
+        click.echo(f"acknowledged {rev or rev_range}: {what}; clean, the push gate will not scan "
+                   f"{'it' if rev else 'them'} again")
         return
     report = run_scan(repo_path=".", only_step="patterns")
     judged = next((c for c in report.checks if c.name == "Judgment"), None)
     if judged is None:
+        if report.failed:
+            _echo_checks(report, failed_only=True)
+            sys.exit(1)
         click.echo("nothing to acknowledge: no judgment entries are configured")
         return
     where = "the staged change"
@@ -215,10 +260,12 @@ def ack(rev):
             click.echo("nothing to acknowledge: no judgment matches in the staged change"
                        + (" or its pending commit message" if message else ""))
             return
+    shown = [f for f in judged.findings if not f.startswith(("Each match", "  git-scan", "    note:"))]
+    how = _confirm(f"acknowledge {len(shown)} judgment match(es) for {where}", yes)
     tree = marks.record_ack(".")
     if not tree:
         _fail(marks.MarkError("not a git repository, or nothing is staged"))
-    shown = [f for f in judged.findings if not f.startswith(("Each match", "  git-scan", "    note:"))]
+    _record("ack", f"{len(shown)} match(es) for {where}: " + "; ".join(shown), how)
     click.echo(f"acknowledged {len(shown)} judgment match(es) for {where}:")
     for f in shown:
         click.echo(f"  {f}")
@@ -316,33 +363,86 @@ def review(ctx, relaxed_review, public_review, publish, rev_range, runner, timeo
 
 @cli.command("relax")
 @click.option("--remove", is_flag=True, help="Drop this repository's eligibility.")
-def relax(remove):
+@_YES
+def relax(remove, yes):
     """Make this repository eligible for a relaxed review (once per clone).
 
-    Eligibility only allows 'git-scan review --relaxed'; no review is relaxed
-    by default. It is recorded in this repository's .git/config for its exact
-    origin URL, and needs:
+    Eligibility is the clone's exposure: the scan and the review read it,
+    and both treat the clone as relaxed from then on (the review asks the
+    host again each time). It is recorded in this repository's .git/config
+    for its exact origin URL, and needs:
 
     \b
       github.com, or a host added as 'github': the host reports the
         repository private (REST API through gh). Any other answer, or none,
-        refuses. The relaxed review asks again each time.
+        refuses.
       a host added as 'other' with --allow-relaxed: no check is possible;
         the user has vouched for the host.
     Never: no remote, an unregistered host, or a repository whose
     git-scan.yaml declares it public-prospective.
+
+    This loosens a gate: it asks for confirmation at a terminal, needs
+    --yes anywhere else, and is recorded (git-scan audit).
     """
     try:
         if remove:
-            click.echo("relaxed-review eligibility removed" if relaxed_sdk.unmark(".")
+            had = relaxed_sdk.unmark(".")
+            if had:
+                _record("relax --remove", "eligibility removed; the clone is public again", "-")
+            click.echo("relaxed-review eligibility removed; this clone is public again" if had
                        else "this repository was not eligible")
             return
+        url = relaxed_sdk.origin_url(".") or "this repository"
+        how = _confirm(f"make this clone eligible for relaxed reviews ({url})", yes)
         m = relaxed_sdk.mark(".")
         state = "already eligible" if m.already else "eligible"
+        if not m.already:
+            _record("relax", f"{m.url} ({m.basis})", how)
         click.echo(f"{state} for a relaxed review: {m.url} ({m.basis})")
-        click.echo("Each relaxed review is still asked for explicitly: git-scan review --relaxed")
+        click.echo("This clone's exposure is now relaxed for the scan and the review; "
+                   "git-scan relax --remove undoes it")
     except (relaxed_sdk.RelaxedError, ConfigError) as e:
         _fail(e)
+
+
+@cli.command("lock")
+@click.option("--remove", is_flag=True, help="Drop the lock.")
+@click.option("--status", "show_status", is_flag=True, help="Report the lock's state only.")
+def lock_cmd(remove, show_status):
+    """Lock the catalog: record the user configuration's hash.
+
+    A scan or review whose catalog differs from the locked one fails
+    closed until the configuration is locked again, which this command does
+    only at a terminal, where a person has looked at the change. A change
+    git-scan's own commands make after an interactive confirmation updates
+    the lock; one made with --yes leaves it stale, as does editing the file
+    by hand. Opt-in: without a lock nothing changes.
+    """
+    if show_status:
+        click.echo(f"{gates.lock_status()}  ({gates.lock_path()})")
+        return
+    try:
+        click.echo(gates.unlock(".") if remove else gates.lock("."))
+    except gates.GateRefused as e:
+        _fail(e)
+
+
+@cli.command("audit")
+@click.option("--limit", type=int, default=None, metavar="N", help="The last N records.")
+def audit_cmd(limit):
+    """List the gate-loosening actions taken on this machine.
+
+    Every acknowledgement, eligibility, catalog edit, allowed email, turned-off
+    requirement, reviewer change, hook removal and lock change is recorded
+    with who did it, when, in which repository and how it was confirmed (at
+    a terminal, or with --yes). The log lives beside the user configuration.
+    """
+    entries = gates.audit_entries(limit)
+    if not entries:
+        click.echo(f"no records ({gates.audit_path()})")
+        return
+    for e in entries:
+        click.echo("  " + gates.format_entry(e))
 
 
 @cli.group("hosts")
@@ -515,6 +615,7 @@ def patterns_add(id, pattern, category, word_boundary, not_followed_by, exclude_
     except (up.PatternError, up.ConfigError) as e:
         _fail(e)
     click.echo(f"added '{id}'")
+    _after_write(project=project)
 
 
 @patterns.command("edit")
@@ -536,9 +637,10 @@ def patterns_add(id, pattern, category, word_boundary, not_followed_by, exclude_
 @click.option("--relaxed", default=None, type=click.Choice(up.POLICIES + (up.POLICY_DEFAULT,)),
               help="What a match does in a relaxed clone ('default' drops the explicit policy).")
 @click.option("--project", is_flag=True, help="Act on the repo's git-scan.yaml.")
+@_YES
 def patterns_edit(id, pattern, category, word_boundary, not_followed_by, exclude_file,
-                  ignore_case, judgment, note, public, relaxed, project):
-    """Change a pattern's fields.
+                  ignore_case, judgment, note, public, relaxed, project, yes):
+    """Change a pattern's fields (confirmed and recorded: it may loosen a gate).
 
     \b
     Examples:
@@ -559,6 +661,12 @@ def patterns_edit(id, pattern, category, word_boundary, not_followed_by, exclude
     --judgment over 'patterns remove' for an entry that trips as a regex
     but still matters: the reviewer keeps it.
     """
+    changed = {k: v for k, v in dict(pattern=pattern, category=category, word_boundary=word_boundary,
+                                     not_followed_by=list(not_followed_by) or None,
+                                     exclude_files=list(exclude_file) or None, ignore_case=ignore_case,
+                                     judgment=judgment, note=note, public=public, relaxed=relaxed).items()
+               if v is not None}
+    how = _confirm(f"edit pattern '{id}' ({', '.join(changed) or 'nothing'})", yes)
     try:
         up.edit_pattern(id, project=project, pattern=pattern, category=category,
                         word_boundary=word_boundary,
@@ -569,23 +677,30 @@ def patterns_edit(id, pattern, category, word_boundary, not_followed_by, exclude
                         public=public, relaxed=relaxed)
     except (up.PatternError, up.ConfigError) as e:
         _fail(e)
+    _record("patterns edit", f"{id}: {changed}" + (" (project)" if project else ""), how)
     click.echo(f"updated '{id}'")
+    _after_write(how, project)
 
 
 @patterns.command("remove")
 @click.argument("id")
 @click.option("--project", is_flag=True, help="Act on the repo's git-scan.yaml.")
-def patterns_remove(id, project):
-    """Stop applying a pattern.
+@_YES
+def patterns_remove(id, project, yes):
+    """Stop applying a pattern (confirmed and recorded: it loosens a gate).
 
     Deletes an entry you own; a built-in, an entry derived from this
     machine, or (with --project) one of yours is turned off for that
     layer's scope instead. 'patterns restore' undoes the latter.
     """
+    how = _confirm(f"stop applying pattern '{id}'" + (" in this repository" if project else ""), yes)
     try:
-        click.echo(up.remove_pattern(id, project=project))
+        done = up.remove_pattern(id, project=project)
     except (up.PatternError, up.ConfigError) as e:
         _fail(e)
+    _record("patterns remove", done, how)
+    click.echo(done)
+    _after_write(how, project)
 
 
 @patterns.command("restore")
@@ -594,23 +709,32 @@ def patterns_remove(id, project):
 def patterns_restore(id, project):
     """Turn a built-in or derived pattern back on."""
     try:
-        click.echo(up.restore_pattern(id, project=project))
+        done = up.restore_pattern(id, project=project)
     except (up.PatternError, up.ConfigError) as e:
         _fail(e)
+    _record("patterns restore", f"{id}: {done}", "-")
+    click.echo(done)
+    _after_write(project=project)
 
 
 @patterns.command("clear")
 @click.option("--project", is_flag=True, help="Act on the repo's git-scan.yaml.")
-def patterns_clear(project):
-    """Declare that you have no personal patterns.
+@_YES
+def patterns_clear(project, yes):
+    """Declare that you have no personal patterns (confirmed and recorded).
 
     Writes an empty list to your config so the personal-patterns check
     passes without any entries. Use 'patterns add' to start adding later.
     """
+    how = _confirm("declare that there are no personal patterns"
+                   + (" in this repository" if project else ""), yes)
     try:
-        click.echo(up.clear_patterns(project=project))
+        done = up.clear_patterns(project=project)
     except up.ConfigError as e:
         _fail(e)
+    _record("patterns clear", done, how)
+    click.echo(done)
+    _after_write(how, project)
 
 
 @patterns.command("list")
@@ -703,7 +827,8 @@ def exceptions_list(id):
 @click.argument("id")
 @click.argument("values", nargs=-1, required=True, metavar="VALUE...")
 @click.option("--project", is_flag=True, help="Act on the repo's git-scan.yaml.")
-def exceptions_add(id, values, project):
+@_YES
+def exceptions_add(id, values, project, yes):
     """Add exceptions to a pattern and print the resulting list.
 
     \b
@@ -714,32 +839,41 @@ def exceptions_add(id, values, project):
     kept. For a built-in (or, with --project, one of yours) the full list
     is written as an override in the target layer. A value that starts
     with '-' (such as '-sdk') is taken as a value; put '--' before the
-    values if one could be read as an option.
+    values if one could be read as an option. Confirmed and recorded: an
+    exception loosens a gate.
     """
+    how = _confirm(f"add exceptions to pattern '{id}': {', '.join(repr(v) for v in values)}", yes)
     try:
         result = up.add_exceptions(id, list(values), project=project)
     except (up.PatternError, up.ConfigError) as e:
         _fail(e)
+    _record("patterns exceptions add", f"{id}: {list(values)}" + (" (project)" if project else ""), how)
     for v in result:
         click.echo(v)
+    _after_write(how, project)
 
 
 @patterns_exceptions.command("remove", context_settings={"ignore_unknown_options": True})
 @click.argument("id")
 @click.argument("values", nargs=-1, required=True, metavar="VALUE...")
 @click.option("--project", is_flag=True, help="Act on the repo's git-scan.yaml.")
-def exceptions_remove(id, values, project):
+@_YES
+def exceptions_remove(id, values, project, yes):
     """Remove exceptions from a pattern and print the remaining list.
 
     Every VALUE must be present; a value that is not fails the command and
-    nothing is written.
+    nothing is written. Confirmed and recorded like every change to the
+    exceptions.
     """
+    how = _confirm(f"remove exceptions from pattern '{id}': {', '.join(repr(v) for v in values)}", yes)
     try:
         result = up.remove_exceptions(id, list(values), project=project)
     except (up.PatternError, up.ConfigError) as e:
         _fail(e)
+    _record("patterns exceptions remove", f"{id}: {list(values)}" + (" (project)" if project else ""), how)
     for v in result:
         click.echo(v)
+    _after_write(how, project)
 
 
 # --- emails -----------------------------------------------------------------
@@ -752,13 +886,17 @@ def emails():
 @emails.command("allow")
 @click.argument("address")
 @click.option("--project", is_flag=True, help="Write the repo's git-scan.yaml instead of yours.")
-def emails_allow(address, project):
-    """Allow an address."""
+@_YES
+def emails_allow(address, project, yes):
+    """Allow an address (confirmed and recorded: the email check then ignores it)."""
+    how = _confirm(f"make the email check ignore {address}", yes)
     try:
         up.allow_email(address, project=project)
     except (up.PatternError, up.ConfigError) as e:
         _fail(e)
+    _record("emails allow", address + (" (project)" if project else ""), how)
     click.echo(f"allowed {address}")
+    _after_write(how, project)
 
 
 @emails.command("disallow")
@@ -771,6 +909,7 @@ def emails_disallow(address, project):
     except (up.PatternError, up.ConfigError) as e:
         _fail(e)
     click.echo(f"disallowed {address}")
+    _after_write(project=project)
 
 
 @emails.command("list")
@@ -861,22 +1000,34 @@ def config():
 
 @config.command("path")
 def config_path():
-    """Show each config layer's file and whether it exists."""
+    """Show each config layer's file and whether it exists, with the lock and the audit log."""
     for row in up.layer_status():
         mark = "present" if row["exists"] else "absent"
         click.echo(f"  {row['layer']:<11} {row['path']}  ({mark})")
         if row["layer"] == "built-in":
             click.echo("  environment derived from this machine: git author name and email, "
                        "login name, home directory, .env  (not a file)")
+    click.echo(f"  {'lock':<11} {gates.lock_path()}  ({gates.lock_status()})")
+    click.echo(f"  {'audit':<11} {gates.audit_path()}  "
+               f"({'present' if gates.audit_path().is_file() else 'absent'})")
+
+
+def _tightens(typ, value) -> bool:
+    """Turning a boolean setting on only adds a requirement; everything else
+    a setting change can do (off, a looser threshold, another reviewer) is
+    confirmed."""
+    return typ is bool and str(value).lower() in ("on", "true", "yes")
 
 
 def _setting_command(name: str):
     section, key, typ, desc = up.SETTINGS[name]
 
-    @config.command(name, help=f"{desc}. No value shows the current one.")
+    @config.command(name, help=f"{desc}. No value shows the current one. A change is "
+                               "confirmed and recorded unless it only turns a requirement on.")
     @click.argument("value", required=False)
     @click.option("--project", is_flag=True, help="Write the repo's git-scan.yaml instead of yours.")
-    def _cmd(value, project):
+    @_YES
+    def _cmd(value, project, yes):
         if value is None:
             current = up.get_setting(name)
             if typ is bool:
@@ -884,11 +1035,14 @@ def _setting_command(name: str):
             else:
                 click.echo("unset" if current is None else current)
             return
+        how = "-" if _tightens(typ, value) else _confirm(f"set {name} to {value}", yes)
         try:
             up.set_setting(name, value, project=project)
         except (up.PatternError, up.ConfigError) as e:
             _fail(e)
+        _record("config", f"{name} = {value}" + (" (project)" if project else ""), how)
         click.echo(f"{name} set to {value}")
+        _after_write(None if how == "-" else how, project)
 
 
 for _name in up.SETTINGS:
@@ -919,7 +1073,8 @@ _DIR = click.option("--hooks-dir", default=None,
 @click.option("--missing-config-help", "missing_config_help", default=None, metavar="TEXT",
               help="Shown instead of setup instructions when a commit is refused "
                    "because the user config is missing.")
-def hook_install(local, hooks_dir, force, pre_push, require_review, missing_config_help):
+@_YES
+def hook_install(local, hooks_dir, force, pre_push, require_review, missing_config_help, yes):
     """Install the pre-commit and commit-msg hooks.
 
     pre-commit scans each staged change; commit-msg scans each commit
@@ -933,19 +1088,25 @@ def hook_install(local, hooks_dir, force, pre_push, require_review, missing_conf
     being pushed (skipping ones the hooks already cleared; a post-commit
     hook remembers each commit whose scan passed) and refuses the push on findings.
     --require-review makes it also refuse a push until 'git-scan review' has
-    passed for the unpushed commits.
+    passed for the unpushed commits. --force replaces hooks that are not
+    git-scan's, which loosens whatever they enforced: it is confirmed and
+    recorded.
     """
     if require_review and not pre_push:
         _fail(click.UsageError("--require-review needs --pre-push"))
+    how = _confirm("replace hooks that are not git-scan scripts", yes) if force else "-"
     try:
-        click.echo(install_hook(hooks_dir, force=force, local=local, pre_push=pre_push))
+        done = install_hook(hooks_dir, force=force, local=local, pre_push=pre_push)
+        click.echo(done)
         if missing_config_help:
             click.echo(f"missing-config help: {write_missing_config_help(missing_config_help)}")
         if require_review:
             up.set_setting("require-review", True)
             click.echo("push requires: a scan of every commit, and a clean privacy review")
+            _after_write()
     except (HookError, up.PatternError, up.ConfigError) as e:
         _fail(e)
+    _record("hook install", done, how)
     if pre_push:
         click.echo("\n".join([
             "",
@@ -958,12 +1119,16 @@ def hook_install(local, hooks_dir, force, pre_push, require_review, missing_conf
 @hook.command("uninstall")
 @_LOCAL
 @_DIR
-def hook_uninstall(local, hooks_dir):
-    """Remove the git-scan hooks. Any other hook is left alone."""
+@_YES
+def hook_uninstall(local, hooks_dir, yes):
+    """Remove the git-scan hooks (confirmed and recorded). Any other hook is left alone."""
+    how = _confirm("remove the git-scan hooks" + (" of this repository" if local else ""), yes)
     try:
-        click.echo(uninstall_hook(hooks_dir, local=local))
+        done = uninstall_hook(hooks_dir, local=local)
     except HookError as e:
         _fail(e)
+    _record("hook uninstall", done, how)
+    click.echo(done)
 
 
 @hook.command("post-commit", hidden=True)

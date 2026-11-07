@@ -4,6 +4,16 @@ import os
 
 import pytest
 
+from git_scan.sdk import gates
+
+
+@pytest.fixture(autouse=True)
+def person_at_the_terminal(monkeypatch):
+    """Gate-loosening commands ask the person at the terminal to confirm;
+    there is none under pytest, so a stand-in says yes. A test of the
+    confirmation itself sets ``gates.confirm_override`` to False or None."""
+    monkeypatch.setattr(gates, "confirm_override", True)
+
 
 @pytest.fixture(autouse=True)
 def isolate_config(tmp_path, monkeypatch):

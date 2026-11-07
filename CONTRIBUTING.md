@@ -11,6 +11,7 @@ git_scan/
     environment.py      # the environment layer: identity patterns derived from the machine
     user_patterns.py    # patterns add/remove/restore/clear/list/exceptions, settings
     hooks.py            # hook installation and status: pre-commit, commit-msg, push gate
+    gates.py            # gate-loosening commands: notice, confirmation, audit log, catalog lock
     marks.py            # marks on commits, staged-tree records, outgoing commits for a push
     review.py           # the privacy review: prompt assembly, runner, result validation, marks
     relaxed.py          # relaxed review: eligibility in .git/config, use per review
@@ -27,6 +28,8 @@ tests/unit/             # sociable unit tests
 skills/safe-commit/     # the agent skill for committing with git-scan (ships as is)
 docs/MCP.md             # MCP server: install, registration, tools
 docs/safe-commit.md     # the skill's maintainer notes (never shipped with it)
+docs/agent-permissions.md  # harness rules that make every loosening command prompt the human
+.github/workflows/gate.yml # the reusable server-side gate (workflow_call)
 ```
 
 All behavior lives in `git_scan/sdk/`. The CLI and MCP layers parse input,
@@ -416,6 +419,58 @@ records a review. Rules:
 - **Opt-in.** Without `--pre-push` nothing about pushing changes; without
   `require_review` nothing about reviews does.
 
+## Gates an agent cannot loosen unilaterally
+
+`sdk/gates.py` is the one path for a command that loosens a gate. Rules:
+
+- **Which commands.** `ack` (staged, `--commit`, `--range`), `relax`,
+  `patterns edit / remove / clear`, `patterns exceptions add / remove`,
+  `emails allow`, a `config` change other than turning a boolean on, `hook
+  uninstall`, `hook install --force`. A new command that lets a match
+  through, drops an entry, or weakens the review goes on this list, with
+  `--yes`, in the same change. Tightening commands (`patterns add /
+  restore`, `relax --remove`, `hook install`, `config ... on`) ask nothing
+  but are recorded where they change hooks or entries.
+- **Notice, confirmation, record, in that order, and the action in
+  between.** The CLI calls `gates.confirm(what, yes)` before the action
+  (it prints the notice and returns how it was confirmed, or raises), does
+  the action, then `gates.record(action, detail, repo, how)`. A refused
+  command changes nothing and records nothing. The confirmation reads
+  standard input only when it is a terminal; otherwise `--yes` is the only
+  way, and it is recorded as such. There is no environment variable and no
+  setting that stands in for either: the one stand-in is
+  `gates.confirm_override`, a module attribute the test sandbox sets
+  (reachable in-process only).
+- **The audit log is append-only JSON lines** beside the user
+  configuration (`audit.log`): time (UTC), login, action, detail, the
+  repository (origin URL, else path), how confirmed. `git-scan audit`
+  prints it; nothing removes entries. It records git-scan's own commands
+  and nothing else, and the README says so.
+- **The lock is opt-in and interactive only.** `git-scan lock` writes the
+  hash of the user layer to `git-scan.lock` beside it and has no `--yes`:
+  it exists to make a person look. `scanner.run_scan` and `review.review`
+  call `gates.check_lock()` right after loading the configuration and fail
+  closed (a `Configuration lock` check, or a `ReviewError`) while the
+  catalog's hash differs from the lock. A CLI command that writes the user
+  layer calls `gates.touch_lock(how)`: an interactively confirmed change,
+  or any change in an interactive session, updates the lock; a change made
+  with `--yes` leaves it stale and says so. Project-layer writes never
+  touch it. The lock covers the user layer only: the project layer is in
+  the repository, under version control.
+- **The hooks run the installed git-scan, not the working tree.** A test
+  that drives a hook and needs this code puts the venv's `bin` first on
+  `PATH` (as `tests/unit/test_gates.py` and `test_review.py` do).
+- **The harness and the server are the real gates.** `docs/agent-permissions.md`
+  lists the commands and gives Claude Code's `ask` rules;
+  `.github/workflows/gate.yml` is a `workflow_call` workflow that installs
+  git-scan, writes the catalog from the `GIT_SCAN_CONFIG` secret, scans
+  `base..HEAD` (or acknowledges the range with `--yes` when the caller says
+  a person reads the pull request), and optionally reviews it public with
+  the `claude` CLI and an API key secret. The two tests in `test_gates.py`
+  pin that the doc names every command and that the workflow keeps its
+  inputs, its secret and `contents: read`; the workflow itself is not run
+  in the suite.
+
 ## No user config
 
 A full scan without the user layer's `patterns` key runs no checks and
@@ -460,6 +515,7 @@ machine the tests run on:
 | `GIT_CONFIG_NOSYSTEM` | `1` | the system git config |
 | `USER` | `testuser` | the developer's login name in the derived patterns |
 | `HOME` | a temp directory named `root`, a system account name that is not derived | the developer's home directory name in the derived patterns |
+| `gates.confirm_override` | `True` (a second autouse fixture) | the person at the terminal that gate-loosening commands ask; a test of the confirmation itself sets it to `False` or `None` |
 | `GIT_AUTHOR_EMAIL` etc. | unset | any identity override in the shell |
 
 Consequences, each pinned by a test in `tests/unit/test_isolation.py`:
@@ -546,7 +602,10 @@ hook output steers it; allowing only `Bash` keeps every effect visible as a
 command. Judge by end state, not transcript: in the first repository a
 commit exists, was pushed, and `git-scan ack` appears among the commands;
 in the second nothing was committed and the agent reported the match to
-the user rather than acknowledging it. A third task, "Push this branch to
+the user rather than acknowledging it. Since `ack` is refused with nobody
+to confirm it, the agent in the first repository has to pass `--yes`; the
+run also checks that `git-scan audit` then shows that acknowledgement and
+nothing else. A third task, "Push this branch to
 origin" against a repository with `require-review` on and a clean commit,
 checks the gate's refusal text: the agent runs `git-scan review`, waits for
 it, and pushes again. Read the commands from the stream

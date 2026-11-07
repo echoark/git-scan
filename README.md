@@ -13,6 +13,7 @@ with git-scan.
 [Getting started](#getting-started) · [Using it](#using-it) ·
 [Features](#features) · reference: [Usage](#usage), [Checks](#checks),
 [Configuration](#configuration), [Hook installation](#hook-installation),
+[Gates an agent cannot loosen unilaterally](#gates-an-agent-cannot-loosen-unilaterally),
 [The privacy review](#the-privacy-review), [Git identity](#git-identity),
 [MCP server](#mcp-server) · [Contributing](#contributing)
 
@@ -24,6 +25,7 @@ with git-scan.
 | Privacy review (`git-scan review`) | A judgment reviewer, a headless agent CLI, reads the unpushed commits and any pull-request text for what a regex can't catch: names in prose, personal framing, private references | Before a push |
 | Push gate | Refuses a push of commits that were not scanned, or, when you require it, not reviewed | Every `git push` |
 | Exposure and policy | The clone is public, or relaxed once you made it eligible; each of your entries has a policy per exposure that the scan and the reviewer both follow | Every scan and review |
+| Gate controls | Every command that loosens a gate prints a notice, asks for confirmation (`--yes` non-interactively) and is logged (`git-scan audit`); an optional lock fails scans closed when the catalog changes behind them; a reusable GitHub Action re-scans every push server-side | When a gate is loosened |
 | safe-commit skill | The procedure an agent follows: stage, commit, review, push or open a pull request, and bring every finding to you | When you ask an agent to commit |
 | MCP server (optional) | The same scan as tools an agent can call | When an agent calls it |
 
@@ -171,6 +173,8 @@ git-scan run --step patterns   # run one check
 git-scan run -v                # show every finding, not just the first ten per check
 git-scan run --hide-skipped    # omit checks that were skipped (shown by default)
 git-scan steps                 # list the checks
+git-scan audit                 # who loosened which gate, when, where
+git-scan lock                  # lock the catalog: a changed one fails scans until re-locked
 ```
 
 Exit codes: `0` clean, `1` findings or an invalid configuration, `2` bad
@@ -648,6 +652,105 @@ can require the review but not lift the requirement.
 several remotes, commits cleared relative to one may be pushed to another
 that is further behind; only the remote's own tracking refs and the tips
 git reports are treated as already present.
+
+## Gates an agent cannot loosen unilaterally
+
+Everything above runs on the committer's machine, where the committer, or
+an agent working for them, can also run `git-scan ack`, make a clone
+eligible for relaxed reviews, edit the catalog, or turn a requirement off.
+Three layers keep that honest, and this section says plainly what each
+one can and cannot enforce.
+
+### In git-scan: notice, confirmation, audit, lock
+
+Every command that loosens a gate prints `git-scan: this loosens a gate`,
+asks the person at the terminal to confirm, and writes an audit record:
+`ack` (staged, `--commit`, `--range`), `relax`, `patterns edit`, `patterns
+remove`, `patterns clear`, `patterns exceptions add/remove`, `emails
+allow`, any `config` change that doesn't only turn a requirement on
+(`require-review off`, a looser threshold, another `review-runner` or
+`review-model`), `hook uninstall` and `hook install --force`. Where no
+terminal can answer, `--yes` confirms and takes responsibility; without
+either the command is refused. `restore`, `relax --remove`, `hook install`
+and `config ... on` tighten and ask nothing, but are recorded too.
+
+```bash
+git-scan ack --yes                     # an agent, after looking: recorded as confirmed with --yes
+git-scan audit                         # who, when, what, which repository, how confirmed
+git-scan audit --limit 20
+```
+
+```
+  2026-01-05T14:02:11+00:00  jane  ack  2 match(es) for the staged change: README.md:14 [employer] Example Corp; ...  [https://github.com/acme360/app.git; confirmed: --yes]
+  2026-01-05T14:10:40+00:00  jane  patterns exceptions add  my-employer: [' Cloud']  [https://github.com/acme360/app.git; confirmed: interactive]
+```
+
+The log lives beside your user configuration (`git-scan config path`
+shows it). It records what git-scan's own commands did; a file edited by
+hand leaves no record, which is what the lock is for:
+
+```bash
+git-scan lock            # record the catalog's hash; only at a terminal, there is no --yes
+git-scan lock --status   # unlocked, locked, or stale
+git-scan lock --remove
+```
+
+With a lock in place, a scan or review whose catalog differs from the
+locked one fails closed, naming the lock, until a person runs `git-scan
+lock` again. A change made by a git-scan command after an interactive
+confirmation updates the lock; one made with `--yes` leaves it stale on
+purpose, so the next scan stops until someone has looked. Opt-in: without
+a lock nothing changes.
+
+**What this does not do.** It does not stop an agent that owns the shell
+from editing the configuration, the lock or the hooks by hand, or from
+running `git commit --no-verify`. It makes every loosening explicit,
+confirmed and logged, and leaves the real gate to the two layers below.
+
+### At the harness: the human gate for agent sessions
+
+An agent's harness can make every loosening command wait for the human,
+whatever the session's permission mode. [docs/agent-permissions.md](docs/agent-permissions.md)
+has copy-paste rules for Claude Code and the list for other agents:
+`git-scan ack*`, `git-scan relax*`, `git-scan patterns *`, `git-scan
+emails allow*`, `git-scan config *`, `git-scan hook *`, `git-scan lock*`,
+and `git commit` / `git push` with `--no-verify`. The safe-commit skill
+tells the agent to bring every finding to the user and to pass `--yes`
+only as its statement that it looked.
+
+### Server-side gate
+
+A reusable GitHub Action re-scans every push or pull request on GitHub's
+runners, from a catalog kept in an encrypted secret, so no local mark,
+acknowledgement or skipped hook decides what reaches the shared branch:
+
+```yaml
+# .github/workflows/git-scan.yml in the repository to protect
+name: git-scan
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  gate:
+    uses: echoark/git-scan/.github/workflows/gate.yml@main   # pin a tag for a release
+    secrets:
+      GIT_SCAN_CONFIG: ${{ secrets.GIT_SCAN_CONFIG }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}   # only with review: true
+    with:
+      review: true                  # also run the privacy review (public exposure)
+      acknowledge-judgment: false   # true: judgment matches don't fail the job; a person reads the PR
+```
+
+`GIT_SCAN_CONFIG` is the user layer (`git-scan.yaml`) as text: keep it to
+the entries the repository needs, since a secret is encrypted at rest and
+masked in logs but still sent to the runner. The job scans the commits the
+event brings (`base..HEAD`), with `-v` so every finding is listed, and
+with `review: true` runs `git-scan review --public --range` through the
+`claude` CLI with the API key. A judgment match fails the job unless
+`acknowledge-judgment` is on, in which case the job runs `git-scan ack
+--range ... --yes` and the acknowledgement is recorded on the runner. For
+a public repository, protect `main` with this check required.
 
 ## The privacy review
 
