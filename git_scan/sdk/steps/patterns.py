@@ -9,9 +9,13 @@ user's own. No pattern reaches the text another way, so a user's flags on
 an id (``ignore_case``, ``word_boundary``, exceptions, ``judgment``,
 ``disabled``) always apply.
 
-Entries marked ``judgment`` feed the ``Judgment`` check rather than
-``Patterns``: their matches are listed for a look and cleared by an
-acknowledgement, never findings in themselves.
+Which entries are findings, which are judgment calls and which are allowed
+is each entry's policy in the clone's exposure (``config.entry_policy``;
+the scanner passes ``exposure``, public unless the clone was made eligible
+for a relaxed review). Judgment entries feed the ``Judgment`` check rather
+than ``Patterns``: their matches are listed for a look and cleared by an
+acknowledgement, never findings in themselves. Allowed entries are not
+applied at all in that exposure.
 """
 
 import fnmatch
@@ -85,7 +89,8 @@ def _is_known_false_positive(file_path: str, entry: Compiled, line_content: str)
             and "copyright" in line_content.lower())
 
 
-def _judgment_check(repo_path: str, config, scan_input, acknowledged: bool) -> List[CheckResult]:
+def _judgment_check(repo_path: str, config, scan_input, acknowledged: bool,
+                    exposure: str = "public") -> List[CheckResult]:
     """Matches on judgment entries: reported for a look, cleared by an
     acknowledgement, never a finding in themselves.
 
@@ -94,7 +99,7 @@ def _judgment_check(repo_path: str, config, scan_input, acknowledged: bool) -> L
     commits already made it is the caller's say-so (``git-scan ack --commit``),
     which scans the commit with its judgment matches acknowledged.
     """
-    entries = config.judgment_patterns if config else []
+    entries = config.judgment_patterns_for(exposure) if config else []
     if not entries:
         return []
     compiled = compile_patterns(entries)
@@ -109,7 +114,7 @@ def _judgment_check(repo_path: str, config, scan_input, acknowledged: bool) -> L
             m = entry.search(ln.text)
             if m and not _is_known_false_positive(ln.file, entry, ln.text):
                 matches.append((ln, entry, m.group(0)[:40]))
-    info = f"{len(entries)} entries"
+    info = f"{len(entries)} entries" + ("; relaxed clone" if exposure == "relaxed" else "")
     if not matches:
         return [CheckResult("Judgment", True, [], info=f"{info}; no matches")]
     scope = scan_input.scope if scan_input else "staged"
@@ -133,10 +138,10 @@ def _judgment_check(repo_path: str, config, scan_input, acknowledged: bool) -> L
 
 
 def run_checks(repo_path: str, config=None, scan_input=None, acknowledged: bool = False,
-               **kwargs) -> List[CheckResult]:
-    compiled = compile_patterns(config.scan_patterns) if config else []
+               exposure: str = "public", **kwargs) -> List[CheckResult]:
+    compiled = compile_patterns(config.scan_patterns_for(exposure)) if config else []
 
-    judgment = _judgment_check(repo_path, config, scan_input, acknowledged)
+    judgment = _judgment_check(repo_path, config, scan_input, acknowledged, exposure)
     if not compiled:
         return [CheckResult("Patterns", True, [], skipped=True)] + judgment
 
@@ -160,10 +165,12 @@ def run_checks(repo_path: str, config=None, scan_input=None, acknowledged: bool 
             else:
                 findings.append(f"{ln.where()} [{entry.label}] {match.group(0)[:40]}")
 
-    counts = config.pattern_counts if config else {}
+    counts = config.counts_for(exposure) if config else {}
     info = (f"{counts.get('personal', 0)} personal, {counts.get('built-in', 0)} built-in, "
             f"{counts.get('environment', 0)} environment; "
             f"{len(scan_input.files) if scan_input else 0} files")
+    if exposure == "relaxed":
+        info += f"; relaxed clone, {counts.get('allowed', 0)} allowed"
     if ignored_count:
         info += f", {ignored_count} ignored"
     return [CheckResult("Patterns", not findings, findings[:20], info=info)] + judgment

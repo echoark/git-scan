@@ -174,6 +174,25 @@ Rules:
   `patterns edit` writes a field set to its default (false, an empty list)
   only into an override, where it has to beat the lower layer's value;
   `ignore_case: false` is always written, since the default is true.
+- **Policy per exposure.** An entry may carry `public` and `relaxed`,
+  each `finding`, `judgment` or `allow` (`patterns add / edit --public
+  --relaxed`; `edit --public default` drops the explicit value).
+  `config.entry_policy(entry, exposure)` resolves it: the explicit field,
+  else `allow` in `relaxed` for the personal-context categories
+  (`RELAXED_ALLOW_CATEGORIES`: name, domain, username, employer, city and
+  their synonyms), else `judgment` for a `judgment: true` entry, else
+  `finding`. Secrets, emails, financial and account identifiers and any
+  unlisted category are findings in both exposures. `scan_patterns_for`
+  and `judgment_patterns_for` take the exposure; the bare properties are
+  the public view. `note` is text for the reviewer and never changes a
+  policy.
+- **The clone's exposure is read by every layer.** `relaxed.clone_exposure`
+  is `relaxed` when the clone's eligibility record names its current
+  origin URL and no layer declares it public-prospective, else `public`;
+  it makes no network call, so the scan can read it on every commit.
+  `scanner.run_scan` resolves it once and passes `exposure` to every step
+  (`ScanReport.exposure`, shown by the CLI and the MCP tool); the review
+  resolves the same value and verifies it with the host.
 
 - **Every layer is validated on load** (`config.validate_layer`): known
   sections and fields, types, compiling regexes. A bare `patterns:` (YAML
@@ -331,27 +350,44 @@ records a review. Rules:
   gate reads only those. The runner is started with no tools and
   no user context (`--tools ""`, `--setting-sources ""` for `claude`), so
   the prompt is the reviewer's whole world and nothing on the machine can
-  steer the range, the catalog or the mode. The mode is public unless the
-  caller asks for relaxed and the repository passes `relaxed.check_use`;
-  see the next rule.
-- **Relaxed review: eligibility once, use per review.** `sdk/relaxed.py`
-  keeps the two apart. `git-scan relax` makes a clone eligible and writes
+  steer the range, the catalog or the mode. The mode is the clone's
+  exposure (`review.exposure_mode`): public, or relaxed for an eligible
+  clone once `relaxed.check_use` has asked the host again; `--public`
+  forces public, `--relaxed` asks explicitly. See the next rules.
+- **Relaxed review: eligibility is the clone's exposure.** `sdk/relaxed.py`:
+  `git-scan relax` makes a clone eligible and writes
   `git-scan.relaxed-remote` (the exact `origin` URL) and
-  `git-scan.relaxed-basis` to the repository's own `.git/config`; `git-scan
-  review --relaxed` (`check_use`) is refused unless the same URL is eligible,
-  and a verifying host is asked again every time. Without the flag a review
-  is public; a failed check refuses the review rather than running it in
-  another mode. No remote, an unregistered host, or
-  `review.public_prospective` in any layer (read per layer, like
-  `review_required`) is never eligible. What a finding does in each mode is
-  `review.sort_findings`, one table keyed by category (`NOTE_IN_RELAXED`,
-  `DROP_IN_RELAXED`, everything else blocks). The reviewer reports categories
-  and no severity: a model's grade varied between runs on identical text, so
-  the verdict must not depend on it. Every finding carries a `note` naming
-  the rule it breaks (the schema requires it), and `warnings` are only for
-  what limited the review: a reviewer that passed something it was unsure
-  about and explained the call in a warning turned a finding into a footnote. A category the table doesn't name, the
-  owner's own pattern categories included, blocks in both modes.
+  `git-scan.relaxed-basis` to the repository's own `.git/config`. From then
+  on the clone's exposure is relaxed for the scan and the review alike;
+  the review (`check_use`) asks a verifying host again every time, and an
+  eligible clone the host no longer reports private refuses the review,
+  naming `--public` and `relax --remove`, rather than running it in another
+  mode. No remote, an unregistered host, or `review.public_prospective` in
+  any layer (read per layer, like `review_required`) is never eligible.
+- **The reviewer is held to entry policy.** The catalog sent with a batch
+  (`export_patterns(exposure=mode)`) carries each entry's resolved `policy`,
+  and `review.mark_found` flags the entries whose pattern matches the
+  batch, so the reviewer looks at each in context. The prompt says the
+  policy binds: `finding` reports every occurrence, `judgment` applies the
+  note, `allow` is never reported, and the exposure table applies only to
+  values no entry names; a finding names the entry it applied in `entry`.
+  `review.sort_findings` then checks the verdict against the catalog
+  itself (`entry_for`): a finding on a value an entry's pattern matches,
+  named by the reviewer or matched whole, follows the entry's policy
+  (`allow` becomes a note that names the entry; `judgment` and `finding`
+  block, the reviewer having judged it), so no re-classification by the
+  reviewer can escalate an entry past what its owner decided. A named
+  entry whose pattern does not match the value, or a partial match (a
+  secret that contains a name), gets no policy and keeps its own verdict.
+  For every other finding the mode and the category decide
+  (`NOTE_IN_RELAXED`, `DROP_IN_RELAXED`, everything else blocks). The
+  reviewer reports categories and no severity: a model's grade varied
+  between runs on identical text, so the verdict must not depend on it.
+  Every finding carries a `note` naming the rule it breaks (the schema
+  requires it), and `warnings` are only for what limited the review: a
+  reviewer that passed something it was unsure about and explained the
+  call in a warning turned a finding into a footnote. A category the table
+  doesn't name blocks in both modes.
 - **Hosts and providers.** `sdk/hosts.py` keeps registered hosts in the
   global git config (`[git-scan-host "HOST"] type, allow-relaxed`); github.com
   is built in. A type names a `HostProvider`: `github` asks `gh api` (REST;

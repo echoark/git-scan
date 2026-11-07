@@ -149,6 +149,9 @@ def run(path, deep, step, unstaged, untracked, verbose, hide_skipped, commit, re
 
     _echo_checks(report, verbose=verbose, hide_skipped=hide_skipped)
     click.echo()
+    if report.exposure == "relaxed":
+        click.echo("exposure: relaxed (this clone is eligible for a relaxed review; entries "
+                   "allowed in a relaxed clone were not applied. git-scan relax --remove undoes it)")
     if report.scope == "commits" and step is None:
         click.echo(f"{len(report.commits)} commit(s) read; {len(report.marked)} clean; "
                    "the push gate will not scan those again")
@@ -224,8 +227,10 @@ def ack(rev):
 
 @cli.group(invoke_without_command=True)
 @click.option("--relaxed", "relaxed_review", is_flag=True,
-              help="This review only: relaxed (personal content becomes notes). Refused unless "
-                   "the repository is eligible (git-scan relax) and still private.")
+              help="Ask for a relaxed review. Refused unless the repository is eligible "
+                   "(git-scan relax) and still private; an eligible clone is reviewed relaxed anyway.")
+@click.option("--public", "public_review", is_flag=True,
+              help="Review as public whatever the clone's exposure (always allowed).")
 @click.option("--publish", "publish", multiple=True, metavar="FILE",
               help="Text published beside the push (a pull-request body) to review too (repeatable).")
 @click.option("--range", "rev_range", default=None, metavar="A..B",
@@ -235,23 +240,27 @@ def ack(rev):
 @click.option("--timeout", type=int, default=None, metavar="SECONDS", help="Per batch.")
 @click.option("--quiet", is_flag=True, help="No progress lines on standard error.")
 @click.pass_context
-def review(ctx, relaxed_review, publish, rev_range, runner, timeout, quiet):
+def review(ctx, relaxed_review, public_review, publish, rev_range, runner, timeout, quiet):
     """Run the privacy review of the unpushed commits and record a clean result.
 
     git-scan builds the reviewer's prompt itself: its packaged review
-    instructions, your personal patterns and notes, each commit's message
-    and patch, and any --publish text. It runs the configured headless agent
-    CLI with no tools (the prompt is the reviewer's whole world), validates
-    the JSON that comes back, and records a clean batch as reviewed. With
-    'config require-review on', a push needs that for every commit it sends.
-    The reviewer's one-line summary of each batch is printed with the model
-    and the time it took.
+    instructions, your personal patterns and notes with their policy for
+    this exposure, each commit's message and patch, and any --publish text.
+    It runs the configured headless agent CLI with no tools (the prompt is
+    the reviewer's whole world), validates the JSON that comes back, and
+    records a clean batch as reviewed. With 'config require-review on', a
+    push needs that for every commit it sends. The reviewer's one-line
+    summary of each batch is printed with the model and the time it took.
 
-    Every review is public unless --relaxed is given, and that is refused
-    unless the repository is eligible (git-scan relax) and its host still
-    reports it private. In a relaxed review, names, emails, paths and private
-    references are shown as notes and don't block; personal framing is not
-    judged; everything else blocks. The category decides, not the reviewer.
+    The review's exposure is the clone's, the same one the scan reads:
+    public, unless the clone was made eligible with 'git-scan relax', in
+    which case the host is asked again and the review is relaxed. --public
+    reviews as public anyway; --relaxed asks for a relaxed review and is
+    refused unless the clone is eligible and still private. A value named
+    by one of your entries follows that entry's policy in this exposure
+    (finding, judgment, allow); for anything else the category decides, not
+    the reviewer: in a relaxed review names, emails, paths and private
+    references are notes, personal framing is not judged, the rest blocks.
 
     \b
     Findings are printed with the value and location; nothing is recorded
@@ -268,8 +277,8 @@ def review(ctx, relaxed_review, publish, rev_range, runner, timeout, quiet):
     say = (lambda _m: None) if quiet else (lambda m: click.echo(f"git-scan review: {m}", err=True))
     try:
         result = review_sdk.review(".", rev_range=rev_range, relaxed_review=relaxed_review,
-                                  publish=list(publish), runner=runner, timeout=timeout,
-                                  progress=say)
+                                  public_review=public_review, publish=list(publish),
+                                  runner=runner, timeout=timeout, progress=say)
     except (review_sdk.ReviewError, ConfigError, marks.MarkError) as e:
         _fail(e)
     for line in result.reports:
@@ -467,9 +476,14 @@ def patterns():
               help="A value for a reviewer to weigh in context; never scanned as a regex.")
 @click.option("--note", default=None, metavar="TEXT",
               help="Guidance shown to a reviewer beside this entry.")
+@click.option("--public", default=None, type=click.Choice(up.POLICIES),
+              help="What a match does in a public clone (default: finding, or judgment with --judgment).")
+@click.option("--relaxed", default=None, type=click.Choice(up.POLICIES),
+              help="What a match does in a relaxed clone (default by category: name, domain, "
+                   "username, employer, city are allowed; everything else as in public).")
 @click.option("--project", is_flag=True, help="Write the repo's git-scan.yaml instead of yours.")
 def patterns_add(id, pattern, category, word_boundary, not_followed_by, exclude_file,
-                 ignore_case, judgment, note, project):
+                 ignore_case, judgment, note, public, relaxed, project):
     """Add a pattern: a regex that must never appear in a commit.
 
     \b
@@ -489,11 +503,15 @@ def patterns_add(id, pattern, category, word_boundary, not_followed_by, exclude_
     A --judgment entry is for a reviewer that weighs context (see
     the privacy review), not for the scanner alone: a value that collides
     with ordinary text as a regex but is sensitive in context.
+
+    --public and --relaxed set what a match does in a clone of that
+    exposure: finding, judgment or allow. Both the scan and the review
+    follow them; a note is context for the reviewer, never policy.
     """
     try:
         up.add_pattern(id, pattern, category, word_boundary, list(not_followed_by),
                        list(exclude_file), project=project, ignore_case=ignore_case,
-                       judgment=judgment, note=note)
+                       judgment=judgment, note=note, public=public, relaxed=relaxed)
     except (up.PatternError, up.ConfigError) as e:
         _fail(e)
     click.echo(f"added '{id}'")
@@ -513,9 +531,13 @@ def patterns_add(id, pattern, category, word_boundary, not_followed_by, exclude_
 @click.option("--judgment/--no-judgment", default=None,
               help="Hand the entry to a reviewer, or back to the scanner.")
 @click.option("--note", default=None, metavar="TEXT", help="Replaces the note ('' clears it).")
+@click.option("--public", default=None, type=click.Choice(up.POLICIES + (up.POLICY_DEFAULT,)),
+              help="What a match does in a public clone ('default' drops the explicit policy).")
+@click.option("--relaxed", default=None, type=click.Choice(up.POLICIES + (up.POLICY_DEFAULT,)),
+              help="What a match does in a relaxed clone ('default' drops the explicit policy).")
 @click.option("--project", is_flag=True, help="Act on the repo's git-scan.yaml.")
 def patterns_edit(id, pattern, category, word_boundary, not_followed_by, exclude_file,
-                  ignore_case, judgment, note, project):
+                  ignore_case, judgment, note, public, relaxed, project):
     """Change a pattern's fields.
 
     \b
@@ -524,6 +546,7 @@ def patterns_edit(id, pattern, category, word_boundary, not_followed_by, exclude
       git-scan patterns edit my-co --exclude-file 'docs/vendors.md'
       git-scan patterns edit my-co --exclude-file ''      (clears the list)
       git-scan patterns edit my-town --judgment --note 'only beside an address'
+      git-scan patterns edit my-tenant --public judgment --relaxed allow
       git-scan patterns edit git-name-first --word-boundary --no-ignore-case
       git-scan patterns edit git-name-last --no-judgment   (a finding again)
 
@@ -542,7 +565,8 @@ def patterns_edit(id, pattern, category, word_boundary, not_followed_by, exclude
                         not_followed_by=list(not_followed_by) or None,
                         exclude_files=list(exclude_file) or None,
                         ignore_case=ignore_case, judgment=judgment,
-                        note=note if note is None else (note or False))
+                        note=note if note is None else (note or False),
+                        public=public, relaxed=relaxed)
     except (up.PatternError, up.ConfigError) as e:
         _fail(e)
     click.echo(f"updated '{id}'")
@@ -603,7 +627,9 @@ def patterns_list(include_disabled):
         cat = f" [{r['category']}]" if r["category"] else ""
         kind = "  (judgment)" if r["judgment"] else ""
         case = "  (case-sensitive)" if r.get("ignore_case") is False else ""
-        click.echo(f"  {r['id']:<{width}}  {r['layer']:<11} {r['pattern']}{cat}{kind}{case}{state}")
+        policy = ", ".join(f"{x}: {r[x]}" for x in ("public", "relaxed") if r.get(x))
+        policy = f"  ({policy})" if policy else ""
+        click.echo(f"  {r['id']:<{width}}  {r['layer']:<11} {r['pattern']}{cat}{kind}{case}{policy}{state}")
 
 
 # --- notes ------------------------------------------------------------------

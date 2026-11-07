@@ -54,7 +54,37 @@ TOP_LEVEL_KEYS = {"entropy", "thresholds", "patterns", "allowed_emails", "identi
 REVIEW_KEYS = {"runner", "model", "timeout", "batch_bytes", "public_prospective"}
 PATTERN_FIELDS = {"id", "pattern", "category", "word_boundary",
                   "not_followed_by", "exclude_files", "disabled",
-                  "ignore_case", "judgment", "note"}
+                  "ignore_case", "judgment", "note", "public", "relaxed"}
+
+# What a match on an entry does in an exposure. ``finding`` refuses (the
+# scan) or blocks (the review); ``judgment`` lists it for a look (the scan)
+# or leaves the call to the reviewer, guided by the note; ``allow`` makes it
+# nothing at all in that exposure.
+EXPOSURES = ("public", "relaxed")
+POLICIES = ("finding", "judgment", "allow")
+
+# Categories whose values are personal context rather than identifiers or
+# secrets: a finding in public, allowed in a relaxed clone (a private
+# repository its owner keeps for personal material). Every other category,
+# built in or the owner's own, is a finding in both unless its entry says
+# otherwise: secrets, emails, financial, account and cloud identifiers, and
+# anything unnamed, fail closed.
+RELAXED_ALLOW_CATEGORIES = frozenset({
+    "name", "names", "surname", "nickname", "handle", "domain", "username",
+    "employer", "city", "town",
+})
+
+
+def entry_policy(entry: dict, exposure: str) -> str:
+    """The policy of a pattern entry in ``exposure``: its own ``public`` /
+    ``relaxed`` field if set, else the category default. ``judgment: true``
+    means judgment where the default would be a finding."""
+    explicit = entry.get(exposure)
+    if explicit in POLICIES:
+        return explicit
+    if exposure == "relaxed" and str(entry.get("category", "")).lower() in RELAXED_ALLOW_CATEGORIES:
+        return "allow"
+    return "judgment" if entry.get("judgment") else "finding"
 THRESHOLD_KEYS = {"large_amount", "suspicious_nonround", "suspicious_any",
                   "cents_review"}
 ENTROPY_KEYS = {"enabled", "threshold", "min_len", "exclusions"}
@@ -165,6 +195,10 @@ def validate_layer(data, path) -> None:
             for flag in ("word_boundary", "disabled", "ignore_case", "judgment"):
                 if flag in p and not isinstance(p[flag], bool):
                     errors.append(f"{loc}: '{flag}' must be true or false")
+            for exposure in EXPOSURES:
+                if exposure in p and p[exposure] not in POLICIES:
+                    errors.append(f"{loc}: '{exposure}' must be one of {', '.join(POLICIES)} "
+                                  f"(run: git-scan patterns edit {p.get('id', 'ID')} --{exposure} POLICY)")
             for field in ("not_followed_by", "exclude_files"):
                 val = p.get(field)
                 if val is not None and (not isinstance(val, list)
@@ -290,16 +324,28 @@ class MergedConfig:
         return [p for p in self.raw.get("patterns", [])
                 if not p.get("disabled")]
 
+    def patterns_with_policy(self, policy: str, exposure: str = "public") -> list[dict]:
+        """Active entries whose policy in ``exposure`` is ``policy``."""
+        return [p for p in self.patterns if entry_policy(p, exposure) == policy]
+
+    def scan_patterns_for(self, exposure: str) -> list[dict]:
+        """Active entries whose match is a finding in ``exposure``."""
+        return self.patterns_with_policy("finding", exposure)
+
+    def judgment_patterns_for(self, exposure: str) -> list[dict]:
+        """Active entries whose match is a judgment call in ``exposure``,
+        reported for acknowledgement rather than as a finding."""
+        return self.patterns_with_policy("judgment", exposure)
+
     @property
     def scan_patterns(self) -> list[dict]:
-        """Active entries whose match is a finding: everything but judgment entries."""
-        return [p for p in self.patterns if not p.get("judgment")]
+        """Active entries whose match is a finding in a public clone."""
+        return self.scan_patterns_for("public")
 
     @property
     def judgment_patterns(self) -> list[dict]:
-        """Active entries whose match is a judgment call, reported for
-        acknowledgement rather than as a finding."""
-        return [p for p in self.patterns if p.get("judgment")]
+        """Active entries whose match is a judgment call in a public clone."""
+        return self.judgment_patterns_for("public")
 
     @property
     def all_patterns(self) -> list[dict]:
@@ -337,20 +383,27 @@ class MergedConfig:
                     sources.setdefault(p["id"], name)
         return sources
 
+    def counts_for(self, exposure: str) -> dict:
+        """Active patterns by origin (built-in, environment, personal) among
+        those that are findings in ``exposure``, plus the judgment entries
+        and the allowed ones there."""
+        sources = self.pattern_sources
+        counts = {"built-in": 0, "environment": 0, "personal": 0, "judgment": 0, "allowed": 0}
+        for p in self.patterns:
+            policy = entry_policy(p, exposure)
+            if policy == "judgment":
+                counts["judgment"] += 1
+            elif policy == "allow":
+                counts["allowed"] += 1
+            else:
+                origin = sources.get(p.get("id"), "user")
+                counts[origin if origin in ("built-in", "environment") else "personal"] += 1
+        return counts
+
     @property
     def pattern_counts(self) -> dict:
-        """Active patterns by origin: built-in, environment (derived from this
-        machine) or personal (user or project), with judgment entries counted
-        apart since their matches are not findings."""
-        sources = self.pattern_sources
-        counts = {"built-in": 0, "environment": 0, "personal": 0, "judgment": 0}
-        for p in self.patterns:
-            if p.get("judgment"):
-                counts["judgment"] += 1
-                continue
-            origin = sources.get(p.get("id"), "user")
-            counts[origin if origin in ("built-in", "environment") else "personal"] += 1
-        return counts
+        """``counts_for`` in a public clone."""
+        return self.counts_for("public")
 
     @property
     def thresholds(self) -> dict:

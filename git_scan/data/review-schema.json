@@ -15,7 +15,8 @@
           "category": {"type": "string"},
           "value": {"type": "string"},
           "location": {"type": "string"},
-          "note": {"type": "string"}
+          "note": {"type": "string"},
+          "entry": {"type": ["string", "null"]}
         }
       }
     },

@@ -12,7 +12,7 @@ from .config import load_config, ConfigError, read_missing_config_help, user_con
 from .sources import collect, ScanInput, RevisionError
 from .utils import CheckResult
 from .steps import run_all_steps, get_step_names
-from . import marks
+from . import marks, relaxed
 
 
 class InvalidStepError(ValueError):
@@ -30,6 +30,7 @@ class ScanReport:
     checks: List[CheckResult] = field(default_factory=list)
     refusal: List[str] = field(default_factory=list)   # set: no checks ran
     scope: str = "staged"                                # staged | message | commits
+    exposure: str = "public"                             # the clone's: public | relaxed
     commits: List[str] = field(default_factory=list)     # commits read (commits scope)
     marked: List[str] = field(default_factory=list)      # of those, marked 'scanned'
 
@@ -96,7 +97,7 @@ def _failing(results: Iterable[CheckResult]) -> bool:
 
 
 def _clean_commits(repo_path: str, config, scan_input: ScanInput,
-                   acknowledged: bool = False) -> List[str]:
+                   acknowledged: bool = False, exposure: str = "public") -> List[str]:
     """After a failed scan of commits: the ones whose own lines pass.
 
     Names belong to no commit, so a names finding leaves none clean.
@@ -107,7 +108,7 @@ def _clean_commits(repo_path: str, config, scan_input: ScanInput,
     names_only = ScanInput(content=[], names=scan_input.names, scope=scan_input.scope,
                            remote=scan_input.remote)
     if _failing(run_all_steps(repo_path, config=config, scan_input=names_only,
-                              acknowledged=acknowledged)):
+                              acknowledged=acknowledged, exposure=exposure)):
         return []
     clean: List[str] = []
 
@@ -116,7 +117,7 @@ def _clean_commits(repo_path: str, config, scan_input: ScanInput,
             return
         if not _failing(run_all_steps(repo_path, config=config,
                                       scan_input=scan_input.subset(group),
-                                      acknowledged=acknowledged)):
+                                      acknowledged=acknowledged, exposure=exposure)):
             clean.extend(group)
         elif len(group) > 1:
             visit(group[:len(group) // 2])
@@ -164,6 +165,11 @@ def run_scan(
     from it), and a scan of commits marks each clean commit ``scanned``. A
     refused message drops the staged record, so the commit it belongs to
     can't be marked by a retry that skips the hooks.
+
+    The clone's exposure (``relaxed.clone_exposure``: relaxed once the clone
+    was made eligible with ``git-scan relax``, public otherwise) decides
+    which entries are findings, which are judgment calls and which are
+    allowed, through each entry's policy; the review reads the same value.
     """
     if only_step is not None and only_step not in set(get_step_names()):
         raise InvalidStepError(
@@ -195,6 +201,7 @@ def run_scan(
             report.refusal = _not_configured_refusal(config)
             return report
         report.checks.append(_check_personal_patterns(config))
+    report.exposure = relaxed.clone_exposure(repo_path, config)
 
     commit_sha = None
     if commit:
@@ -220,7 +227,7 @@ def run_scan(
     step_results = run_all_steps(
         repo_path, config=config, scan_input=scan_input, deep=deep,
         only_step=only_step, include_untracked=include_untracked,
-        acknowledged=acknowledge_judgment,
+        acknowledged=acknowledge_judgment, exposure=report.exposure,
     )
 
     first = len(report.checks)
@@ -238,7 +245,7 @@ def run_scan(
         if scan_input.scope == "commits":
             report.marked = (report.commits if not report.failed
                              else _clean_commits(repo_path, config, scan_input,
-                                                 acknowledge_judgment))
+                                                 acknowledge_judgment, report.exposure))
             marks.add_marks(marks.SCANNED, report.marked, repo_path)
         elif scan_input.scope == "message":
             if report.failed:

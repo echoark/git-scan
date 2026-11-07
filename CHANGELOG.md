@@ -5,7 +5,39 @@ Notable changes to git-scan, newest first. Versions follow
 
 ## 0.11.0 (unreleased)
 
+### Added
+
+- **Policy per exposure.** An entry may say what a match does in a
+  `public` and in a `relaxed` clone: `finding`, `judgment` or `allow`
+  (`patterns add / edit --public POLICY --relaxed POLICY`, shown by
+  `patterns list`). Category defaults fill the gaps: secrets, emails,
+  financial and account identifiers are findings in both; names, domains,
+  usernames, employers and cities are findings in public and allowed in a
+  relaxed clone; a `--judgment` entry is a judgment call where the default
+  would be a finding; any other category is a finding in both. The commit
+  scan and the privacy review follow the same policy, so the two never
+  disagree about a value you named. A note is context for the reviewer,
+  never policy.
+- `git-scan review --public` reviews as public whatever the clone's
+  exposure. The result of the MCP `scan_repo` tool carries the exposure.
+
 ### Changed
+
+- **The reviewer is held to your entries' policy.** The catalog it gets
+  carries each entry's policy for the exposure and flags the entries the
+  scanner found in the batch; a finding names the entry it applied, and
+  git-scan checks the verdict against the entry itself, so a judgment
+  entry is never escalated to "a finding in every mode" by inference and
+  an allowed value is reported as a note naming the entry. The exposure
+  table applies only to values no entry names.
+- **One exposure for the scan and the review.** A clone made eligible with
+  `git-scan relax` is relaxed for both: the scan does not apply entries
+  allowed in a relaxed clone (its output says `exposure: relaxed`), and
+  `git-scan review` is relaxed without `--relaxed`, after asking the host
+  again; an eligible clone the host no longer reports private refuses the
+  review instead of running it public. `--relaxed` still asks explicitly
+  and is refused when the clone isn't eligible. A clone never made
+  eligible is public, as before.
 
 - **Patterns ignore letter case by default.** Every pattern, built in,
   derived or your own, now matches regardless of case unless its entry

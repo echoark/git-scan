@@ -96,6 +96,7 @@ async def scan_repo(
         "passed": not report.failed,
         "passed_count": report.passed_count,
         "failed_count": report.failed_count,
+        "exposure": report.exposure,
         "checks": checks,
     }
     if report.scope == "commits":

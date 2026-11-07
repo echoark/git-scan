@@ -23,7 +23,7 @@ import yaml
 
 from .config import (
     load_layer, layer_paths, load_config, user_config_path, project_config_path,
-    CONFIG_FILENAME, THRESHOLD_KEYS, ConfigError,
+    CONFIG_FILENAME, THRESHOLD_KEYS, ConfigError, EXPOSURES, POLICIES, entry_policy,
 )
 
 
@@ -56,15 +56,21 @@ def add_pattern(id: str, pattern: str, category: Optional[str] = None,
                 exclude_files: Optional[List[str]] = None,
                 repo_path: str = ".", project: bool = False,
                 ignore_case: Optional[bool] = None, judgment: bool = False,
-                note: Optional[str] = None) -> dict:
+                note: Optional[str] = None, public: Optional[str] = None,
+                relaxed: Optional[str] = None) -> dict:
     """Add a pattern to the user (or project) layer. Fails on a duplicate id.
 
     A judgment entry (``judgment=True``) is a value whose match is a judgment
     call rather than a finding: it is reported for acknowledgement. ``note``
     carries the guidance that goes with it (and is allowed on any entry).
     Matching ignores letter case unless ``ignore_case`` is ``False``, which
-    is the one value written.
+    is the one value written. ``public`` and ``relaxed`` set the entry's
+    policy (finding, judgment or allow) in that exposure, overriding the
+    category default.
     """
+    for exposure, policy in (("public", public), ("relaxed", relaxed)):
+        if policy is not None and policy not in POLICIES:
+            raise PatternError(f"--{exposure} must be one of {', '.join(POLICIES)}")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", id):
         raise PatternError(f"'{id}' is not a valid id: use letters, digits, '.', '_' or '-'")
     if not pattern:
@@ -95,6 +101,10 @@ def add_pattern(id: str, pattern: str, category: Optional[str] = None,
         entry["judgment"] = True
     if note:
         entry["note"] = note
+    if public:
+        entry["public"] = public
+    if relaxed:
+        entry["relaxed"] = relaxed
     entries.append(entry)
     data["patterns"] = entries
     _write(path, data)
@@ -102,7 +112,8 @@ def add_pattern(id: str, pattern: str, category: Optional[str] = None,
 
 
 EDITABLE = ("pattern", "category", "word_boundary", "not_followed_by", "exclude_files",
-            "ignore_case", "judgment", "note")
+            "ignore_case", "judgment", "note", "public", "relaxed")
+POLICY_DEFAULT = "default"      # passed for public / relaxed: drop the explicit policy
 
 
 def edit_pattern(id: str, repo_path: str = ".", project: bool = False, **changes) -> dict:
@@ -118,6 +129,9 @@ def edit_pattern(id: str, repo_path: str = ".", project: bool = False, **changes
     changes = {k: v for k, v in changes.items() if k in EDITABLE and v is not None}
     if not changes:
         raise PatternError("nothing to change")
+    for exposure in EXPOSURES:
+        if exposure in changes and changes[exposure] not in POLICIES + (POLICY_DEFAULT,):
+            raise PatternError(f"--{exposure} must be one of {', '.join(POLICIES)} or {POLICY_DEFAULT}")
     config = load_config(repo_path)
     origin = _pattern_origin(id, config)
     if "pattern" in changes:
@@ -136,7 +150,9 @@ def edit_pattern(id: str, repo_path: str = ".", project: bool = False, **changes
     for k, v in changes.items():
         if isinstance(v, (list, tuple)):
             v = [x for x in v if x]          # an empty value clears the list
-        if v in ([], False) and k != "pattern" and k != "ignore_case" and owns:
+        if k in EXPOSURES and v == POLICY_DEFAULT:
+            mine.pop(k, None)                # back to the category default
+        elif v in ([], False) and k != "pattern" and k != "ignore_case" and owns:
             mine.pop(k, None)
         else:
             mine[k] = list(v) if isinstance(v, (list, tuple)) else v
@@ -341,7 +357,8 @@ def list_patterns(repo_path: str = ".", include_disabled: bool = False) -> List[
             "disabled": bool(p.get("disabled")),
             "judgment": bool(p.get("judgment")),
         }
-        for optional in ("word_boundary", "not_followed_by", "exclude_files", "note"):
+        for optional in ("word_boundary", "not_followed_by", "exclude_files", "note",
+                         "public", "relaxed"):
             if p.get(optional):
                 row[optional] = p[optional]
         if p.get("ignore_case") is False:
@@ -350,10 +367,12 @@ def list_patterns(repo_path: str = ".", include_disabled: bool = False) -> List[
     return rows
 
 
-def export_patterns(repo_path: str = ".") -> dict:
+def export_patterns(repo_path: str = ".", exposure: Optional[str] = None) -> dict:
     """The catalog the privacy review sends to the reviewer: the active
     personal entries (scan and judgment alike, with their notes), the
     identity entries derived from this machine, and the free-text notes.
+    With ``exposure``, each entry carries its resolved ``policy`` there
+    (finding, judgment or allow), which the reviewer is held to.
 
     Built-in token patterns are left out: a reviewer knows those formats, and
     the list is about what is personal to this configuration. So are ``.env``
@@ -367,6 +386,8 @@ def export_patterns(repo_path: str = ".") -> dict:
             continue
         row.pop("layer", None)
         row.pop("disabled", None)
+        if exposure:
+            row["policy"] = entry_policy(row, exposure)
         entries.append(row)
     return {
         "configured": config.user_patterns_defined,

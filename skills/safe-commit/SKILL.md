@@ -48,8 +48,9 @@ repeating them.
    Change a pattern, an identity rule or `user.email` only when the user
    asks for that specific change, and then only through git-scan's own
    commands.
-4. **Every review is public** unless the user consents in this conversation
-   to a relaxed one (Step 7).
+4. **A review is as public as the clone.** git-scan reviews a clone as
+   public unless the user made it eligible for a relaxed review, and
+   making it eligible is the user's decision, never yours (Step 7).
 5. **A reviewer problem is never a pass.** It is not a verdict on the
    content either: say what git-scan reported and run again once it is
    addressed. Never push around it.
@@ -216,21 +217,26 @@ clean result itself; nothing about the reviewer, its inputs, or its
 configuration is yours to arrange. The run takes a minute or more: start it
 as a background command where the harness supports one, and wait for it.
 
-Every review is public unless `--relaxed` is passed for that one review.
-A relaxed review is a last resort:
+The review's exposure is the clone's, the same one the commit scan reads:
+public, unless the clone was made eligible for a relaxed review with
+`git-scan relax`, in which case git-scan checks with the host that the
+repository is still private and reviews it relaxed. Its output names the
+mode. Making a clone eligible is a last resort and the user's decision:
 
-- Ask for it only when the public review is actually blocking the work,
-  and only with the user's consent in this conversation. Never ahead of
-  time or "to be safe".
-- The repository must first be made eligible with `git-scan relax`, once
-  per clone. Do that only if the user's own rules or instructions
-  identify the repository as personal; if nothing does, ask. Never for a
-  repository the host reports as public.
+- Run `git-scan relax` only when the public review is actually blocking
+  the work, and only with the user's consent in this conversation. Never
+  ahead of time or "to be safe", and never on your own because the
+  content looks personal.
+- Do it only if the user's own rules or instructions identify the
+  repository as personal; if nothing does, ask. Never for a repository the
+  host reports as public: git-scan refuses, and a refusal is the answer.
 - A session that starts with no eligible repository is normal, not
-  something to fix.
+  something to fix. `git-scan review --public` reviews an eligible clone
+  as public anyway, for content that will be made public.
 
-git-scan refuses `--relaxed` for a repository that isn't eligible or is no
-longer private, and a refusal is the answer.
+A refusal saying the clone is eligible but no longer private is for the
+user too: say so, and do not remove the eligibility or review as public
+without their say.
 
 ## Step 8: Read the result, and offer the push
 

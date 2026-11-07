@@ -30,8 +30,9 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
 
 from . import marks, relaxed
-from .config import load_config, MergedConfig
+from .config import load_config, MergedConfig, POLICIES
 from .sources import LOG_ARGS
+from .steps.patterns import compile_patterns
 from .user_patterns import export_patterns
 
 DATA = Path(__file__).parent.parent / "data"
@@ -41,12 +42,16 @@ SCHEMA_FILE = DATA / "review-schema.json"
 DEFAULT_TIMEOUT = 600          # seconds per batch
 DEFAULT_BATCH_BYTES = 200_000  # patch and message text per prompt
 
-# What a finding does in a relaxed review, by its category. The reviewer
-# reports categories; this table, not the reviewer, decides the verdict. Every
-# other category (secrets, account and financial identifiers, the owner's own
-# pattern categories, one the reviewer makes up) blocks in both modes.
+# What a finding on a value no catalog entry names does in a relaxed review,
+# by its category. The reviewer reports categories; this table, not the
+# reviewer, decides the verdict. Every other category (secrets, account and
+# financial identifiers, one the reviewer makes up) blocks in both modes. A
+# finding on a value a catalog entry names follows that entry's policy
+# instead (``sort_findings``), so the reviewer can never escalate an entry
+# past what its owner decided.
 NOTE_IN_RELAXED = frozenset({"names", "emails", "paths", "tracker_reference", "cross_reference"})
 DROP_IN_RELAXED = frozenset({"personal_framing", "history_expose"})
+_TRIM = " \t\r\n'\"`<>()[]{},.;:"
 
 _FENCE = re.compile(r"```(?:json|privacy-guard-result)?\s*\n(.*?)\n\s*```", re.S)
 
@@ -153,20 +158,44 @@ def commit_records(repo_path: str, commits: Sequence[str]) -> List[dict]:
     return records
 
 
-def exposure_mode(repo_path: str, config: MergedConfig, relaxed_review: bool) -> tuple:
-    """``(mode, why)``. Public unless a relaxed review was asked for, and then
-    only if the repository is eligible now (see ``relaxed``); otherwise the
-    review is refused, never quietly run in another mode."""
-    if not relaxed_review:
-        return "public", "the default"
-    try:
-        return "relaxed", relaxed.check_use(repo_path, config)
-    except relaxed.RelaxedError as e:
-        raise ReviewError(f"no relaxed review: {e}")
+def exposure_mode(repo_path: str, config: MergedConfig, relaxed_review: bool = False,
+                  public_review: bool = False) -> tuple:
+    """``(mode, why)``: the clone's exposure, the same one the scan reads.
+
+    Public unless the clone was made eligible (``git-scan relax``), in which
+    case the host is asked again and the review is relaxed; a clone that is
+    eligible but no longer private refuses the review rather than quietly
+    running it in another mode. ``public_review`` reviews as public whatever
+    the clone's exposure (always allowed); ``relaxed_review`` asks for a
+    relaxed review and is refused unless the clone is eligible now.
+    """
+    if public_review:
+        return "public", "asked for with --public"
+    if relaxed_review or relaxed.clone_exposure(repo_path, config) == "relaxed":
+        try:
+            return "relaxed", relaxed.check_use(repo_path, config)
+        except relaxed.RelaxedError as e:
+            if relaxed_review:
+                raise ReviewError(f"no relaxed review: {e}")
+            raise ReviewError(f"this clone is eligible for a relaxed review but {e}. Review it as "
+                              "public with --public, or drop the eligibility: git-scan relax --remove")
+    return "public", "this clone is not eligible for a relaxed review"
+
+
+def mark_found(catalog: dict, records: List[dict], publish: Dict[str, str]) -> dict:
+    """The catalog with ``found: true`` on each entry whose pattern matches
+    the commits' messages or patches or the publish text of this batch, so
+    the reviewer looks at each in context."""
+    texts = [r["message"] for r in records] + [r["patch"] for r in records] + list(publish.values())
+    for entry, compiled in zip(catalog.get("patterns", []), compile_patterns(catalog.get("patterns", []))):
+        if any(compiled.search(t) for t in texts):
+            entry["found"] = True
+    return catalog
 
 
 def build_prompt(mode: str, catalog: dict, records: List[dict],
                  publish: Dict[str, str]) -> str:
+    catalog = mark_found(json.loads(json.dumps(catalog)), records, publish)
     parts = [PROMPT_FILE.read_text(), "", f"# Exposure mode\n\n{mode}", "",
              "# Catalog\n", "```json", json.dumps(catalog, indent=1, ensure_ascii=False), "```", ""]
     parts.append(f"# Commits ({len(records)})\n")
@@ -265,7 +294,8 @@ def review(repo_path: str = ".", commits: Optional[List[str]] = None,
            rev_range: Optional[str] = None, relaxed_review: bool = False,
            publish: Sequence[str] = (), runner: Optional[str] = None,
            timeout: Optional[int] = None, batch_bytes: Optional[int] = None,
-           progress: Optional[Callable[[str], None]] = None) -> ReviewResult:
+           progress: Optional[Callable[[str], None]] = None,
+           public_review: bool = False) -> ReviewResult:
     """Review the unpushed commits (or ``commits`` / ``rev_range``) and record
     each commit of a clean batch as reviewed. With ``publish`` text and no
     commit left to review, review the text alone and record nothing: there
@@ -276,7 +306,7 @@ def review(repo_path: str = ".", commits: Optional[List[str]] = None,
         raise ReviewError("no personal patterns are configured; set them up (or declare none "
                           "with: git-scan patterns clear) before reviewing")
     name, argv = resolve_runner(config, runner)
-    mode, why = exposure_mode(repo_path, config, relaxed_review)
+    mode, why = exposure_mode(repo_path, config, relaxed_review, public_review)
     say(f"{mode} review ({why})")
     timeout = timeout or int(config.review.get("timeout") or DEFAULT_TIMEOUT)
     batch_bytes = batch_bytes or int(config.review.get("batch_bytes") or DEFAULT_BATCH_BYTES)
@@ -300,7 +330,7 @@ def review(repo_path: str = ".", commits: Optional[List[str]] = None,
     result = ReviewResult(mode=mode, runner=name, mode_reason=why)
     result.skipped = [s for s in wanted if marks.REVIEWED in marked[s]]
     todo = [s for s in wanted if marks.REVIEWED not in marked[s]]
-    catalog = export_patterns(repo_path)
+    catalog = export_patterns(repo_path, exposure=mode)
     catalog.pop("configured", None)
     if not todo:
         if not texts:
@@ -330,7 +360,7 @@ def review(repo_path: str = ".", commits: Optional[List[str]] = None,
         report = f"batch {i}/{len(batches)}{by}{secs}: {str(data.get('summary') or '').strip() or '(no summary)'}"
         result.reports.append(report)
         say(report)
-        blocking, notes = sort_findings(data["findings"], mode)
+        blocking, notes = sort_findings(data["findings"], mode, catalog)
         result.notes += notes
         if blocking:
             result.findings += blocking
@@ -356,21 +386,57 @@ def _review_text_only(result: ReviewResult, argv: List[str], mode: str, catalog:
     report = f"publish text{by}{secs}: {str(data.get('summary') or '').strip() or '(no summary)'}"
     result.reports.append(report)
     say(report)
-    blocking, notes = sort_findings(data["findings"], mode)
+    blocking, notes = sort_findings(data["findings"], mode, catalog)
     result.findings += blocking
     result.notes += notes
     return result
 
 
-def sort_findings(findings: List[dict], mode: str) -> tuple:
-    """``(blocking, notes)`` for the findings of a review in ``mode``. Public:
-    every finding blocks. Relaxed: the categories in ``NOTE_IN_RELAXED`` become
-    notes, those in ``DROP_IN_RELAXED`` are dropped, and every other category,
-    known or not, blocks."""
-    if mode != "relaxed":
-        return list(findings), []
+def entry_for(finding: dict, catalog: Optional[dict]) -> Optional[dict]:
+    """The catalog entry a finding is about, if any: the one the reviewer
+    named in ``entry``, provided its pattern does match the value, else the
+    entry whose pattern matches the whole value. A partial match is not
+    enough: a secret that happens to contain a name must keep its own
+    verdict."""
+    if not catalog:
+        return None
+    entries = catalog.get("patterns") or []
+    compiled = {c.id: c for c in compile_patterns(entries)}
+    value = str(finding.get("value", "")).strip(_TRIM)
+    named = finding.get("entry")
+    if named and named in compiled and compiled[named].search(value):
+        return next(e for e in entries if e["id"] == named)
+    for e in entries:
+        c = compiled.get(e["id"])
+        m = c.search(value) if c else None
+        if m and m.group(0).strip(_TRIM) == value:
+            return e
+    return None
+
+
+def sort_findings(findings: List[dict], mode: str, catalog: Optional[dict] = None) -> tuple:
+    """``(blocking, notes)`` for the findings of a review in ``mode``.
+
+    A finding on a value a catalog entry names follows the entry's policy
+    in this mode: ``allow`` makes it a note that says so, never a block;
+    ``judgment`` and ``finding`` block, the reviewer having judged it one.
+    For every other finding, public: it blocks. Relaxed: the categories in
+    ``NOTE_IN_RELAXED`` become notes, those in ``DROP_IN_RELAXED`` are
+    dropped, and every other category, known or not, blocks."""
     blocking, notes = [], []
     for f in findings:
+        entry = entry_for(f, catalog)
+        if entry is not None:
+            policy = entry.get("policy") if entry.get("policy") in POLICIES else "finding"
+            f = dict(f, entry=entry["id"])
+            if policy == "allow":
+                notes.append(dict(f, note=f"allowed by entry {entry['id']} in a {mode} clone"))
+            else:
+                blocking.append(f)
+            continue
+        if mode != "relaxed":
+            blocking.append(f)
+            continue
         category = str(f.get("category", "")).strip().lower()
         if category in DROP_IN_RELAXED:
             continue

@@ -67,14 +67,20 @@ never settles the review.
 
 ## Exposure mode
 
-Every review is public unless the agent asks for a relaxed one, and git-scan
-decides whether it may: the repository must be eligible (`git-scan relax`,
-which needs the host to report it private, or a host the user vouched for)
-and still private at review time. The skill adds what git-scan can't check:
-the user's own rules or instructions must identify the repository as
-personal, the public review must be blocking, and the user must consent.
-Privacy alone is not enough, because private repositories are often shared
-or published later. Needs git-scan 0.9.0 or later.
+A clone has one exposure, read by the commit scan and the review alike:
+public, or relaxed once the user made it eligible with `git-scan relax`
+(which needs the host to report the repository private, or a host the user
+vouched for). The review checks with the host again each time and refuses
+rather than quietly running public when an eligible clone is no longer
+private; `--public` reviews as public on request. Each catalog entry's
+policy (finding, judgment, allow) in that exposure binds both layers, so
+the hook and the review never disagree about a value the user named. The
+skill adds what git-scan can't check: the user's own rules or instructions
+must identify the repository as personal, the public review must be
+blocking, and the user must consent, and the agent never runs `git-scan
+relax` on its own. Privacy alone is not enough, because private
+repositories are often shared or published later. Needs git-scan 0.11.0 or
+later (0.9.0 for the per-review `--relaxed` flag it still accepts).
 
 ## Before the push
 

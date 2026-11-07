@@ -23,6 +23,7 @@ with git-scan.
 | Commit hooks | The scan: built-in detectors, entropy, and your own patterns, over what each commit changes, its message, and every file, branch and tag name | Every `git commit` |
 | Privacy review (`git-scan review`) | A judgment reviewer, a headless agent CLI, reads the unpushed commits and any pull-request text for what a regex can't catch: names in prose, personal framing, private references | Before a push |
 | Push gate | Refuses a push of commits that were not scanned, or, when you require it, not reviewed | Every `git push` |
+| Exposure and policy | The clone is public, or relaxed once you made it eligible; each of your entries has a policy per exposure that the scan and the reviewer both follow | Every scan and review |
 | safe-commit skill | The procedure an agent follows: stage, commit, review, push or open a pull request, and bring every finding to you | When you ask an agent to commit |
 | MCP server (optional) | The same scan as tools an agent can call | When an agent calls it |
 
@@ -266,6 +267,7 @@ git-scan patterns add ID --pattern REGEX [--category CATEGORY] [OPTIONS]
 | `--no-ignore-case` | match the spelling given only; the default matches regardless of letter case |
 | `--note TEXT` | guidance shown to a reviewer beside this entry (see [Judgment entries and notes](#judgment-entries-and-notes)) |
 | `--judgment` | a match is a judgment call to acknowledge, not a finding |
+| `--public POLICY`, `--relaxed POLICY` | what a match does in a clone of that exposure: `finding`, `judgment` or `allow` (see [Policy per exposure](#policy-per-exposure)) |
 
 Examples by category:
 
@@ -420,6 +422,43 @@ git-scan notes remove 1
 notes: git-scan hands them to the reviewer with the commits, so an entry
 that is too noisy for the scanner still gets judged, with its note, when a
 push is reviewed.
+
+### Policy per exposure
+
+A clone has one **exposure**: `public`, or `relaxed` once you made it
+eligible with `git-scan relax` (see [Relaxed review](#relaxed-review)).
+Every entry has a **policy** in each exposure, which both the commit scan
+and the privacy review follow: `finding` (the scan refuses, the review
+blocks), `judgment` (the scan lists the match for acknowledgement, the
+reviewer weighs the note), or `allow` (nothing, in that exposure). A note
+is context for the reviewer, never policy.
+
+Set a policy on an entry when the category default below isn't right:
+
+```bash
+git-scan patterns add my-tenant --pattern 'acme360' --category domain --judgment \
+    --note 'the tenant name; a finding when it identifies the account, not the product'
+git-scan patterns edit my-tenant --public judgment --relaxed allow
+git-scan patterns edit my-tenant --relaxed default     # back to the category default
+```
+
+Category defaults fill the gaps:
+
+| Category | public | relaxed |
+|---|---|---|
+| secrets and credentials (`token`, `key`, `env`, ...) | finding | finding |
+| `email`, `financial`, account and cloud identifiers (`account`, `identifier`, ...) | finding | finding |
+| `name`, `domain`, `username`, `employer`, `city` (and `surname`, `nickname`, `handle`, `town`) | finding | allow |
+| any other category, including your own | finding | finding |
+
+An entry marked `--judgment` is `judgment` wherever the default would be
+`finding`. `patterns list` shows an explicit policy beside the entry.
+
+The scan reads the clone's exposure on every commit: in a relaxed clone an
+`allow` entry is neither a finding nor an acknowledgement item, and the
+output says `exposure: relaxed`. The reviewer gets each entry with its
+policy for the exposure and is held to it (see [The privacy
+review](#the-privacy-review)).
 
 ### Allowed emails
 
@@ -623,16 +662,17 @@ git-scan review                        # the unpushed commits of this branch
 git-scan review --publish pr-body.md   # and the text that will be published with them
 git-scan review --range A..B           # commits already made
 git-scan review --publish comment.md   # text alone: a body edited after the push, a comment, an issue
+git-scan review --public               # as public, whatever the clone's exposure
 ```
 
 What happens: git-scan computes the outgoing commits, builds one prompt
-per batch from its packaged review instructions, your patterns and notes,
-each commit's message and patch, and any `--publish` text, and runs a
-headless agent CLI on it with no tools, so the prompt is the reviewer's
-whole world and nothing on the machine can steer it. The JSON that comes
-back is validated; every commit of a clean batch is recorded as reviewed.
-Findings are printed with the value and the location, and nothing is
-recorded for that batch:
+per batch from its packaged review instructions, your patterns and notes
+with each entry's policy for the clone's exposure, each commit's message
+and patch, and any `--publish` text, and runs a headless agent CLI on it
+with no tools, so the prompt is the reviewer's whole world and nothing on
+the machine can steer it. The JSON that comes back is validated; every
+commit of a clean batch is recorded as reviewed. Findings are printed with
+the value and the location, and nothing is recorded for that batch:
 
 ```
   [FAIL] Privacy review (public; 2 commit(s); 2 finding(s))
@@ -662,9 +702,21 @@ Rules the command keeps:
   recorded, since there is no commit to record; the output says so. Use it
   before posting a pull-request body edited after the push, a comment, or
   an issue.
-- **Every review is public** unless `--relaxed` is given for that review,
-  and that is refused unless the repository is eligible (see
-  [Relaxed review](#relaxed-review)).
+- **The reviewer is held to your entries' policy.** A value one of your
+  entries names follows that entry's policy in the clone's exposure
+  (finding, judgment or allow; see [Policy per
+  exposure](#policy-per-exposure)): the reviewer is told the policy and
+  names the entry it applied, and git-scan checks the verdict against the
+  entry itself, so a judgment entry is never escalated to a finding in
+  every mode by inference, and an allowed value is reported as a note that
+  says which entry allows it. The exposure table below applies only to
+  values no entry names.
+- **A review is as public as the clone.** The exposure is the clone's,
+  the same one the scan reads: public unless the clone was made eligible
+  with `git-scan relax`, in which case the host is asked again and the
+  review is relaxed (see [Relaxed review](#relaxed-review)). `--public`
+  reviews as public anyway; an eligible clone whose repository is no
+  longer private refuses the review rather than running it public.
 - **Nothing accepts a result from outside.** The only writer of the review
   record is this command, after it has run the reviewer itself.
 
@@ -689,27 +741,29 @@ background command.
 ### Relaxed review
 
 A relaxed review is for a private repository its owner keeps for personal
-material. What a finding does depends on its category, decided by git-scan,
-not by the reviewer:
+material. A value one of your entries names follows the entry's policy in
+the relaxed exposure (see [Policy per exposure](#policy-per-exposure)); for
+everything else, what a finding does depends on its category, decided by
+git-scan, not by the reviewer:
 
-| Category | Public review | Relaxed review |
+| Category (no entry names the value) | Public review | Relaxed review |
 |---|---|---|
 | secrets, account identifiers, financial identifiers | blocks | blocks |
 | names, emails, identity-revealing paths, private-tracker and cross-repository references | blocks | a note: shown, doesn't block |
 | personal framing, history framing | blocks | dropped |
-| anything else, including your own pattern categories | blocks | blocks |
-
-Two steps, kept apart on purpose:
+| anything else | blocks | blocks |
 
 ```bash
-git-scan relax                 # once per clone: make this repository eligible
-git-scan review --relaxed      # each time: ask for a relaxed review
-git-scan relax --remove        # no longer eligible
+git-scan relax                 # once per clone: make this repository eligible; its exposure is now relaxed
+git-scan review                # reviews relaxed, after asking the host again
+git-scan review --public       # as public anyway
+git-scan relax --remove        # no longer eligible; the exposure is public again
 ```
 
 **Eligibility** (`git-scan relax`) is recorded in the repository's own
 `.git/config` (local to the clone, never pushed) for its exact `origin`
-URL. Running it again reports "already eligible". It needs one of:
+URL, and is the clone's exposure: the commit scan and the review both read
+it. Running it again reports "already eligible". It needs one of:
 
 - **github.com, or a host added as `github`**: the host reports the
   repository `private` (`gh api repos/OWNER/REPO --jq .visibility`, the REST
@@ -722,10 +776,13 @@ Never eligible: a repository with no remote (or a filesystem-path remote),
 one on a host that isn't registered, or one whose `git-scan.yaml` declares
 it public-prospective.
 
-**Use** (`git-scan review --relaxed`) is asked for review by review. It is
-refused unless this exact remote is eligible, and a host that can be asked
-is asked again each time; a refusal says why and runs nothing. Without the
-flag, every review is public, so no review is ever relaxed by default.
+**Use.** A review of an eligible clone is relaxed; a host that can be
+asked is asked again each time, and when it no longer reports the
+repository private the review is refused, naming `--public` and `relax
+--remove` as the ways out, rather than run in another mode. `--relaxed`
+asks for a relaxed review explicitly and is refused unless this exact
+remote is eligible. A clone that was never made eligible is public, so no
+review is relaxed until you decided it.
 
 **Hosts.** Kept in the machine's global git config:
 

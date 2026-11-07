@@ -133,6 +133,20 @@ def unmark(repo_path: str = ".") -> bool:
     return had
 
 
+def clone_exposure(repo_path: str, config: MergedConfig) -> str:
+    """The exposure of this clone, as every layer reads it: ``relaxed`` when
+    the clone was made eligible for its current origin URL and no layer
+    declares the repository public-prospective, else ``public``. Read from
+    the eligibility record only, with no network call, so the scan can read
+    it on every commit; a review verifies it with the host again."""
+    if public_prospective(config):
+        return "public"
+    url = origin_url(repo_path)
+    if url and eligible_url(repo_path) == url:
+        return "relaxed"
+    return "public"
+
+
 def check_use(repo_path: str, config: MergedConfig) -> str:
     """Why a relaxed review may run now; RelaxedError if it may not."""
     if public_prospective(config):

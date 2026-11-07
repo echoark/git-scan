@@ -86,10 +86,12 @@ def repo(tmp_path, monkeypatch):
     return r
 
 
-def _commit(repo, name, text="clean\n"):
+def _commit(repo, name, text="clean\n", verify=True):
+    """Commit one file; the fixture's hooks scan it unless ``verify`` is off
+    (for content that deliberately matches a judgment entry)."""
     (repo / name).write_text(text)
     _git(repo, "add", name)
-    _git(repo, "commit", "-q", "-m", f"add {name}")
+    _git(repo, "commit", "-q", "-m", f"add {name}", *([] if verify else ["--no-verify"]))
     return _git(repo, "rev-parse", "HEAD").stdout.strip()
 
 
@@ -293,20 +295,49 @@ def _eligible(repo):
     return _git(repo, "config", "--local", "--get", "git-scan.relaxed-remote", check=False).stdout.strip()
 
 
-def _relaxed_stub(monkeypatch, category):
-    """The stub reviewer reports one finding of this category."""
+def _relaxed_stub(monkeypatch, category, value="Pat Example", entry=None):
+    """The stub reviewer reports one finding of this category on this value
+    (by default one no catalog entry names), naming ``entry`` if given."""
     monkeypatch.setenv("STUB_MODE", "finding")
     stub = Path(os.environ["STUB_PROMPT_OUT"]).parent / "stub.py"
-    stub.write_text(STUB.replace('"category": "names"', f'"category": "{category}"'))
+    finding = f'"category": "{category}", "value": "{value}"'
+    if entry:
+        finding += f', "entry": "{entry}"'
+    stub.write_text(STUB.replace('"category": "names", "value": "Jane Doe"', finding))
 
 
-def test_every_review_is_public_without_the_flag(repo, tmp_path, gh):
+def test_the_review_follows_the_clones_exposure(repo, tmp_path, gh):
+    """One exposure for both layers: public until the clone is made eligible,
+    relaxed after, verified with the host each time; --public is always
+    allowed and reviews as public anyway."""
+    _commit(repo, "a.txt")
+    _git(repo, "remote", "set-url", "origin", GITHUB_URL)
+    r = _run("review")
+    assert r.exit_code == 0, r.output
+    assert "# Exposure mode\n\npublic" in _prompts(tmp_path)[0]
+    assert "(public, " in r.output
+    assert _run("relax").exit_code == 0
+    _commit(repo, "b.txt")
+    r = _run("review")                        # eligible: relaxed without the flag
+    assert r.exit_code == 0, r.output
+    assert "# Exposure mode\n\nrelaxed" in _prompts(tmp_path)[1]
+    assert gh.read_text().count("--jq .visibility") == 2        # asked again for the review
+    _commit(repo, "c.txt")
+    r = _run("review", "--public")
+    assert r.exit_code == 0, r.output
+    assert "# Exposure mode\n\npublic" in _prompts(tmp_path)[2]
+
+
+def test_an_eligible_clone_no_longer_private_refuses_the_review(repo, tmp_path, gh, monkeypatch):
     _commit(repo, "a.txt")
     _git(repo, "remote", "set-url", "origin", GITHUB_URL)
     assert _run("relax").exit_code == 0
-    r = _run("review")                        # eligible, but not asked for
-    assert r.exit_code == 0, r.output
-    assert "# Exposure mode\n\npublic" in _prompts(tmp_path)[0]
+    monkeypatch.setenv("STUB_GH", "public")
+    r = _run("review")
+    assert r.exit_code == 1 and "eligible for a relaxed review but" in r.output
+    assert "--public" in r.output and "relax --remove" in r.output
+    assert _prompts(tmp_path) == []                              # never run in another mode
+    assert _run("review", "--public").exit_code == 0
 
 
 def test_relax_marks_a_github_repository_reported_private_in_git_config(repo, tmp_path, gh):
@@ -438,23 +469,23 @@ def test_a_plugin_provider_is_used_like_a_built_in(repo, tmp_path, monkeypatch):
     assert r.exit_code == 0 and "verified private by src.corp.example" in r.output
 
 
-def test_in_a_relaxed_review_a_name_is_a_note_and_does_not_block(repo, tmp_path, gh, monkeypatch):
+def test_in_a_relaxed_review_an_unlisted_name_is_a_note_and_does_not_block(repo, tmp_path, gh, monkeypatch):
     first = _commit(repo, "a.txt")
     _git(repo, "remote", "set-url", "origin", GITHUB_URL)
-    assert _run("relax").exit_code == 0
-    _relaxed_stub(monkeypatch, "names")
+    _relaxed_stub(monkeypatch, "names")                          # a name no entry lists
     r = _run("review")                                           # public: a name blocks
     assert r.exit_code == 1 and "[FAIL]" in r.output
-    r = _run("review", "--relaxed")
+    assert _run("relax").exit_code == 0
+    r = _run("review")
     assert r.exit_code == 0, r.output
-    assert "note:" in r.output and "Jane Doe" in r.output
+    assert "note:" in r.output and "Pat Example" in r.output
     assert marks.marks_on(first) >= {"reviewed"}
 
 
 @pytest.mark.parametrize("category", ["secrets", "account_ids", "financial", "last4", "made_up"])
 def test_in_a_relaxed_review_these_categories_still_block(repo, gh, monkeypatch, category):
-    """Secrets and identifiers block; so does any category the table doesn't
-    name, the owner's own pattern categories included (fail closed)."""
+    """For a value no entry names: secrets and identifiers block; so does any
+    category the table doesn't name (fail closed)."""
     sha = _commit(repo, "a.txt")
     _git(repo, "remote", "set-url", "origin", GITHUB_URL)
     assert _run("relax").exit_code == 0
@@ -469,12 +500,102 @@ def test_in_a_relaxed_review_framing_is_dropped_even_when_the_reviewer_reports_i
                                                                               category):
     sha = _commit(repo, "a.txt")
     _git(repo, "remote", "set-url", "origin", GITHUB_URL)
-    assert _run("relax").exit_code == 0
     _relaxed_stub(monkeypatch, category)
     assert _run("review").exit_code == 1                         # public: framing blocks
-    r = _run("review", "--relaxed")
+    assert _run("relax").exit_code == 0
+    r = _run("review")
     assert r.exit_code == 0, r.output                            # relaxed: dropped, not even a note
     assert "note:" not in r.output and "reviewed" in marks.marks_on(sha)
+
+
+# --- entry policy: the reviewer is held to what the owner decided --------------------
+
+def _tenant(repo):
+    """A judgment entry for a tenant name, noted the way that once led a
+    reviewer to re-classify it as an account identifier."""
+    assert _run("patterns", "add", "tenant", "--pattern", "acme360", "--category", "domain",
+                "--judgment", "--note", "tenant name; a finding when it identifies the owner's "
+                "account, not the product").exit_code == 0
+
+
+def test_the_catalog_carries_each_entrys_policy_and_what_the_scanner_found(repo, tmp_path, gh):
+    _tenant(repo)
+    _commit(repo, "a.txt", "the acme360 tenant\n", verify=False)
+    _git(repo, "remote", "set-url", "origin", GITHUB_URL)
+    assert _run("review").exit_code == 0
+    p = _prompts(tmp_path)[0]
+    assert '"id": "tenant"' in p and '"policy": "judgment"' in p and '"found": true' in p
+    me = p.index('"id": "me"')
+    assert '"policy": "finding"' in p[me:me + 200] and '"found"' not in p[me:me + 200]
+    assert _run("relax").exit_code == 0
+    _commit(repo, "b.txt")
+    assert _run("review").exit_code == 0
+    p = _prompts(tmp_path)[1]
+    tenant = p.index('"id": "tenant"')
+    assert '"policy": "allow"' in p[tenant:tenant + 300]        # domain: allowed in a relaxed clone
+
+
+def test_regression_a_judgment_entry_is_never_escalated_past_its_policy(repo, gh, monkeypatch):
+    """The reviewer reports the tenant name as an account identifier, the
+    row that is a finding in every mode. The entry's policy governs: in a
+    relaxed clone the value is allowed and the review passes; in public the
+    entry is a judgment call and the reviewer's finding stands."""
+    _tenant(repo)
+    sha = _commit(repo, "a.txt", "the acme360 tenant\n", verify=False)
+    _git(repo, "remote", "set-url", "origin", GITHUB_URL)
+    _relaxed_stub(monkeypatch, "account_ids", value="acme360")   # the entry is not even named
+    r = _run("review")                                           # public: judgment, the reviewer's call
+    assert r.exit_code == 1 and "[account_ids] acme360" in r.output
+    assert _run("relax").exit_code == 0
+    r = _run("review")                                           # relaxed: allowed by the entry
+    assert r.exit_code == 0, r.output
+    assert "note:" in r.output and "allowed by entry tenant in a relaxed clone" in r.output
+    assert "reviewed" in marks.marks_on(sha)
+
+
+def test_an_explicit_relaxed_allow_and_public_finding_are_honoured(repo, gh, monkeypatch):
+    assert _run("patterns", "add", "handle", "--pattern", "jsmith42", "--category", "custom",
+                "--judgment", "--relaxed", "allow", "--public", "finding").exit_code == 0
+    sha = _commit(repo, "a.txt", "jsmith42\n", verify=False)
+    _git(repo, "remote", "set-url", "origin", GITHUB_URL)
+    _relaxed_stub(monkeypatch, "names", value="jsmith42", entry="handle")
+    assert _run("review").exit_code == 1                         # public: finding
+    assert _run("relax").exit_code == 0
+    r = _run("review")
+    assert r.exit_code == 0 and "allowed by entry handle" in r.output
+    assert "reviewed" in marks.marks_on(sha)
+
+
+def test_a_secret_stays_a_finding_in_both_exposures(repo, gh, monkeypatch):
+    fake = "ghp_" + "b" * 36
+    sha = _commit(repo, "a.txt")
+    _git(repo, "remote", "set-url", "origin", GITHUB_URL)
+    _relaxed_stub(monkeypatch, "secrets", value=fake)
+    assert _run("review").exit_code == 1
+    assert _run("relax").exit_code == 0
+    r = _run("review")
+    assert r.exit_code == 1 and "[secrets]" in r.output and "reviewed" not in marks.marks_on(sha)
+
+
+def test_a_named_entry_whose_pattern_does_not_match_the_value_is_ignored(repo, gh, monkeypatch):
+    """A reviewer that labels a secret with a name entry's id cannot make
+    the secret allowed: the entry is applied only when its pattern matches."""
+    fake = "ghp_" + "c" * 36
+    sha = _commit(repo, "a.txt")
+    _git(repo, "remote", "set-url", "origin", GITHUB_URL)
+    assert _run("relax").exit_code == 0
+    _relaxed_stub(monkeypatch, "secrets", value=fake, entry="me")
+    r = _run("review")
+    assert r.exit_code == 1 and "reviewed" not in marks.marks_on(sha)
+
+
+def test_a_partial_match_does_not_borrow_an_entrys_policy(repo, gh, monkeypatch):
+    sha = _commit(repo, "a.txt")
+    _git(repo, "remote", "set-url", "origin", GITHUB_URL)
+    assert _run("relax").exit_code == 0
+    _relaxed_stub(monkeypatch, "secrets", value="password=Jane Doe2026!")
+    r = _run("review")
+    assert r.exit_code == 1 and "reviewed" not in marks.marks_on(sha)
 
 
 def test_relaxed_publish_text_alone_follows_the_same_table(repo, tmp_path, gh, monkeypatch):
@@ -494,6 +615,24 @@ def test_the_verdict_table():
     blocking, notes = review.sort_findings(found, "relaxed")
     assert [f["category"] for f in blocking] == ["secrets", "employer"]
     assert [f["category"] for f in notes] == ["names"]
+
+
+def test_entry_policy_in_the_verdict():
+    catalog = {"patterns": [
+        {"id": "me", "pattern": "Jane Doe", "category": "name", "policy": "allow"},
+        {"id": "card", "pattern": "1234", "category": "last4", "judgment": True,
+         "word_boundary": True, "policy": "judgment"},
+    ]}
+    found = [{"category": "account_ids", "value": "Jane Doe"},          # allowed: a note
+             {"category": "names", "value": "'jane doe'", "entry": "me"},  # named, matches: a note
+             {"category": "financial", "value": "1234", "entry": "card"},  # judgment: the call stands
+             {"category": "secrets", "value": "x1234y", "entry": "me"},    # named entry doesn't match
+             {"category": "secrets", "value": "Jane Doe2026"}]            # partial: not the entry
+    blocking, notes = review.sort_findings(found, "relaxed", catalog)
+    assert [f["value"] for f in notes] == ["Jane Doe", "'jane doe'"]
+    assert all("allowed by entry me" in f["note"] for f in notes)
+    assert [f["value"] for f in blocking] == ["1234", "x1234y", "Jane Doe2026"]
+    assert blocking[0]["entry"] == "card"
 
 
 def test_no_severity_is_asked_for_or_shown(repo, tmp_path):
