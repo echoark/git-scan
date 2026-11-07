@@ -48,13 +48,16 @@ def _echo_checks(report, verbose=False, hide_skipped=False, failed_only=False, e
             continue
         if check.passed and failed_only:
             continue
-        if check.passed:
+        warned = check.passed and check.name == "Warnings" and check.findings
+        if warned:
+            status, style = "WARN", "yellow"
+        elif check.passed:
             status, style = ("PASS", "green") if not check.skipped else ("SKIP", "yellow")
         else:
             status, style = "FAIL", "red"
         info = f" ({check.info})" if check.info else ""
         click.echo(click.style(f"  [{status}] ", fg=style) + check.name + info, err=err)
-        if not check.passed and not check.skipped:
+        if (not check.passed and not check.skipped) or warned:
             shown = check.findings if verbose else check.findings[:10]
             for finding in shown:
                 click.echo(f"         {finding}", err=err)
@@ -165,10 +168,10 @@ def run(path, deep, step, unstaged, untracked, verbose, hide_skipped, commit, re
 def ack(rev):
     """Acknowledge the judgment matches of the staged change.
 
-    A judgment entry (patterns add --judgment) names a value that is
+    A judgment entry (patterns add --match judgment) names a value that is
     sensitive only in context. When one appears in a change, the scan lists
-    every match with its note and refuses the commit until someone has
-    looked. Run this after looking, when every match is fine; fix the
+    every match with the entry's specifics and refuses the commit until
+    someone has looked. Run this after looking, when every match is fine; fix the
     content otherwise. The acknowledgement applies to exactly the staged
     content: stage anything more and it must be given again. It clears
     judgment matches only; every other finding still refuses the commit.
@@ -215,7 +218,7 @@ def ack(rev):
     tree = marks.record_ack(".")
     if not tree:
         _fail(marks.MarkError("not a git repository, or nothing is staged"))
-    shown = [f for f in judged.findings if not f.startswith(("Each match", "  git-scan", "    note:"))]
+    shown = [f for f in judged.findings if not f.startswith(("Each match", "  git-scan", "    "))]
     click.echo(f"acknowledged {len(shown)} judgment match(es) for {where}:")
     for f in shown:
         click.echo(f"  {f}")
@@ -224,8 +227,8 @@ def ack(rev):
 
 @cli.group(invoke_without_command=True)
 @click.option("--relaxed", "relaxed_review", is_flag=True,
-              help="This review only: relaxed (personal content becomes notes). Refused unless "
-                   "the repository is eligible (git-scan relax) and still private.")
+              help="Ask for a relaxed review. Refused unless the repository is eligible "
+                   "(git-scan relax) and still private. Without it every review is public.")
 @click.option("--publish", "publish", multiple=True, metavar="FILE",
               help="Text published beside the push (a pull-request body) to review too (repeatable).")
 @click.option("--range", "rev_range", default=None, metavar="A..B",
@@ -239,19 +242,21 @@ def review(ctx, relaxed_review, publish, rev_range, runner, timeout, quiet):
     """Run the privacy review of the unpushed commits and record a clean result.
 
     git-scan builds the reviewer's prompt itself: its packaged review
-    instructions, your personal patterns and notes, each commit's message
-    and patch, and any --publish text. It runs the configured headless agent
-    CLI with no tools (the prompt is the reviewer's whole world), validates
-    the JSON that comes back, and records a clean batch as reviewed. With
-    'config require-review on', a push needs that for every commit it sends.
-    The reviewer's one-line summary of each batch is printed with the model
-    and the time it took.
+    instructions, every entry of the merged configuration with what a match
+    does, your notes, each commit's message and patch, and any --publish text.
+    It runs the configured headless agent CLI with no tools (the prompt is
+    the reviewer's whole world), validates the JSON that comes back, and
+    records a clean batch as reviewed. With 'config require-review on', a
+    push needs that for every commit it sends. The reviewer's one-line
+    summary of each batch is printed with the model and the time it took.
 
-    Every review is public unless --relaxed is given, and that is refused
-    unless the repository is eligible (git-scan relax) and its host still
-    reports it private. In a relaxed review, names, emails, paths and private
-    references are shown as notes and don't block; personal framing is not
-    judged; everything else blocks. The category decides, not the reviewer.
+    Every review is public unless --relaxed asks for a relaxed one, which
+    is refused unless the clone is eligible ('git-scan relax') and the host
+    still reports the repository private. The reviewer reports each finding
+    under the entry it matched, and git-scan applies that entry's 'match'
+    ('relaxed' in a relaxed review): block is a finding, judgment is a
+    finding for you to look at, warn is a note that doesn't block. A
+    finding that matches no entry blocks in both modes.
 
     \b
     Findings are printed with the value and location; nothing is recorded
@@ -453,8 +458,11 @@ def patterns():
 
 @patterns.command("add")
 @click.argument("id")
-@click.option("--pattern", required=True, help="Regex to block (escape literal '.' etc.).")
+@click.option("--pattern", default=None, help="Regex to match (escape literal '.' etc.).")
 @click.option("--category", default=None, help="Label shown in findings, e.g. name, employer.")
+@click.option("--specifics", default=None, metavar="TEXT",
+              help="What the entry names, in words, for the privacy review ('the owner's "
+                   "street address'). An entry needs a pattern, specifics, or both.")
 @click.option("--word-boundary", is_flag=True, help="Match whole words only.")
 @click.option("--not-followed-by", multiple=True, metavar="TEXT",
               help="Don't match when this text follows (repeatable).")
@@ -463,37 +471,42 @@ def patterns():
 @click.option("--ignore-case/--no-ignore-case", default=None,
               help="Letter case is ignored by default; --no-ignore-case for a value that is "
                    "personal in one spelling only (a short name that is also a word).")
-@click.option("--judgment", is_flag=True,
-              help="A value for a reviewer to weigh in context; never scanned as a regex.")
-@click.option("--note", default=None, metavar="TEXT",
-              help="Guidance shown to a reviewer beside this entry.")
+@click.option("--match", default=None, type=click.Choice(up.MATCHES),
+              help="What a match does: block (the default), judgment (refused until you "
+                   "acknowledge it), warn (reported, the work proceeds) or ignore.")
+@click.option("--relaxed", default=None, type=click.Choice(up.MATCHES),
+              help="The same in a relaxed review (default: as --match).")
 @click.option("--project", is_flag=True, help="Write the repo's git-scan.yaml instead of yours.")
-def patterns_add(id, pattern, category, word_boundary, not_followed_by, exclude_file,
-                 ignore_case, judgment, note, project):
-    """Add a pattern: a regex that must never appear in a commit.
+def patterns_add(id, pattern, category, specifics, word_boundary, not_followed_by, exclude_file,
+                 ignore_case, match, relaxed, project):
+    """Add an entry: a regex the scan refuses, or a thing the review looks for.
 
     \b
     Examples:
-      git-scan patterns add my-name --pattern 'Jane Doe' --category name
+      git-scan patterns add my-name --pattern 'Jane Smith' --category name
       git-scan patterns add my-nick --pattern 'Jay' --category name --word-boundary --no-ignore-case
       git-scan patterns add cust-acme --pattern 'Acme Corporation' --category customer
       git-scan patterns add my-co --pattern 'Example Corp' --category employer --not-followed-by ' Cloud'
-      git-scan patterns add card-a --pattern '1234' --category last4 --judgment \\
-          --note 'flag only beside account, card, checking or a **** mask'
+      git-scan patterns add card-a --pattern '1234' --category last4 --match judgment \\
+          --specifics 'the last four digits of a card; a match only beside account, card or a **** mask'
+      git-scan patterns add my-street --specifics "the owner's street address" --category address
 
     Matching ignores letter case unless the entry says --no-ignore-case.
     ID is a handle for later edits (letters, digits, '.', '_', '-'); keep it
     free of the pattern text, since ids can appear in a repository's
     git-scan.yaml.
 
-    A --judgment entry is for a reviewer that weighs context (see
-    the privacy review), not for the scanner alone: a value that collides
-    with ordinary text as a regex but is sensitive in context.
+    An entry needs a --pattern (what the scan compiles), --specifics (what
+    the privacy review looks for, in words; shown beside a judgment match
+    too), or both. --match says what a match does, for the scan and the
+    review alike: block, judgment, warn or ignore; --relaxed the same in a
+    relaxed review. Set judgment when a match can't be trusted as a final
+    call, so each one is yours to acknowledge or fix.
     """
     try:
         up.add_pattern(id, pattern, category, word_boundary, list(not_followed_by),
                        list(exclude_file), project=project, ignore_case=ignore_case,
-                       judgment=judgment, note=note)
+                       specifics=specifics, match=match, relaxed=relaxed)
     except (up.PatternError, up.ConfigError) as e:
         _fail(e)
     click.echo(f"added '{id}'")
@@ -503,6 +516,8 @@ def patterns_add(id, pattern, category, word_boundary, not_followed_by, exclude_
 @click.argument("id")
 @click.option("--pattern", default=None, help="New regex.")
 @click.option("--category", default=None)
+@click.option("--specifics", default=None, metavar="TEXT",
+              help="Replaces what the entry names, in words ('' clears it).")
 @click.option("--word-boundary/--no-word-boundary", default=None)
 @click.option("--not-followed-by", multiple=True, metavar="TEXT",
               help="Replaces the whole list (repeatable); to add one exception, use "
@@ -510,22 +525,24 @@ def patterns_add(id, pattern, category, word_boundary, not_followed_by, exclude_
 @click.option("--exclude-file", multiple=True, metavar="GLOB",
               help="Replaces the list of file globs the pattern skips (repeatable).")
 @click.option("--ignore-case/--no-ignore-case", default=None)
-@click.option("--judgment/--no-judgment", default=None,
-              help="Hand the entry to a reviewer, or back to the scanner.")
-@click.option("--note", default=None, metavar="TEXT", help="Replaces the note ('' clears it).")
+@click.option("--match", default=None, type=click.Choice(up.MATCHES),
+              help="What a match does: block, judgment, warn or ignore.")
+@click.option("--relaxed", default=None, type=click.Choice(up.MATCHES + (up.RELAXED_DEFAULT,)),
+              help="The same in a relaxed review ('default' drops it: as --match again).")
 @click.option("--project", is_flag=True, help="Act on the repo's git-scan.yaml.")
-def patterns_edit(id, pattern, category, word_boundary, not_followed_by, exclude_file,
-                  ignore_case, judgment, note, project):
-    """Change a pattern's fields.
+def patterns_edit(id, pattern, category, specifics, word_boundary, not_followed_by, exclude_file,
+                  ignore_case, match, relaxed, project):
+    """Change an entry's fields.
 
     \b
     Examples:
       git-scan patterns edit my-co --not-followed-by ' Cloud' --not-followed-by '-sdk'
       git-scan patterns edit my-co --exclude-file 'docs/vendors.md'
       git-scan patterns edit my-co --exclude-file ''      (clears the list)
-      git-scan patterns edit my-town --judgment --note 'only beside an address'
+      git-scan patterns edit my-town --match judgment --specifics 'the town the owner lives in'
+      git-scan patterns edit my-tenant --match judgment --relaxed ignore
       git-scan patterns edit git-name-first --word-boundary --no-ignore-case
-      git-scan patterns edit git-name-last --no-judgment   (a finding again)
+      git-scan patterns edit git-name-last --match block   (refused again)
 
     Lists replace the previous value: --not-followed-by sets the whole
     exception list, so an omitted value is dropped. To add or drop one
@@ -533,16 +550,16 @@ def patterns_edit(id, pattern, category, word_boundary, not_followed_by, exclude
     Editing a built-in or an entry derived from this machine (layer
     'environment') writes an override into your layer rather than touching
     the source; the derived value itself is never written. Prefer
-    --judgment over 'patterns remove' for an entry that trips as a regex
-    but still matters: the reviewer keeps it.
+    --match judgment over 'patterns remove' for an entry that trips as a
+    regex but still matters: every match is still looked at.
     """
     try:
         up.edit_pattern(id, project=project, pattern=pattern, category=category,
+                        specifics=specifics if specifics is None else (specifics or False),
                         word_boundary=word_boundary,
                         not_followed_by=list(not_followed_by) or None,
                         exclude_files=list(exclude_file) or None,
-                        ignore_case=ignore_case, judgment=judgment,
-                        note=note if note is None else (note or False))
+                        ignore_case=ignore_case, match=match, relaxed=relaxed)
     except (up.PatternError, up.ConfigError) as e:
         _fail(e)
     click.echo(f"updated '{id}'")
@@ -568,7 +585,7 @@ def patterns_remove(id, project):
 @click.argument("id")
 @click.option("--project", is_flag=True, help="Act on the repo's git-scan.yaml.")
 def patterns_restore(id, project):
-    """Turn a built-in or derived pattern back on."""
+    """Turn a built-in or derived pattern back on (drops its 'match: ignore' override)."""
     try:
         click.echo(up.restore_pattern(id, project=project))
     except (up.PatternError, up.ConfigError) as e:
@@ -590,20 +607,23 @@ def patterns_clear(project):
 
 
 @patterns.command("list")
-@click.option("--all", "include_disabled", is_flag=True, help="Include turned-off patterns.")
-def patterns_list(include_disabled):
-    """Show every active pattern with the layer it comes from."""
+@click.option("--all", "include_ignored", is_flag=True, help="Include turned-off entries.")
+def patterns_list(include_ignored):
+    """Show every active entry with the layer it comes from and what a match does."""
     try:
-        rows = up.list_patterns(include_disabled=include_disabled)
+        rows = up.list_patterns(include_ignored=include_ignored)
     except up.ConfigError as e:
         _fail(e)
     width = max((len(r["id"]) for r in rows), default=2)
     for r in rows:
-        state = "  (off; restore with: git-scan patterns restore " + r["id"] + ")" if r["disabled"] else ""
+        off = r["match"] == "ignore"
+        state = "  (off; restore with: git-scan patterns restore " + r["id"] + ")" if off else ""
         cat = f" [{r['category']}]" if r["category"] else ""
-        kind = "  (judgment)" if r["judgment"] else ""
+        what = r["pattern"] or f"(specifics only) {r.get('specifics', '')}"
+        kind = f"  ({r['match']})" if r["match"] != "block" and not off else ""
+        relaxed = f"  (relaxed: {r['relaxed']})" if r.get("relaxed") else ""
         case = "  (case-sensitive)" if r.get("ignore_case") is False else ""
-        click.echo(f"  {r['id']:<{width}}  {r['layer']:<11} {r['pattern']}{cat}{kind}{case}{state}")
+        click.echo(f"  {r['id']:<{width}}  {r['layer']:<11} {what}{cat}{kind}{relaxed}{case}{state}")
 
 
 # --- notes ------------------------------------------------------------------
@@ -842,6 +862,39 @@ def config_path():
         if row["layer"] == "built-in":
             click.echo("  environment derived from this machine: git author name and email, "
                        "login name, home directory, .env  (not a file)")
+
+
+@config.command("migrate")
+@click.option("--yes", is_flag=True, help="Write without asking.")
+def config_migrate(yes):
+    """Rewrite your config files from the fields earlier versions wrote.
+
+    \b
+    In every entry of your user file and the repository's git-scan.yaml:
+      note: TEXT         becomes  specifics: TEXT
+      judgment: true     becomes  match: judgment
+      disabled: true     becomes  match: ignore
+
+    Prints the change to each file as a diff and anything validation would
+    still refuse, then writes on confirmation. Run by the owner, never by
+    an agent.
+    """
+    plans = up.migrate_plan()
+    todo = [p for p in plans if p["diff"]]
+    for p in plans:
+        if p["diff"]:
+            click.echo(p["diff"], nl=False)
+        else:
+            click.echo(f"{p['path']}: nothing to migrate")
+        if p["problems"]:
+            click.echo(click.style(f"still refused after migrating:\n{p['problems']}", fg="red"))
+    if not todo:
+        return
+    if not yes and not click.confirm(f"Write {len(todo)} file(s)?", default=False):
+        click.echo("nothing written")
+        return
+    for path in up.migrate_apply(todo):
+        click.echo(f"wrote {path}")
 
 
 def _setting_command(name: str):

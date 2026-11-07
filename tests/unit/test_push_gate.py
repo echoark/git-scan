@@ -148,7 +148,7 @@ def test_a_project_layer_cannot_lift_the_review_requirement(gate):
 
 def test_judgment_matches_in_a_commit_that_skipped_the_hook_are_cleared_by_ack(gate):
     _run("patterns", "add", "town", "--pattern", "Springfield", "--category", "city",
-         "--judgment", "--note", "only beside an address")
+         "--match", "judgment", "--specifics", "only beside an address")
     sha = _commit(gate, "notes.txt", "Springfield is a common town name\n", "--no-verify")
     refused = _push(gate)
     assert refused.returncode != 0
@@ -164,7 +164,7 @@ def test_judgment_matches_in_a_commit_that_skipped_the_hook_are_cleared_by_ack(g
 
 
 def test_ack_on_a_commit_does_not_clear_a_real_finding(gate):
-    _run("patterns", "add", "town", "--pattern", "Springfield", "--category", "city", "--judgment")
+    _run("patterns", "add", "town", "--pattern", "Springfield", "--category", "city", "--match", "judgment")
     sha = _commit(gate, "x.txt", "Springfield ghp_" + "f" * 36 + "\n", "--no-verify")
     r = _run("ack", "--commit", sha[:12])
     assert r.exit_code == 1 and "not acknowledged" in r.output and "x.txt:1" in r.output
@@ -173,7 +173,7 @@ def test_ack_on_a_commit_does_not_clear_a_real_finding(gate):
 
 def test_staged_ack_lets_the_commit_through_the_hook_and_is_consumed(gate):
     _run("patterns", "add", "town", "--pattern", "Springfield", "--category", "city",
-         "--judgment", "--note", "only beside an address")
+         "--match", "judgment", "--specifics", "only beside an address")
     (gate / "notes.txt").write_text("Springfield is a common town name\n")
     _git(gate, "add", "notes.txt")
     refused = _git(gate, "commit", "-q", "-m", "add notes", check=False)
@@ -199,7 +199,7 @@ def test_ack_with_nothing_to_acknowledge_says_so(gate):
     # login name are derived ones. With nothing staged, nothing matches.
     r = _run("ack")
     assert r.exit_code == 0 and "no judgment matches" in r.output
-    _run("patterns", "add", "town", "--pattern", "Springfield", "--category", "city", "--judgment")
+    _run("patterns", "add", "town", "--pattern", "Springfield", "--category", "city", "--match", "judgment")
     (gate / "a.txt").write_text("plain\n")
     _git(gate, "add", "a.txt")
     r = _run("ack")
@@ -247,7 +247,7 @@ def test_install_records_missing_config_help_and_a_real_commit_shows_it(gate, tm
 
 def test_a_judgment_match_in_the_commit_message_is_refused_until_acknowledged(gate):
     _run("patterns", "add", "town", "--pattern", "Springfield", "--category", "city",
-         "--judgment", "--note", "only beside an address")
+         "--match", "judgment", "--specifics", "only beside an address")
     (gate / "a.txt").write_text("clean\n")
     _git(gate, "add", "a.txt")
     refused = _git(gate, "commit", "-q", "-m", "Move the office to Springfield", check=False)
@@ -259,7 +259,7 @@ def test_a_judgment_match_in_the_commit_message_is_refused_until_acknowledged(ga
 
 
 def test_the_judgment_check_lists_the_guidance_before_the_matches(gate):
-    _run("patterns", "add", "town", "--pattern", "Springfield", "--category", "city", "--judgment")
+    _run("patterns", "add", "town", "--pattern", "Springfield", "--category", "city", "--match", "judgment")
     (gate / "a.txt").write_text("".join(f"Springfield line {i}\n" for i in range(12)))
     _git(gate, "add", "a.txt")
     r = _run("run")

@@ -46,10 +46,11 @@ def test_derived_entries_have_stable_ids_in_the_environment_layer(tmp_path, monk
     for id in ("git-name-full", "git-name-first", "git-name-last", "git-email", "local-username"):
         assert sources[id] == "environment", id
     by_id = {p["id"]: p for p in config.patterns}
-    assert by_id["git-name-full"]["category"] == "name" and "judgment" not in by_id["git-name-full"]
-    assert by_id["git-email"]["category"] == "email" and "judgment" not in by_id["git-email"]
-    assert by_id["git-name-first"]["judgment"] and by_id["git-name-last"]["judgment"]
-    assert "judgment" not in by_id["local-username"] and by_id["local-username"]["category"] == "username"
+    assert by_id["git-name-full"]["category"] == "name" and "match" not in by_id["git-name-full"]
+    assert by_id["git-email"]["category"] == "email" and "match" not in by_id["git-email"]
+    assert by_id["git-name-first"]["match"] == by_id["git-name-last"]["match"] == "judgment"
+    assert "match" not in by_id["local-username"] and by_id["local-username"]["category"] == "username"
+    assert all(by_id[i]["relaxed"] == "warn" for i in ("git-name-full", "git-name-last", "git-email", "local-username"))
     assert by_id["git-email"]["specifics"] == "the owner's email address"
     assert by_id["git-name-last"]["specifics"] == "the owner's given name or surname"
     assert all(p.get("specifics") for p in config.patterns if sources[p["id"]] in ("built-in", "environment"))
@@ -95,7 +96,7 @@ def test_a_common_word_first_name_can_be_turned_off_or_made_case_sensitive(tmp_p
     assert not _checks(repo, "ask Will about it\n")["Judgment"].passed
 
     r = _run("patterns", "remove", "git-name-first")
-    assert r.exit_code == 0 and "turned off the environment pattern" in r.output, r.output
+    assert r.exit_code == 0 and "it is now off" in r.output, r.output
     assert _checks(repo, "ask Will about it\n")["Judgment"].passed
     assert "git-name-first" not in _run("patterns", "list").output
     assert "git-name-first" in _run("patterns", "list", "--all").output
@@ -106,9 +107,9 @@ def test_a_common_word_first_name_can_be_turned_off_or_made_case_sensitive(tmp_p
 
 def test_a_derived_judgment_entry_can_be_made_a_finding_again(tmp_path, monkeypatch):
     repo = _repo(tmp_path, monkeypatch)
-    r = _run("patterns", "edit", "git-name-last", "--no-judgment")
+    r = _run("patterns", "edit", "git-name-last", "--match", "block")
     assert r.exit_code == 0, r.output
-    assert {"id": "git-name-last", "judgment": False} in yaml.safe_load(_user_file().read_text())["patterns"]
+    assert {"id": "git-name-last", "match": "block"} in yaml.safe_load(_user_file().read_text())["patterns"]
     checks = _checks(repo, "Smith360\n")
     assert not checks["Patterns"].passed and "[name] Smith" in checks["Patterns"].findings[0]
 
@@ -116,7 +117,7 @@ def test_a_derived_judgment_entry_can_be_made_a_finding_again(tmp_path, monkeypa
 def test_a_catalog_entry_for_the_same_value_governs(tmp_path, monkeypatch):
     repo = _repo(tmp_path, monkeypatch)
     r = _run("patterns", "add", "my-surname", "--pattern", "smith", "--category", "surname",
-             "--judgment", "--word-boundary", "--note", "a finding when it names the author")
+             "--match", "judgment", "--word-boundary", "--specifics", "a finding when it names the author")
     assert r.exit_code == 0, r.output
     config = load_config(str(repo))
     assert "git-name-last" not in config.pattern_sources          # suppressed
@@ -144,8 +145,10 @@ def test_env_values_still_block(tmp_path, monkeypatch):
     config = load_config(str(repo))
     assert config.pattern_sources["env-API_TOKEN"] == "environment"
     assert not any(p["id"].startswith("env-SHORT") for p in config.patterns)
-    # .env values never leave the machine: the reviewer's catalog has no env entry
-    assert not any(e["id"].startswith("env-") for e in export_patterns(str(repo))["patterns"])
+    # .env values never leave the machine: the reviewer gets the entry's specifics, never its value
+    env_rows = [e for e in export_patterns(str(repo))["patterns"] if e["id"].startswith("env-")]
+    assert env_rows and all("pattern" not in e and e["specifics"] for e in env_rows)
+    assert secret not in str(export_patterns(str(repo)))
     assert any(e["id"] == "git-name-last" for e in export_patterns(str(repo))["patterns"])
 
 
@@ -182,7 +185,8 @@ def test_patterns_info_counts_environment_entries(tmp_path, monkeypatch):
 def test_built_in_formats_are_case_sensitive_and_say_what_they_match(tmp_path, monkeypatch):
     repo = _repo(tmp_path, monkeypatch)
     config = load_config(str(repo))
-    built_in = [p for p in config.patterns if config.pattern_sources[p["id"]] == "built-in"]
+    built_in = [p for p in config.patterns if config.pattern_sources[p["id"]] == "built-in"
+                and p.get("category") in ("token", "key", "identifier")]
     assert len(built_in) == 17
     assert all(p["ignore_case"] is False and p["specifics"] for p in built_in)
     assert _checks(repo, "key = akia" + "a" * 16 + "\n")["Patterns"].passed      # a format, in its case only

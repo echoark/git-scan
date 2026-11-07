@@ -164,6 +164,10 @@ def run_scan(
     from it), and a scan of commits marks each clean commit ``scanned``. A
     refused message drops the staged record, so the commit it belongs to
     can't be marked by a retry that skips the hooks.
+
+    What a match on an entry does is the entry's own ``match`` (block,
+    judgment, warn or ignore) from the merged configuration; the scan reads
+    no per-clone state.
     """
     if only_step is not None and only_step not in set(get_step_names()):
         raise InvalidStepError(

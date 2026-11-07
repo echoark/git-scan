@@ -21,10 +21,12 @@ id                   value                                       default
 ``env-<KEY>``        a value of ``.env`` in the repository root  finding
 ===================  ==========================================  =========
 
-The parts of the name are judgment entries: a given name or a surname is
-often an ordinary word, so a match is listed for a look rather than
-refused. Everything else is a finding. Each entry carries ``specifics``,
-the thing it matches in words, for the reviewer.
+The parts of the name are judgment entries (``match: judgment``): a given
+name or a surname is often an ordinary word, so a match is listed for a
+look rather than refused. Everything else blocks. In a relaxed review every
+identity entry is a note (``relaxed: warn``), except ``.env`` values, which
+block there too. Each entry carries ``specifics``, the thing it matches in
+words, for the reviewer.
 
 The layer sits between the built-in and the user layer, so an override in
 the user layer (or a project's) wins, and is stored against the id, as an
@@ -115,10 +117,16 @@ def commit_identity(repo_path: str = ".") -> Tuple[str, str]:
     return _config("user.name"), _config("user.email")
 
 
-def _entry(id: str, value: str, category: str, judgment: bool, specifics: str) -> dict:
+def _entry(id: str, value: str, category: str, judgment: bool, specifics: str,
+           relaxed: Optional[str] = "warn") -> dict:
+    """A derived entry: ``match: judgment`` for a name part, ``block``
+    otherwise; in a relaxed review a note (``relaxed: warn``), except where
+    the caller says the value blocks there too (``.env`` values)."""
     entry = {"id": id, "pattern": re.escape(value), "category": category, "specifics": specifics}
     if judgment:
-        entry["judgment"] = True
+        entry["match"] = "judgment"
+    if relaxed:
+        entry["relaxed"] = relaxed
     entry["_value"] = value          # for the precedence check; dropped before use
     return entry
 
@@ -180,7 +188,7 @@ def derived_entries(repo_path: str = ".", governed_by: Iterable[str] = ()) -> Li
 
     for key, value in _env_values(repo_path):
         entries.append(_entry(ENV_PREFIX + (_ID_CHARS.sub("_", key) or "value"), value, "env", False,
-                              SPECIFICS["env"]))
+                              SPECIFICS["env"], relaxed=None))
 
     catalog = {t.lower() for t in governed_by if isinstance(t, str)}
     kept = []

@@ -4,7 +4,7 @@
   "properties": {
     "status": {"type": "string", "enum": ["completed", "failed"]},
     "failure_reason": {"type": ["string", "null"]},
-    "exposure_mode": {"type": "string", "enum": ["public", "relaxed"]},
+    "review_mode": {"type": "string", "enum": ["public", "relaxed"]},
     "commits_reviewed": {"type": "array", "items": {"type": "string"}},
     "findings": {
       "type": "array",
@@ -15,7 +15,8 @@
           "category": {"type": "string"},
           "value": {"type": "string"},
           "location": {"type": "string"},
-          "note": {"type": "string"}
+          "note": {"type": "string"},
+          "entry": {"type": ["string", "null"]}
         }
       }
     },

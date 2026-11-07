@@ -58,23 +58,36 @@ record on every outgoing commit when the configuration says so.
 ## Judgment matches at commit time
 
 A judgment entry in git-scan's configuration names a value that is
-sensitive only in context. The scan lists each match with the entry's note
-and refuses the commit until the agent has looked and run `git-scan ack`,
+sensitive only in context. The scan lists each match with the entry's
+specifics and refuses the commit until the agent has looked and run `git-scan ack`,
 which applies to exactly the staged content. The acknowledgement clears
 judgment matches only and is the committing agent's call; the review sees
 the same entries and judges every line on its own, so an acknowledgement
 never settles the review.
 
-## Exposure mode
+## Warnings
 
-Every review is public unless the agent asks for a relaxed one, and git-scan
-decides whether it may: the repository must be eligible (`git-scan relax`,
-which needs the host to report it private, or a host the user vouched for)
-and still private at review time. The skill adds what git-scan can't check:
-the user's own rules or instructions must identify the repository as
-personal, the public review must be blocking, and the user must consent.
+A `match: warn` entry's matches are listed under a passing `Warnings`
+check (`[WARN]`). The skill tells the agent that there is nothing to
+acknowledge and that every listed match goes into the report to the user:
+the entry's author chose in advance that the work proceeds, and the user
+still sees what matched.
+
+## Review mode
+
+Every review is public unless `git-scan review --relaxed` asks for a
+relaxed one, and git-scan refuses that unless the user made the clone
+eligible with `git-scan relax` (which needs the host to report the
+repository private, or a host the user vouched for) and the host, asked
+again, still reports it private. Each entry's `match` binds the scan and
+the review alike, and its `relaxed` value applies in a relaxed review, so
+the hook and the review never disagree about a value the user named. The
+skill adds what git-scan can't check: the user's own rules or instructions
+must identify the repository as personal, the public review must be
+blocking, and the user must consent to both the eligibility and the flag;
+the agent never runs `git-scan relax` or passes `--relaxed` on its own.
 Privacy alone is not enough, because private repositories are often shared
-or published later. Needs git-scan 0.9.0 or later.
+or published later. Needs git-scan 0.11.0 or later.
 
 ## Before the push
 

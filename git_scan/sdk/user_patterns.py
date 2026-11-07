@@ -5,7 +5,7 @@ CLI ``patterns`` and ``config`` commands are thin wrappers over them.
 
 Removing applies the intent "stop applying this pattern" whatever layer it
 lives in: an entry in the target layer is deleted; a built-in is turned off
-by writing ``disabled: true`` for its id into the target layer (built-ins
+by writing ``match: ignore`` for its id into the target layer (built-ins
 can't be deleted). ``restore`` turns a built-in back on.
 
 Writing rewrites the layer file from its parsed form, so hand-written
@@ -23,7 +23,8 @@ import yaml
 
 from .config import (
     load_layer, layer_paths, load_config, user_config_path, project_config_path,
-    CONFIG_FILENAME, THRESHOLD_KEYS, ConfigError,
+    CONFIG_FILENAME, THRESHOLD_KEYS, ConfigError, MATCHES, MIGRATED_FIELDS, entry_match,
+    validate_layer,
 )
 
 
@@ -51,28 +52,38 @@ def _entries(data: dict) -> List[dict]:
     return entries if isinstance(entries, list) else []
 
 
-def add_pattern(id: str, pattern: str, category: Optional[str] = None,
+def _check_match(name: str, value: Optional[str], extra: tuple = ()) -> None:
+    if value is not None and value not in MATCHES + extra:
+        raise PatternError(f"--{name} must be one of {', '.join(MATCHES + extra)}")
+
+
+def add_pattern(id: str, pattern: Optional[str] = None, category: Optional[str] = None,
                 word_boundary: bool = False, not_followed_by: Optional[List[str]] = None,
                 exclude_files: Optional[List[str]] = None,
                 repo_path: str = ".", project: bool = False,
-                ignore_case: Optional[bool] = None, judgment: bool = False,
-                note: Optional[str] = None) -> dict:
-    """Add a pattern to the user (or project) layer. Fails on a duplicate id.
+                ignore_case: Optional[bool] = None, specifics: Optional[str] = None,
+                match: Optional[str] = None, relaxed: Optional[str] = None) -> dict:
+    """Add an entry to the user (or project) layer. Fails on a duplicate id.
 
-    A judgment entry (``judgment=True``) is a value whose match is a judgment
-    call rather than a finding: it is reported for acknowledgement. ``note``
-    carries the guidance that goes with it (and is allowed on any entry).
+    An entry needs a ``pattern`` (a regex the scan compiles), ``specifics``
+    (the thing it names, in words, for the reviewer), or both. ``match`` is
+    what a match does (block, judgment, warn or ignore; block when absent)
+    and ``relaxed`` the same in a relaxed review (absent: as ``match``).
     Matching ignores letter case unless ``ignore_case`` is ``False``, which
     is the one value written.
     """
+    _check_match("match", match)
+    _check_match("relaxed", relaxed)
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", id):
         raise PatternError(f"'{id}' is not a valid id: use letters, digits, '.', '_' or '-'")
-    if not pattern:
-        raise PatternError("a pattern needs text")
-    try:
-        re.compile(pattern)
-    except re.error as e:
-        raise PatternError(f"'{pattern}' is not a valid regex: {e}")
+    if not pattern and not specifics:
+        raise PatternError("an entry needs a --pattern (a regex), --specifics (what it names, "
+                           "in words), or both")
+    if pattern:
+        try:
+            re.compile(pattern)
+        except re.error as e:
+            raise PatternError(f"'{pattern}' is not a valid regex: {e}")
 
     path = target_path(repo_path, project)
     data = _read(path)
@@ -80,9 +91,13 @@ def add_pattern(id: str, pattern: str, category: Optional[str] = None,
     if any(e.get("id") == id for e in entries):
         raise PatternError(f"'{id}' already exists in {path}; remove it first: "
                            f"git-scan patterns remove {id}")
-    entry: dict = {"id": id, "pattern": pattern}
+    entry: dict = {"id": id}
+    if pattern:
+        entry["pattern"] = pattern
     if category:
         entry["category"] = category
+    if specifics:
+        entry["specifics"] = specifics
     if word_boundary:
         entry["word_boundary"] = True
     if not_followed_by:
@@ -91,18 +106,19 @@ def add_pattern(id: str, pattern: str, category: Optional[str] = None,
         entry["exclude_files"] = list(exclude_files)
     if ignore_case is False:
         entry["ignore_case"] = False
-    if judgment:
-        entry["judgment"] = True
-    if note:
-        entry["note"] = note
+    if match and match != "block":
+        entry["match"] = match
+    if relaxed:
+        entry["relaxed"] = relaxed
     entries.append(entry)
     data["patterns"] = entries
     _write(path, data)
     return entry
 
 
-EDITABLE = ("pattern", "category", "word_boundary", "not_followed_by", "exclude_files",
-            "ignore_case", "judgment", "note")
+EDITABLE = ("pattern", "category", "specifics", "word_boundary", "not_followed_by",
+            "exclude_files", "ignore_case", "match", "relaxed")
+RELAXED_DEFAULT = "default"      # passed for relaxed: drop it, so a relaxed review follows match
 
 
 def edit_pattern(id: str, repo_path: str = ".", project: bool = False, **changes) -> dict:
@@ -114,10 +130,13 @@ def edit_pattern(id: str, repo_path: str = ".", project: bool = False, **changes
     A field set to its default (false, an empty list) is dropped from an
     entry this layer owns and written explicitly into an override, where it
     has to beat the lower layer's value. ``ignore_case`` defaults to true, so
-    false is always written."""
+    false is always written; ``match`` is always written, since an override
+    of ``block`` has to beat a lower layer's value too."""
     changes = {k: v for k, v in changes.items() if k in EDITABLE and v is not None}
     if not changes:
         raise PatternError("nothing to change")
+    _check_match("match", changes.get("match"))
+    _check_match("relaxed", changes.get("relaxed"), (RELAXED_DEFAULT,))
     config = load_config(repo_path)
     origin = _pattern_origin(id, config)
     if "pattern" in changes:
@@ -136,10 +155,18 @@ def edit_pattern(id: str, repo_path: str = ".", project: bool = False, **changes
     for k, v in changes.items():
         if isinstance(v, (list, tuple)):
             v = [x for x in v if x]          # an empty value clears the list
-        if v in ([], False) and k != "pattern" and k != "ignore_case" and owns:
+        if k == "relaxed" and v == RELAXED_DEFAULT:
+            mine.pop(k, None)                # a relaxed review follows match again
+        elif v in ([], False, "") and k not in ("pattern", "ignore_case") and owns:
             mine.pop(k, None)
+        elif k == "match" and v == "block" and owns:
+            mine.pop(k, None)                # the default; nothing to write
         else:
             mine[k] = list(v) if isinstance(v, (list, tuple)) else v
+    merged = {**next((p for p in config.all_patterns if p.get("id") == id), {}), **mine}
+    if not merged.get("pattern") and not merged.get("specifics"):
+        raise PatternError(f"'{id}' would have neither a pattern nor specifics; give it one, "
+                           f"or remove it: git-scan patterns remove {id}")
     data["patterns"] = entries
     _write(path, data)
     return mine
@@ -285,14 +312,14 @@ def remove_pattern(id: str, repo_path: str = ".", project: bool = False) -> str:
     inherited = origin is not None and origin != target_layer and (
         origin in ("built-in", "environment") or (origin == "user" and project))
     if inherited:
-        remaining.append({"id": id, "disabled": True})
+        override = dict(mine[0]) if mine else {"id": id}
+        override["match"] = "ignore"             # other overrides on it stay for 'restore'
+        remaining.append(override)
         data["patterns"] = remaining
         _write(path, data)
         where = {"built-in": "built in", "environment": "derived from this machine's environment",
                  "user": "from your user config"}[origin]
         scope = "this repository" if project else path
-        if mine:
-            return f"removed your version of '{id}' and turned off the {origin} pattern for {scope}"
         return f"'{id}' is {where}; it is now off for {scope}"
     if not mine:
         raise PatternError(f"'{id}' is defined in the {origin} layer, not in {path}; "
@@ -307,10 +334,13 @@ def restore_pattern(id: str, repo_path: str = ".", project: bool = False) -> str
     path = target_path(repo_path, project)
     data = _read(path)
     entries = _entries(data)
-    override = [e for e in entries if e.get("id") == id and e.get("disabled")]
-    if not override:
+    override = next((e for e in entries if e.get("id") == id and e.get("match") == "ignore"), None)
+    if override is None:
         raise PatternError(f"'{id}' is not turned off in {path}")
-    data["patterns"] = [e for e in entries if not (e.get("id") == id and e.get("disabled"))]
+    override.pop("match")
+    if list(override) == ["id"]:
+        entries.remove(override)
+    data["patterns"] = entries
     _write(path, data)
     return f"'{id}' is on again"
 
@@ -324,24 +354,26 @@ def clear_patterns(repo_path: str = ".", project: bool = False) -> str:
     return f"no personal patterns in {path}"
 
 
-def list_patterns(repo_path: str = ".", include_disabled: bool = False) -> List[dict]:
-    """Merged patterns with their source layer and state. ``ignore_case`` is
-    present only when false, the one value that differs from the default."""
+def list_patterns(repo_path: str = ".", include_ignored: bool = False) -> List[dict]:
+    """Merged entries with their source layer and what a match does. Every
+    row has ``match`` (``block`` when the entry doesn't say); ``relaxed``
+    appears when set, ``ignore_case`` only when false, the one value that
+    differs from the default."""
     config = load_config(repo_path)
     sources = config.pattern_sources
     rows = []
     for p in config.all_patterns:
-        if p.get("disabled") and not include_disabled:
+        match = entry_match(p)
+        if match == "ignore" and not include_ignored:
             continue
         row = {
             "id": p.get("id"),
             "pattern": p.get("pattern", ""),
             "category": p.get("category", ""),
             "layer": sources.get(p.get("id"), "user"),
-            "disabled": bool(p.get("disabled")),
-            "judgment": bool(p.get("judgment")),
+            "match": match,
         }
-        for optional in ("word_boundary", "not_followed_by", "exclude_files", "note", "specifics"):
+        for optional in ("specifics", "relaxed", "word_boundary", "not_followed_by", "exclude_files"):
             if p.get(optional):
                 row[optional] = p[optional]
         if p.get("ignore_case") is False:
@@ -350,29 +382,119 @@ def list_patterns(repo_path: str = ".", include_disabled: bool = False) -> List[
     return rows
 
 
-def export_patterns(repo_path: str = ".") -> dict:
-    """The catalog the privacy review sends to the reviewer: the active
-    personal entries (scan and judgment alike, with their notes), the
-    identity entries derived from this machine, and the free-text notes.
+def export_patterns(repo_path: str = ".", relaxed: bool = False) -> dict:
+    """The catalog the privacy review sends to the reviewer: every active
+    entry of the merged configuration, built in, derived or the owner's,
+    each with its id, category, pattern, specifics and the ``match`` that
+    binds the reviewer (the entry's ``relaxed`` value in a relaxed review),
+    plus the free-text notes.
 
-    Built-in token patterns are left out: a reviewer knows those formats, and
-    the list is about what is personal to this configuration. So are ``.env``
-    values: they are secrets, and the reviewer runs outside this machine.
+    A derived identity entry is sent with its specifics and its value, since
+    the reviewer must recognise the owner's name and address in prose;
+    ``.env`` values are sent as specifics only, because they are secrets and
+    the reviewer runs outside this machine. Entries whose match is
+    ``ignore`` in this mode are not in ``patterns``; those with a pattern
+    are listed under ``ignored`` for ``review.sort_findings`` alone.
     """
     config = load_config(repo_path)
-    sources = config.pattern_sources
-    entries = []
-    for row in list_patterns(repo_path):
-        if sources.get(row["id"]) == "built-in" or row["category"] == "env":
+    entries, ignored = [], []
+    for p in config.all_patterns:
+        match = entry_match(p, relaxed)
+        if match == "ignore":
+            if p.get("pattern") and p.get("category") != "env":
+                ignored.append({"id": p.get("id"), "pattern": p["pattern"], "match": match,
+                                **{k: p[k] for k in ("ignore_case", "word_boundary", "not_followed_by")
+                                   if k in p}})
             continue
-        row.pop("layer", None)
-        row.pop("disabled", None)
+        row = {"id": p.get("id"), "match": match}
+        if p.get("category"):
+            row["category"] = p["category"]
+        if p.get("pattern") and p.get("category") != "env":
+            row["pattern"] = p["pattern"]
+        if p.get("specifics"):
+            row["specifics"] = p["specifics"]
+        if p.get("ignore_case") is False:
+            row["ignore_case"] = False
+        for optional in ("word_boundary", "not_followed_by", "exclude_files"):
+            if p.get(optional):
+                row[optional] = p[optional]
         entries.append(row)
     return {
         "configured": config.user_patterns_defined,
         "patterns": entries,
         "notes": config.notes,
+        # not sent to the reviewer (review.build_prompt drops it): the pattern
+        # entries ignored in this mode, so a value one of them names is never
+        # a finding even when the reviewer reports it
+        "ignored": ignored,
     }
+
+
+# --- migration -------------------------------------------------------------
+
+def _migrate_entry(entry: dict) -> dict:
+    """One entry with the fields earlier versions wrote rewritten: ``note``
+    becomes ``specifics``, ``judgment: true`` becomes ``match: judgment``,
+    ``disabled: true`` becomes ``match: ignore``. A false flag is dropped."""
+    out = {}
+    for k, v in entry.items():
+        if k == "note":
+            out.setdefault("specifics", v)
+        elif k == "judgment":
+            if v:
+                out["match"] = "judgment"
+        elif k == "disabled":
+            if v:
+                out["match"] = "ignore"
+        else:
+            out[k] = v
+    return out
+
+
+def migrate_plan(repo_path: str = ".") -> List[dict]:
+    """What ``config migrate`` would do to the user and project files: for
+    each file, its path, the unified diff of the rewrite, and what
+    validation would still refuse afterwards. A file with nothing to
+    rewrite has an empty diff. Nothing is written."""
+    plans = []
+    for name, path in layer_paths(repo_path).items():
+        if name not in ("user", "project") or not path.is_file():
+            continue
+        try:                                  # raw: the file may not validate yet
+            data = yaml.safe_load(path.read_text()) or {}
+        except yaml.YAMLError as e:
+            plans.append({"layer": name, "path": path, "data": None, "diff": "",
+                          "problems": f"{path}: not valid YAML: {e}"})
+            continue
+        if not isinstance(data, dict):
+            plans.append({"layer": name, "path": path, "data": None, "diff": "",
+                          "problems": f"{path}: must be a mapping of sections"})
+            continue
+        entries = data.get("patterns")
+        new = dict(data)
+        if isinstance(entries, list):
+            new["patterns"] = [_migrate_entry(e) if isinstance(e, dict) else e for e in entries]
+        before = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
+        after = yaml.safe_dump(new, sort_keys=False, allow_unicode=True)
+        diff = "".join(difflib.unified_diff(before.splitlines(True), after.splitlines(True),
+                                             f"{path} (now)", f"{path} (migrated)"))
+        try:
+            validate_layer(new, str(path))
+            problems = ""
+        except ConfigError as e:
+            problems = str(e)
+        plans.append({"layer": name, "path": path, "data": new, "diff": diff, "problems": problems})
+    return plans
+
+
+def migrate_apply(plans: List[dict]) -> List[Path]:
+    """Write the migrated files of ``plans`` that have a diff; returns their paths."""
+    written = []
+    for plan in plans:
+        if plan["diff"]:
+            _write(plan["path"], plan["data"])
+            written.append(plan["path"])
+    return written
 
 
 # --- notes ------------------------------------------------------------------

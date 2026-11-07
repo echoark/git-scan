@@ -81,15 +81,17 @@ def repo(tmp_path, monkeypatch):
     assert _run("config", "review-runner", f"{sys.executable} {stub}").exit_code == 0
     assert _run("patterns", "add", "me", "--pattern", "Jane Doe", "--category", "name").exit_code == 0
     assert _run("patterns", "add", "town", "--pattern", "Springfield", "--category", "city",
-                "--judgment", "--note", "only beside an address").exit_code == 0
+                "--match", "judgment", "--specifics", "only beside an address").exit_code == 0
     assert _run("notes", "add", "a city is a finding only beside an address").exit_code == 0
     return r
 
 
-def _commit(repo, name, text="clean\n"):
+def _commit(repo, name, text="clean\n", verify=True):
+    """Commit one file; the fixture's hooks scan it unless ``verify`` is off
+    (for content that deliberately matches a judgment entry)."""
     (repo / name).write_text(text)
     _git(repo, "add", name)
-    _git(repo, "commit", "-q", "-m", f"add {name}")
+    _git(repo, "commit", "-q", "-m", f"add {name}", *([] if verify else ["--no-verify"]))
     return _git(repo, "rev-parse", "HEAD").stdout.strip()
 
 
@@ -111,13 +113,14 @@ def test_a_clean_review_marks_every_commit_and_the_prompt_holds_what_the_reviewe
     assert len(prompts) == 1
     p = prompts[0]
     assert "# Privacy review of commits" in p                 # the packaged instructions
-    assert "# Exposure mode\n\npublic" in p
-    assert '"pattern": "Jane Doe"' in p and '"judgment": true' in p   # catalog, with judgment entries
-    assert "only beside an address" in p                       # entry note and free-text note
+    assert "# Review mode\n\npublic" in p
+    assert '"pattern": "Jane Doe"' in p and '"match": "judgment"' in p   # entries, with what a match does
+    assert "only beside an address" in p                       # entry specifics and free-text note
     assert first[:12] in p and second[:12] in p
     assert "+alpha line" in p and "+beta line" in p and "add a.txt" in p   # patches and messages
     assert "# Publish text (1)" in p and "Because." in p
-    assert "github-pat" not in p                               # built-in token patterns stay out
+    assert '"id": "github-pat"' in p and '"id": "people"' in p   # the merged entries, built-ins included
+    assert "variants in spelling, case, spacing and form" in " ".join(p.split())   # the standing instruction
 
 
 def test_findings_are_printed_and_nothing_is_recorded(repo, monkeypatch):
@@ -293,20 +296,49 @@ def _eligible(repo):
     return _git(repo, "config", "--local", "--get", "git-scan.relaxed-remote", check=False).stdout.strip()
 
 
-def _relaxed_stub(monkeypatch, category):
-    """The stub reviewer reports one finding of this category."""
+def _relaxed_stub(monkeypatch, category, value="Pat Example", entry=None):
+    """The stub reviewer reports one finding of this category on this value
+    (by default one no catalog entry names), naming ``entry`` if given."""
     monkeypatch.setenv("STUB_MODE", "finding")
     stub = Path(os.environ["STUB_PROMPT_OUT"]).parent / "stub.py"
-    stub.write_text(STUB.replace('"category": "names"', f'"category": "{category}"'))
+    finding = f'"category": "{category}", "value": "{value}"'
+    if entry:
+        finding += f', "entry": "{entry}"'
+    stub.write_text(STUB.replace('"category": "names", "value": "Jane Doe"', finding))
 
 
-def test_every_review_is_public_without_the_flag(repo, tmp_path, gh):
+def test_every_review_is_public_unless_relaxed_is_asked_for(repo, tmp_path, gh):
+    """Eligibility by itself changes nothing: a review is public until
+    --relaxed asks, and the host is asked again for each relaxed review."""
+    _commit(repo, "a.txt")
+    _git(repo, "remote", "set-url", "origin", GITHUB_URL)
+    r = _run("review")
+    assert r.exit_code == 0, r.output
+    assert "# Review mode\n\npublic" in _prompts(tmp_path)[0]
+    assert "(public, " in r.output
+    assert _run("relax").exit_code == 0
+    _commit(repo, "b.txt")
+    r = _run("review")                        # eligible, not asked: still public
+    assert r.exit_code == 0, r.output
+    assert "# Review mode\n\npublic" in _prompts(tmp_path)[1]
+    assert gh.read_text().count("--jq .visibility") == 1        # only relax asked the host
+    _commit(repo, "c.txt")
+    r = _run("review", "--relaxed")
+    assert r.exit_code == 0, r.output
+    assert "# Review mode\n\nrelaxed" in _prompts(tmp_path)[2] and "(relaxed, " in r.output
+    assert gh.read_text().count("--jq .visibility") == 2        # asked again for the review
+    assert _run("review", "--public").exit_code == 2             # no such flag
+
+
+def test_an_eligible_clone_no_longer_private_refuses_a_relaxed_review(repo, tmp_path, gh, monkeypatch):
     _commit(repo, "a.txt")
     _git(repo, "remote", "set-url", "origin", GITHUB_URL)
     assert _run("relax").exit_code == 0
-    r = _run("review")                        # eligible, but not asked for
-    assert r.exit_code == 0, r.output
-    assert "# Exposure mode\n\npublic" in _prompts(tmp_path)[0]
+    monkeypatch.setenv("STUB_GH", "public")
+    r = _run("review", "--relaxed")
+    assert r.exit_code == 1 and "no relaxed review" in r.output
+    assert _prompts(tmp_path) == []                              # never run in another mode
+    assert _run("review").exit_code == 0                         # public needs no host
 
 
 def test_relax_marks_a_github_repository_reported_private_in_git_config(repo, tmp_path, gh):
@@ -325,7 +357,7 @@ def test_relax_marks_a_github_repository_reported_private_in_git_config(repo, tm
     assert gh.read_text().count("--jq .visibility") == 1        # nothing asked the second time
     r = _run("review", "--relaxed")
     assert r.exit_code == 0, r.output
-    assert "# Exposure mode\n\nrelaxed" in _prompts(tmp_path)[0]
+    assert "# Review mode\n\nrelaxed" in _prompts(tmp_path)[0]
     assert gh.read_text().count("--jq .visibility") == 2        # asked again for the review
 
 
@@ -396,7 +428,7 @@ def test_hosts_other_needs_allow_relaxed_and_is_never_asked(repo, tmp_path, gh):
     r = _run("relax")
     assert r.exit_code == 0 and "vouched for by the user" in r.output
     assert _run("review", "--relaxed").exit_code == 0
-    assert "# Exposure mode\n\nrelaxed" in _prompts(tmp_path)[0]
+    assert "# Review mode\n\nrelaxed" in _prompts(tmp_path)[0]
     assert not gh.exists()                                       # never asked about this host
     assert _run("hosts", "remove", "git.internal.example").exit_code == 0
     r = _run("review", "--relaxed")
@@ -438,62 +470,187 @@ def test_a_plugin_provider_is_used_like_a_built_in(repo, tmp_path, monkeypatch):
     assert r.exit_code == 0 and "verified private by src.corp.example" in r.output
 
 
-def test_in_a_relaxed_review_a_name_is_a_note_and_does_not_block(repo, tmp_path, gh, monkeypatch):
-    first = _commit(repo, "a.txt")
+def _relaxed(repo, gh):
     _git(repo, "remote", "set-url", "origin", GITHUB_URL)
     assert _run("relax").exit_code == 0
-    _relaxed_stub(monkeypatch, "names")
-    r = _run("review")                                           # public: a name blocks
-    assert r.exit_code == 1 and "[FAIL]" in r.output
+
+
+def test_a_finding_that_matches_no_entry_blocks_in_both_modes(repo, gh, monkeypatch):
+    sha = _commit(repo, "a.txt")
+    _relaxed(repo, gh)
+    _relaxed_stub(monkeypatch, "names")                          # a name no entry lists, unnamed
+    r = _run("review")
+    assert r.exit_code == 1 and "[FAIL]" in r.output and "Pat Example" in r.output
+    r = _run("review", "--relaxed")
+    assert r.exit_code == 1 and "[FAIL]" in r.output and "reviewed" not in marks.marks_on(sha)
+
+
+@pytest.mark.parametrize("entry", ["people", "trackers", "user-home-path", "git-email"])
+def test_a_warn_entry_is_a_note_in_a_relaxed_review_and_blocks_in_public(repo, gh, monkeypatch, entry):
+    """The built-in entries for other people, private trackers and home paths,
+    and the derived identity entries, block in public and are notes in a
+    relaxed review (relaxed: warn); the reviewer names the entry."""
+    value = {"people": "Pat Example", "trackers": "ABC-123", "user-home-path": "/home/pat/",
+             "git-email": "quill@example.com"}[entry]
+    sha = _commit(repo, "a.txt")
+    _relaxed(repo, gh)
+    _relaxed_stub(monkeypatch, "names", value=value, entry=entry)
+    assert _run("review").exit_code == 1
     r = _run("review", "--relaxed")
     assert r.exit_code == 0, r.output
-    assert "note:" in r.output and "Jane Doe" in r.output
-    assert marks.marks_on(first) >= {"reviewed"}
+    assert f"note:" in r.output and value in r.output and f"entry {entry}: warn" in r.output
+    assert "reviewed" in marks.marks_on(sha)
 
 
-@pytest.mark.parametrize("category", ["secrets", "account_ids", "financial", "last4", "made_up"])
-def test_in_a_relaxed_review_these_categories_still_block(repo, gh, monkeypatch, category):
-    """Secrets and identifiers block; so does any category the table doesn't
-    name, the owner's own pattern categories included (fail closed)."""
+@pytest.mark.parametrize("entry", ["personal-framing", "history"])
+def test_a_relaxed_ignore_entry_is_not_sent_to_the_reviewer(repo, tmp_path, gh, monkeypatch, entry):
+    """Personal framing and history narration are specifics-only built-ins:
+    reported (framing as a judgment call) in public, not even sent when
+    relaxed. A reviewer can only match what it was sent, so a finding it
+    puts under an id it was not given fits no entry and blocks like any
+    other, as a stranger's name would."""
     sha = _commit(repo, "a.txt")
-    _git(repo, "remote", "set-url", "origin", GITHUB_URL)
-    assert _run("relax").exit_code == 0
-    _relaxed_stub(monkeypatch, category)
+    _relaxed(repo, gh)
+    _relaxed_stub(monkeypatch, "framing", value="my laptop again", entry=entry)
+    r = _run("review")                                           # public: the entry blocks
+    assert r.exit_code == 1 and f'"id": "{entry}"' in _prompts(tmp_path)[0]
     r = _run("review", "--relaxed")
-    assert r.exit_code == 1 and "[FAIL]" in r.output and f"[{category}]" in r.output
-    assert "reviewed" not in marks.marks_on(sha)
+    assert f'"id": "{entry}"' not in _prompts(tmp_path)[1]
+    assert r.exit_code == 1 and "reviewed" not in marks.marks_on(sha)
 
 
-@pytest.mark.parametrize("category", ["personal_framing", "history_expose"])
-def test_in_a_relaxed_review_framing_is_dropped_even_when_the_reviewer_reports_it(repo, gh, monkeypatch,
-                                                                              category):
+@pytest.mark.parametrize("entry", ["credentials", "financial", "account-ids", "github-pat"])
+def test_block_entries_block_in_a_relaxed_review_too(repo, gh, monkeypatch, entry):
     sha = _commit(repo, "a.txt")
-    _git(repo, "remote", "set-url", "origin", GITHUB_URL)
-    assert _run("relax").exit_code == 0
-    _relaxed_stub(monkeypatch, category)
-    assert _run("review").exit_code == 1                         # public: framing blocks
+    _relaxed(repo, gh)
+    value = "ghp_" + "b" * 36 if entry == "github-pat" else "the balance is 1,234.56"
+    _relaxed_stub(monkeypatch, "secrets", value=value, entry=entry)
     r = _run("review", "--relaxed")
-    assert r.exit_code == 0, r.output                            # relaxed: dropped, not even a note
-    assert "note:" not in r.output and "reviewed" in marks.marks_on(sha)
+    assert r.exit_code == 1 and "[FAIL]" in r.output and "reviewed" not in marks.marks_on(sha)
 
 
-def test_relaxed_publish_text_alone_follows_the_same_table(repo, tmp_path, gh, monkeypatch):
+# --- the reviewer is bound to the entry: its match decides, never the label ----------
+
+def _tenant(repo):
+    """A judgment entry for a tenant name, described the way that once led a
+    reviewer to re-classify it as an account identifier; a note when relaxed."""
+    assert _run("patterns", "add", "tenant", "--pattern", "acme360", "--category", "domain",
+                "--match", "judgment", "--relaxed", "warn",
+                "--specifics", "the tenant name; a match when it identifies the owner's "
+                "account, not the product").exit_code == 0
+
+
+def test_the_prompt_carries_each_entrys_match_for_the_mode_and_what_the_scanner_found(repo, tmp_path, gh):
+    _tenant(repo)
+    _commit(repo, "a.txt", "the acme360 tenant\n", verify=False)
+    _relaxed(repo, gh)
+    assert _run("review").exit_code == 0
+    p = _prompts(tmp_path)[0]
+    tenant = p.index('"id": "tenant"')
+    assert '"match": "judgment"' in p[tenant:tenant + 200] and '"found": true' in p[tenant:tenant + 300]
+    me = p.index('"id": "me"')
+    assert '"match": "block"' in p[me:me + 200] and '"found"' not in p[me:me + 200]
+    assert '"relaxed"' not in p                                  # resolved: one match per mode
+    _commit(repo, "b.txt")
+    assert _run("review", "--relaxed").exit_code == 0
+    p = _prompts(tmp_path)[1]
+    tenant = p.index('"id": "tenant"')
+    assert '"match": "warn"' in p[tenant:tenant + 200]
+    assert '"id": "history"' not in p                            # relaxed: ignore, not sent
+
+
+def test_regression_a_judgment_entry_is_never_escalated_past_its_match(repo, gh, monkeypatch):
+    """The reviewer reports the tenant name as an account identifier, a
+    label that would block in every mode. The entry's match governs: in
+    public it is a judgment call, reported for a look; in a relaxed review
+    the entry says warn, so it is a note and the review passes."""
+    _tenant(repo)
+    sha = _commit(repo, "a.txt", "the acme360 tenant\n", verify=False)
+    _relaxed(repo, gh)
+    _relaxed_stub(monkeypatch, "account_ids", value="acme360")   # the entry is not even named
+    r = _run("review")                                           # public: judgment, for a look
+    assert r.exit_code == 1 and "[account_ids] acme360" in r.output
+    r = _run("review", "--relaxed")                              # relaxed: warn by the entry
+    assert r.exit_code == 0, r.output
+    assert "note:" in r.output and "entry tenant: warn in a relaxed review" in r.output
+    assert "reviewed" in marks.marks_on(sha)
+
+
+def test_a_relaxed_ignore_on_the_owners_pattern_entry_is_honoured(repo, tmp_path, gh, monkeypatch):
+    """A pattern entry the owner set to ignore when relaxed is not sent, and
+    a value it matches is dropped even when the reviewer reports it anyway:
+    the owner decided, and git-scan can check a pattern itself."""
+    assert _run("patterns", "add", "handle", "--pattern", "jsmith42", "--category", "custom",
+                "--match", "judgment", "--relaxed", "ignore").exit_code == 0
+    sha = _commit(repo, "a.txt", "jsmith42\n", verify=False)
+    _relaxed(repo, gh)
+    _relaxed_stub(monkeypatch, "names", value="jsmith42")        # not even named
+    assert _run("review").exit_code == 1                         # public: judgment blocks
+    r = _run("review", "--relaxed")
+    assert r.exit_code == 0 and "note:" not in r.output, r.output    # ignored: not even a note
+    assert '"id": "handle"' not in _prompts(tmp_path)[1] and "reviewed" in marks.marks_on(sha)
+
+
+def test_a_named_entry_whose_pattern_does_not_match_the_value_is_ignored(repo, gh, monkeypatch):
+    """A reviewer that labels a secret with a relaxed-ignore entry's id cannot
+    make the secret disappear: a pattern entry applies only when its pattern
+    matches the value."""
+    assert _run("patterns", "edit", "me", "--relaxed", "ignore").exit_code == 0
+    fake = "ghp_" + "c" * 36
+    sha = _commit(repo, "a.txt")
+    _relaxed(repo, gh)
+    _relaxed_stub(monkeypatch, "secrets", value=fake, entry="me")
+    r = _run("review", "--relaxed")
+    assert r.exit_code == 1 and "reviewed" not in marks.marks_on(sha)
+
+
+def test_a_partial_match_does_not_borrow_an_entrys_match(repo, gh, monkeypatch):
+    assert _run("patterns", "edit", "me", "--relaxed", "ignore").exit_code == 0
+    sha = _commit(repo, "a.txt")
+    _relaxed(repo, gh)
+    _relaxed_stub(monkeypatch, "secrets", value="password=Jane Doe2026!")
+    r = _run("review", "--relaxed")
+    assert r.exit_code == 1 and "reviewed" not in marks.marks_on(sha)
+
+
+def test_relaxed_publish_text_alone_follows_the_entries(repo, tmp_path, gh, monkeypatch):
     _commit(repo, "a.txt")
-    _git(repo, "remote", "set-url", "origin", GITHUB_URL)
+    _relaxed(repo, gh)
     _git(repo, "push", "-q", "origin", "main", check=False)
-    assert _run("relax").exit_code == 0
     (tmp_path / "body.md").write_text("A pull-request body.\n")
-    _relaxed_stub(monkeypatch, "names")
+    _relaxed_stub(monkeypatch, "names", entry="people")
     r = _run("review", "--relaxed", "--publish", str(tmp_path / "body.md"))
     assert r.exit_code == 0 and "note:" in r.output, r.output
 
 
-def test_the_verdict_table():
-    found = [{"category": c} for c in ("secrets", "names", "personal_framing", "employer")]
+def test_without_an_entry_every_finding_blocks_in_both_modes():
+    found = [{"category": c, "value": "v"} for c in ("secrets", "names", "personal_framing", "employer")]
     assert review.sort_findings(found, "public") == (found, [])
-    blocking, notes = review.sort_findings(found, "relaxed")
-    assert [f["category"] for f in blocking] == ["secrets", "employer"]
-    assert [f["category"] for f in notes] == ["names"]
+    assert review.sort_findings(found, "relaxed") == (found, [])
+    assert review.sort_findings(found, "relaxed", {"patterns": []}) == (found, [])
+
+
+def test_the_entrys_match_in_the_verdict():
+    catalog = {"patterns": [
+        {"id": "me", "pattern": "Jane Doe", "category": "name", "match": "warn"},
+        {"id": "card", "pattern": "1234", "category": "last4", "word_boundary": True, "match": "judgment"},
+        {"id": "people", "category": "people", "specifics": "another person's name", "match": "warn"},
+    ], "ignored": [{"id": "old-handle", "pattern": "jd[0-9]+", "match": "ignore"}]}
+    found = [{"category": "account_ids", "value": "Jane Doe"},            # whole match on a warn entry: a note
+             {"category": "names", "value": "'jane doe'", "entry": "me"},    # named, matches: a note
+             {"category": "financial", "value": "1234", "entry": "card"},    # judgment: blocks, for a look
+             {"category": "secrets", "value": "x1234y", "entry": "me"},      # named entry doesn't match: blocks
+             {"category": "secrets", "value": "Jane Doe2026"},               # partial: not the entry: blocks
+             {"category": "names", "value": "Pat Example", "entry": "people"},   # specifics only, named: a note
+             {"category": "names", "value": "Pat Example"},                  # unnamed, no pattern: blocks
+             {"category": "handles", "value": "jd42"},                        # an ignored pattern: dropped
+             {"category": "history", "value": "the agent did it", "entry": "history"}]   # unknown id: blocks
+    blocking, notes = review.sort_findings(found, "relaxed", catalog)
+    assert [f["value"] for f in notes] == ["Jane Doe", "'jane doe'", "Pat Example"]
+    assert [f["note"] for f in notes] == ["entry me: warn in a relaxed review"] * 2 + \
+        ["entry people: warn in a relaxed review"]
+    assert [f["value"] for f in blocking] == ["1234", "x1234y", "Jane Doe2026", "Pat Example", "the agent did it"]
+    assert blocking[0]["entry"] == "card"
 
 
 def test_no_severity_is_asked_for_or_shown(repo, tmp_path):
@@ -506,17 +663,21 @@ def test_every_finding_must_say_which_rule_it_breaks():
     data = Path(review.__file__).parent.parent / "data"
     schema = json.loads((data / "review-schema.json").read_text())
     assert "note" in schema["properties"]["findings"]["items"]["required"]
-    prompt = (data / "review-prompt.md").read_text()
-    assert "names the rule below that it breaks" in prompt
-    assert "report it as one" in prompt                       # unsure means a finding, not a warning
+    prompt = " ".join((data / "review-prompt.md").read_text().split())
+    assert "names the entry it matched" in prompt
+    assert "report it as a finding" in prompt                 # unsure means a finding, not a warning
     assert "Never use them to explain a call" in prompt
 
 
-def test_the_authors_own_setup_and_chores_are_a_public_finding():
+def test_the_prompt_is_the_entries_plus_one_standing_instruction():
+    """The exposure table and the prose about what to look for beyond the
+    catalog are gone: the merged entries carry the rules, and the prompt
+    adds one standing instruction about variants."""
     prompt = " ".join((Path(review.__file__).parent.parent / "data" / "review-prompt.md").read_text().split())
-    assert "The author's own setup and chores, findings in `public`" in prompt
-    assert "written for the project's users and contributors" in prompt
-    assert "a notice to whoever uses or contributes" in prompt     # a deprecation notice is not this finding
+    assert "Exposure mode" not in prompt and "beyond the catalog" not in prompt
+    assert "| public | relaxed |" not in prompt
+    assert "covers the value's variants in spelling, case, spacing and form" in prompt
+    assert "Put the entry's `id` in every finding's `entry` field" in prompt
 
 
 def test_public_prospective_refuses_eligibility_and_relaxed_reviews(repo, tmp_path, gh):

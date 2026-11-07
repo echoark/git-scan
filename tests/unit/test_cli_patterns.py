@@ -58,7 +58,7 @@ def test_remove_builtin_turns_it_off_and_restore_turns_it_on(tmp_path, monkeypat
     _repo(tmp_path, monkeypatch)
     r = _run("patterns", "remove", "github-pat")
     assert r.exit_code == 0 and "built in" in r.output
-    assert {"id": "github-pat", "disabled": True} in yaml.safe_load(_user_file().read_text())["patterns"]
+    assert {"id": "github-pat", "match": "ignore"} in yaml.safe_load(_user_file().read_text())["patterns"]
     listed = _run("patterns", "list", "--all").output
     assert "github-pat" in listed and "restore" in listed
     assert "github-pat" not in _run("patterns", "list").output
@@ -188,9 +188,9 @@ def test_project_remove_turns_off_a_user_pattern_for_that_repo_only(tmp_path, mo
     r = _run("patterns", "remove", "co", "--project")
     assert r.exit_code == 0 and "off for this repository" in r.output, r.output
     assert yaml.safe_load((repo / "git-scan.yaml").read_text()) == {
-        "patterns": [{"id": "co", "disabled": True}]}
+        "patterns": [{"id": "co", "match": "ignore"}]}
     # still in the user layer, still active elsewhere
-    assert any(e["id"] == "co" and "disabled" not in e
+    assert any(e["id"] == "co" and "match" not in e
                for e in yaml.safe_load(_user_file().read_text())["patterns"])
     (repo / "notes.md").write_text("Vendorco\n")
     subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
@@ -345,18 +345,18 @@ def test_edit_not_followed_by_still_replaces_and_points_at_exceptions_add(tmp_pa
     assert _entry(_user_file(), "co")["not_followed_by"] == ["-sdk"]
     assert "exceptions add" in _run("patterns", "edit", "--help").output
 
-def test_add_judgment_entry_with_note_and_case_sensitivity(tmp_path, monkeypatch):
+def test_add_judgment_entry_with_specifics_and_case_sensitivity(tmp_path, monkeypatch):
     _repo(tmp_path, monkeypatch)
     r = _run("patterns", "add", "card-a", "--pattern", "1234", "--category", "last4",
-             "--judgment", "--note", "only beside account or card")
+             "--match", "judgment", "--specifics", "only beside account or card")
     assert r.exit_code == 0, r.output
     r = _run("patterns", "add", "me", "--pattern", "Jane", "--category", "name", "--no-ignore-case")
     assert r.exit_code == 0, r.output
     r = _run("patterns", "add", "co", "--pattern", "Vendorco", "--ignore-case")   # the default
     assert r.exit_code == 0, r.output
     data = yaml.safe_load(_user_file().read_text())
-    assert {"id": "card-a", "pattern": "1234", "category": "last4", "judgment": True,
-            "note": "only beside account or card"} in data["patterns"]
+    assert {"id": "card-a", "pattern": "1234", "category": "last4",
+            "specifics": "only beside account or card", "match": "judgment"} in data["patterns"]
     assert {"id": "me", "pattern": "Jane", "category": "name", "ignore_case": False} in data["patterns"]
     assert {"id": "co", "pattern": "Vendorco"} in data["patterns"]      # nothing to write
     out = _run("patterns", "list").output
@@ -364,7 +364,10 @@ def test_add_judgment_entry_with_note_and_case_sensitivity(tmp_path, monkeypatch
     user_rows = [ln for ln in out.splitlines() if "  user " in ln]
     assert [ln for ln in user_rows if "(case-sensitive)" in ln] == \
         [ln for ln in user_rows if ln.strip().startswith("me ")]
-    assert all("(case-sensitive)" in ln for ln in out.splitlines() if "  built-in " in ln)
+    formats = [ln for ln in out.splitlines() if "  built-in " in ln
+               and any(f"[{c}]" in ln for c in ("token", "key", "identifier"))]
+    assert formats and all("(case-sensitive)" in ln for ln in formats)
+    assert "(specifics only)" in out and "(relaxed: warn)" in out       # entries for the review alone
 
 
 def test_notes_add_list_remove(tmp_path, monkeypatch):
@@ -384,13 +387,15 @@ def test_notes_add_list_remove(tmp_path, monkeypatch):
 def test_edit_moves_entry_between_scanner_and_judgment(tmp_path, monkeypatch):
     _repo(tmp_path, monkeypatch)
     _run("patterns", "add", "town", "--pattern", "Springfield", "--category", "city")
-    r = _run("patterns", "edit", "town", "--judgment", "--note", "only beside an address")
+    r = _run("patterns", "edit", "town", "--match", "judgment", "--specifics", "only beside an address")
     assert r.exit_code == 0, r.output
     entry = yaml.safe_load(_user_file().read_text())["patterns"][0]
-    assert entry["judgment"] is True and entry["note"] == "only beside an address"
+    assert entry["match"] == "judgment" and entry["specifics"] == "only beside an address"
     r = _run("patterns", "edit", "town", "--pattern", "(")     # a judgment entry is still a regex
     assert r.exit_code == 1 and "not a valid regex" in r.output
-    r = _run("patterns", "edit", "town", "--no-judgment", "--note", "")
+    r = _run("patterns", "edit", "town", "--match", "block", "--specifics", "")
     assert r.exit_code == 0, r.output
     entry = yaml.safe_load(_user_file().read_text())["patterns"][0]
-    assert "judgment" not in entry and "note" not in entry
+    assert "match" not in entry and "specifics" not in entry           # block is the default: nothing to write
+    r = _run("patterns", "edit", "town", "--pattern", "", "--specifics", "")
+    assert r.exit_code == 1 and "neither a pattern nor specifics" in r.output
