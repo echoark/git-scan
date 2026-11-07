@@ -1,14 +1,19 @@
-"""Layered YAML config: package defaults → user → project.
+"""Layered YAML config: package defaults → environment → user → project.
 
-Three layers are merged with higher layers winning:
+Four layers are merged with higher layers winning:
   1. Package defaults (shipped with git-scan)
-  2. User config (``$XDG_CONFIG_HOME/git-scan/git-scan.yaml``,
+  2. The environment: pattern entries derived from this machine (the git
+     author name and its parts, the git email, the login name, the home
+     directory name, ``.env`` values; see ``environment``). Not a file.
+  3. User config (``$XDG_CONFIG_HOME/git-scan/git-scan.yaml``,
      default ``~/.config/git-scan/git-scan.yaml``)
-  3. Project config (``./git-scan.yaml`` in the repo root)
+  4. Project config (``./git-scan.yaml`` in the repo root)
 
 Uses the yaml-config-merge snippet for merging. Arrays of dicts are
 merged by composite key (id, name). Setting ``disabled: true`` on an
 inherited pattern suppresses it. Scalars and plain dicts: higher layer wins.
+Every matcher the scan applies, built in, derived or the user's own, is a
+pattern entry in this merge, so the user's flags on an id always apply.
 
 Every layer is validated when loaded. A broken file fails the scan with the
 file, the spot, and the command that fixes it, rather than silently
@@ -34,12 +39,15 @@ from typing import Optional
 
 import yaml
 
-from .yaml_merge import merge_yaml_configs
+from .environment import derived_entries, is_derived_id
+from .yaml_merge import _merge_dicts
 
 PACKAGE_DEFAULTS = Path(__file__).parent.parent / "data" / "git-scan.yaml"
 CONFIG_FILENAME = "git-scan.yaml"
 
-LAYERS = ("built-in", "user", "project")
+LAYERS = ("built-in", "environment", "user", "project")
+FILE_LAYERS = ("built-in", "user", "project")     # the environment layer is derived, not read
+MERGE_KEYS = ["id", "name"]
 
 TOP_LEVEL_KEYS = {"entropy", "thresholds", "patterns", "allowed_emails", "identity", "push",
                   "notes", "review"}
@@ -319,7 +327,8 @@ class MergedConfig:
 
     @property
     def pattern_sources(self) -> dict:
-        """Pattern id -> layer that first defines it."""
+        """Pattern id -> layer that first defines it (``environment`` for an
+        entry derived from this machine)."""
         sources: dict = {}
         for name in LAYERS:
             layer = self.layers.get(name) or {}
@@ -330,16 +339,17 @@ class MergedConfig:
 
     @property
     def pattern_counts(self) -> dict:
-        """Active patterns by origin: built-in vs personal (user or project),
-        with judgment entries counted apart since their matches are not findings."""
+        """Active patterns by origin: built-in, environment (derived from this
+        machine) or personal (user or project), with judgment entries counted
+        apart since their matches are not findings."""
         sources = self.pattern_sources
-        counts = {"built-in": 0, "personal": 0, "judgment": 0}
+        counts = {"built-in": 0, "environment": 0, "personal": 0, "judgment": 0}
         for p in self.patterns:
             if p.get("judgment"):
                 counts["judgment"] += 1
                 continue
             origin = sources.get(p.get("id"), "user")
-            counts["built-in" if origin == "built-in" else "personal"] += 1
+            counts[origin if origin in ("built-in", "environment") else "personal"] += 1
         return counts
 
     @property
@@ -391,22 +401,41 @@ class MergedConfig:
                    for layer in self.layers.values())
 
 
+def _catalog_texts(layers: dict) -> list:
+    """The pattern texts of the user and project layers: a derived value one
+    of them equals is governed by that entry, not by the environment layer."""
+    texts = []
+    for name in ("user", "project"):
+        for p in (layers.get(name) or {}).get("patterns") or []:
+            if isinstance(p, dict) and isinstance(p.get("pattern"), str):
+                texts.append(p["pattern"])
+    return texts
+
+
 def load_config(repo_path: str = ".") -> MergedConfig:
-    """Load, validate, and merge config from all three layers.
+    """Load, validate, and merge config from all layers: the three files and
+    the environment layer derived from this machine.
 
     Raises ConfigError if any layer is invalid.
     """
     paths = layer_paths(repo_path)
     layers = {name: load_layer(path) for name, path in paths.items()}
+    layers["environment"] = {"patterns": derived_entries(repo_path, _catalog_texts(layers))}
 
-    present = [paths[name] for name in LAYERS if layers[name] is not None]
-    try:
-        merged = merge_yaml_configs(present, key_fields=["id", "name"])
-    except FileNotFoundError:
-        merged = {}
+    merged: dict = {}
+    for name in LAYERS:
+        if layers[name] is not None:
+            merged = _merge_dicts(merged, layers[name], MERGE_KEYS)
 
     config = MergedConfig(raw=merged, layers=layers)
     missing = [p.get("id") for p in config.patterns if not p.get("pattern")]
+    # An override of an environment entry this machine doesn't derive (a
+    # one-word git name has no parts; another machine's .env key) has nothing
+    # to apply to; it is left in place for the machine it was written on.
+    orphans = {pid for pid in missing if is_derived_id(pid)}
+    if orphans:
+        merged["patterns"] = [p for p in merged.get("patterns", []) if p.get("id") not in orphans]
+        missing = [pid for pid in missing if pid not in orphans]
     if missing:
         where = {pid: paths[config.pattern_sources.get(pid, "user")] for pid in missing}
         raise ConfigError("\n".join(

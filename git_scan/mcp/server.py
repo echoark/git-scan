@@ -50,7 +50,8 @@ async def scan_repo(
       will not scan the clean commits again; the result's ``commits`` and
       ``marked`` list them.
 
-    Config is loaded from three layers (package defaults, user
+    Config is loaded from four layers (package defaults, entries derived
+    from the machine such as the git author name, user
     ~/.config/git-scan/git-scan.yaml, project ./git-scan.yaml).
 
     Args:

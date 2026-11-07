@@ -7,7 +7,8 @@ git_scan/
   sdk/                  # all behavior
     sources.py          # what a scan reads: staged diff, message, commit log, names
     scanner.py          # orchestration: config check, input, steps, marks, push scan
-    config.py           # three-layer config, validation, pattern provenance
+    config.py           # four-layer config, validation, pattern provenance
+    environment.py      # the environment layer: identity patterns derived from the machine
     user_patterns.py    # patterns add/remove/restore/clear/list/exceptions, settings
     hooks.py            # hook installation and status: pre-commit, commit-msg, push gate
     marks.py            # marks on commits, staged-tree records, outgoing commits for a push
@@ -109,12 +110,20 @@ is the only reader of `identities`, and reports nothing for a message scan
 checks likewise report nothing for a message scan.
 
 **Which checks apply to names.** Literal-string and anchored-format checks
-do: personal patterns, the user's own names from the environment, emails,
-SSN/EIN. Shape and statistical detectors do not: tokens, UUIDs, hex
-strings, entropy, dollar amounts. Names are full of hashes and version
-strings and those detectors would misfire. Personal patterns with
-`word_boundary` or `not_followed_by` are also excluded from names: they are
-tuned for prose and misfire on names like `vendor-tasks/`.
+do: personal patterns, the derived entries whose match is a finding (the
+git name and email), emails, SSN/EIN. Shape and statistical detectors do
+not: tokens, UUIDs, hex strings, `.env` values, entropy, dollar amounts.
+Names are full of hashes and version strings and those detectors would
+misfire. Personal patterns with `word_boundary` or `not_followed_by` are
+also excluded from names: they are tuned for prose and misfire on names
+like `vendor-tasks/`. Judgment entries are excluded too: a name has no
+acknowledgement flow, so a judgment match there could only block.
+
+**Every matcher is a pattern entry.** The built-in patterns, the entries
+derived from the machine (`sdk/environment.py`) and the user's own all go
+through `compile_patterns` in `sdk/steps/patterns.py`, which applies the
+entry's flags. No check compiles a string of its own into a matcher: a
+matcher that bypassed the merge would bypass the user's flags on it.
 
 **Checks declare themselves by existing.** Any module in `sdk/steps/` with a
 `run_checks(repo_path, config=None, scan_input=None, **kwargs)` function is
@@ -134,13 +143,37 @@ runner converts an exception into a failing check.
 
 ## Configuration
 
-Three layers (built-in, user, project) merge with
+Four layers (built-in, environment, user, project) merge with
 `sdk/yaml_merge.py`, a managed copy of the `yaml-config-merge` snippet:
 sections merge key by key, lists of entries merge by `id` with later layers
 updating fields, scalars are replaced. Do not edit that file without
-updating the snippet it is copied from.
+updating the snippet it is copied from. The environment layer is not a
+file: `config.load_config` builds it from `environment.derived_entries`
+and merges the parsed layers with the snippet's `_merge_dicts`.
 
 Rules:
+
+- **The environment layer holds the machine's identity as entries.** The
+  git author name (`git-name-full`), its parts of more than two characters
+  (`git-name-first` / `git-name-last`, or `git-name-part-N` for a name of
+  three parts or more), the git email (`git-email`), the login name
+  (`local-username`), the home directory name when it differs
+  (`home-dir`), and each `.env` value longer than eight characters
+  (`env-KEY`). The full name, the email and `.env` values are findings;
+  the rest are judgment entries, since they are often ordinary words. The
+  layer sits below the user layer so an override wins, and the override is
+  stored against the id like a built-in's; the derived value is never
+  written to a file. A user or project entry whose `pattern` equals a
+  derived value (compared without regard to case, escaped or not) governs,
+  and the derived entry is dropped. An override whose derived entry this
+  machine doesn't produce (a one-word name has no parts) is ignored
+  rather than failing the scan as an entry without a pattern.
+- **`ignore_case` defaults to true.** `compile_patterns` treats an absent
+  key as true and only an explicit `false` as case-sensitive, so the one
+  value ever written is `ignore_case: false` (`--no-ignore-case`).
+  `patterns edit` writes a field set to its default (false, an empty list)
+  only into an override, where it has to beat the lower layer's value;
+  `ignore_case: false` is always written, since the default is true.
 
 - **Every layer is validated on load** (`config.validate_layer`): known
   sections and fields, types, compiling regexes. A bare `patterns:` (YAML
@@ -387,9 +420,10 @@ machine the tests run on:
 | Variable | Set to | Hides |
 |---|---|---|
 | `XDG_CONFIG_HOME` | a temp dir holding a user layer with `patterns: []` | the developer's personal patterns; also where `hooks.default_hooks_dir()` resolves |
-| `GIT_CONFIG_GLOBAL` | a temp file with a test name and email | the developer's global git config, including `core.hooksPath` |
+| `GIT_CONFIG_GLOBAL` | a temp file with a sandbox name and email (`Quill Sandboxer`, words no fixture uses by accident, since the name's parts are case-insensitive judgment entries) | the developer's global git config, including `core.hooksPath` |
 | `GIT_CONFIG_NOSYSTEM` | `1` | the system git config |
-| `USER` | `testuser` | the developer's username in dynamic patterns |
+| `USER` | `testuser` | the developer's login name in the derived patterns |
+| `HOME` | a temp directory named `root`, a system account name that is not derived | the developer's home directory name in the derived patterns |
 | `GIT_AUTHOR_EMAIL` etc. | unset | any identity override in the shell |
 
 Consequences, each pinned by a test in `tests/unit/test_isolation.py`:

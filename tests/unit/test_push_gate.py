@@ -195,8 +195,10 @@ def test_staged_ack_lets_the_commit_through_the_hook_and_is_consumed(gate):
 
 
 def test_ack_with_nothing_to_acknowledge_says_so(gate):
+    # Judgment entries always exist here: the sandbox's git name parts and
+    # login name are derived ones. With nothing staged, nothing matches.
     r = _run("ack")
-    assert r.exit_code == 0 and "no judgment entries" in r.output
+    assert r.exit_code == 0 and "no judgment matches" in r.output
     _run("patterns", "add", "town", "--pattern", "Springfield", "--category", "city", "--judgment")
     (gate / "a.txt").write_text("plain\n")
     _git(gate, "add", "a.txt")

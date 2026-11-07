@@ -439,7 +439,16 @@ def _fail(e: Exception) -> None:
 
 @cli.group()
 def patterns():
-    """Personal patterns: strings that must never appear in a commit."""
+    """Personal patterns: strings that must never appear in a commit.
+
+    Every matcher is an entry with an id: the built-in token patterns, your
+    own, and the entries derived from this machine (layer 'environment':
+    git-name-full, git-name-first / git-name-last, git-email,
+    local-username, home-dir, env-KEY). 'patterns list' shows them all, and
+    'edit', 'exceptions', 'remove' and 'restore' act on any of them by id;
+    a change to a built-in or derived entry is stored as an override in
+    your layer, never by rewriting the source.
+    """
 
 
 @patterns.command("add")
@@ -451,7 +460,9 @@ def patterns():
               help="Don't match when this text follows (repeatable).")
 @click.option("--exclude-file", multiple=True, metavar="GLOB",
               help="Don't apply in files matching this glob (repeatable).")
-@click.option("--ignore-case", is_flag=True, help="Match regardless of letter case.")
+@click.option("--ignore-case/--no-ignore-case", default=None,
+              help="Letter case is ignored by default; --no-ignore-case for a value that is "
+                   "personal in one spelling only (a short name that is also a word).")
 @click.option("--judgment", is_flag=True,
               help="A value for a reviewer to weigh in context; never scanned as a regex.")
 @click.option("--note", default=None, metavar="TEXT",
@@ -463,12 +474,14 @@ def patterns_add(id, pattern, category, word_boundary, not_followed_by, exclude_
 
     \b
     Examples:
-      git-scan patterns add my-name --pattern 'Jane Doe' --category name --ignore-case
+      git-scan patterns add my-name --pattern 'Jane Doe' --category name
+      git-scan patterns add my-nick --pattern 'Jay' --category name --word-boundary --no-ignore-case
       git-scan patterns add cust-acme --pattern 'Acme Corporation' --category customer
       git-scan patterns add my-co --pattern 'Example Corp' --category employer --not-followed-by ' Cloud'
       git-scan patterns add card-a --pattern '1234' --category last4 --judgment \\
           --note 'flag only beside account, card, checking or a **** mask'
 
+    Matching ignores letter case unless the entry says --no-ignore-case.
     ID is a handle for later edits (letters, digits, '.', '_', '-'); keep it
     free of the pattern text, since ids can appear in a repository's
     git-scan.yaml.
@@ -511,13 +524,17 @@ def patterns_edit(id, pattern, category, word_boundary, not_followed_by, exclude
       git-scan patterns edit my-co --exclude-file 'docs/vendors.md'
       git-scan patterns edit my-co --exclude-file ''      (clears the list)
       git-scan patterns edit my-town --judgment --note 'only beside an address'
+      git-scan patterns edit git-name-first --word-boundary --no-ignore-case
+      git-scan patterns edit git-name-last --no-judgment   (a finding again)
 
     Lists replace the previous value: --not-followed-by sets the whole
     exception list, so an omitted value is dropped. To add or drop one
     exception and keep the rest, use 'patterns exceptions add / remove'.
-    Editing a built-in writes an override into your layer rather than
-    touching the package. Prefer --judgment over 'patterns remove' for an
-    entry that trips as a regex but still matters: the reviewer keeps it.
+    Editing a built-in or an entry derived from this machine (layer
+    'environment') writes an override into your layer rather than touching
+    the source; the derived value itself is never written. Prefer
+    --judgment over 'patterns remove' for an entry that trips as a regex
+    but still matters: the reviewer keeps it.
     """
     try:
         up.edit_pattern(id, project=project, pattern=pattern, category=category,
@@ -537,9 +554,9 @@ def patterns_edit(id, pattern, category, word_boundary, not_followed_by, exclude
 def patterns_remove(id, project):
     """Stop applying a pattern.
 
-    Deletes an entry you own; a built-in (or, with --project, one of yours)
-    is turned off for that layer's scope instead. 'patterns restore' undoes
-    the latter.
+    Deletes an entry you own; a built-in, an entry derived from this
+    machine, or (with --project) one of yours is turned off for that
+    layer's scope instead. 'patterns restore' undoes the latter.
     """
     try:
         click.echo(up.remove_pattern(id, project=project))
@@ -551,7 +568,7 @@ def patterns_remove(id, project):
 @click.argument("id")
 @click.option("--project", is_flag=True, help="Act on the repo's git-scan.yaml.")
 def patterns_restore(id, project):
-    """Turn a built-in pattern back on."""
+    """Turn a built-in or derived pattern back on."""
     try:
         click.echo(up.restore_pattern(id, project=project))
     except (up.PatternError, up.ConfigError) as e:
@@ -585,7 +602,8 @@ def patterns_list(include_disabled):
         state = "  (off; restore with: git-scan patterns restore " + r["id"] + ")" if r["disabled"] else ""
         cat = f" [{r['category']}]" if r["category"] else ""
         kind = "  (judgment)" if r["judgment"] else ""
-        click.echo(f"  {r['id']:<{width}}  {r['layer']:<8} {r['pattern']}{cat}{kind}{state}")
+        case = "  (case-sensitive)" if r.get("ignore_case") is False else ""
+        click.echo(f"  {r['id']:<{width}}  {r['layer']:<11} {r['pattern']}{cat}{kind}{case}{state}")
 
 
 # --- notes ------------------------------------------------------------------
@@ -820,7 +838,10 @@ def config_path():
     """Show each config layer's file and whether it exists."""
     for row in up.layer_status():
         mark = "present" if row["exists"] else "absent"
-        click.echo(f"  {row['layer']:<9} {row['path']}  ({mark})")
+        click.echo(f"  {row['layer']:<11} {row['path']}  ({mark})")
+        if row["layer"] == "built-in":
+            click.echo("  environment derived from this machine: git author name and email, "
+                       "login name, home directory, .env  (not a file)")
 
 
 def _setting_command(name: str):
