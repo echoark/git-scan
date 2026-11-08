@@ -110,7 +110,7 @@ is the only reader of `identities`, and reports nothing for a message scan
 checks likewise report nothing for a message scan.
 
 **Which checks apply to names.** Literal-string and anchored-format checks
-do: personal patterns, the derived entries whose match is a finding (the
+do: personal patterns, the derived entries whose match is `block` (the
 git name and email), emails, SSN/EIN. Shape and statistical detectors do
 not: tokens, UUIDs, hex strings, `.env` values, entropy, dollar amounts.
 Names are full of hashes and version strings and those detectors would
@@ -159,10 +159,12 @@ Rules:
   three parts or more), the git email (`git-email`), the login name
   (`local-username`), the home directory name when it differs
   (`home-dir`), and each `.env` value longer than eight characters
-  (`env-KEY`). The parts of the name are judgment entries, since a given
-  name or a surname is often an ordinary word; everything else is a
-  finding. Each carries `specifics`, the thing it matches in words, as
-  every built-in entry does. The
+  (`env-KEY`). The parts of the name are judgment entries (`match:
+  judgment`), since a given name or a surname is often an ordinary word;
+  everything else blocks. Every identity entry says `relaxed: warn`, so a
+  relaxed review shows it as a note; `.env` values block there too. Each
+  carries `specifics`, the thing it matches in words, as every built-in
+  entry does. The
   layer sits below the user layer so an override wins, and the override is
   stored against the id like a built-in's; the derived value is never
   written to a file. A user or project entry whose `pattern` equals a
@@ -178,15 +180,39 @@ Rules:
   `patterns edit` writes a field set to its default (false, an empty list)
   only into an override, where it has to beat the lower layer's value;
   `ignore_case: false` is always written, since the default is true.
+- **One rulebook: `match` and `relaxed`.** Every entry says what a match
+  does with `match`, one of `MATCHES` (`block`, `judgment`, `warn`,
+  `ignore`; `block` when absent), and may say what it does in a relaxed
+  review with `relaxed`, the same enum (absent: as `match`). There are no
+  category defaults and no other source of a verdict: the scan
+  (`steps/patterns.py`, through `by_match`) and the review
+  (`review.sort_findings`) read the same field, resolved by
+  `config.entry_match(entry, relaxed)`. `MergedConfig.patterns` is every
+  entry not ignored; `scan_patterns`, `judgment_patterns` and
+  `warn_patterns` are the pattern entries by match. An entry with
+  `specifics` and no `pattern` is the reviewer's alone and never
+  compiles. The scan never reads a clone's relaxed eligibility: `relaxed`
+  applies to `review --relaxed` and nothing else, so `ScanReport` has no
+  exposure and the MCP result none either. A reviewer's finding on a
+  value an entry names follows the entry; a finding that matches no entry
+  blocks in both modes. The design behind the enum is in [What a match
+  does](#what-a-match-does) below.
 
 - **Every layer is validated on load** (`config.validate_layer`): known
   sections and fields, types, compiling regexes. A bare `patterns:` (YAML
   `None`) is rejected rather than merged, because `None` would replace the
   built-in list. Validation failures become a failing `Configuration`
   check so the hook blocks.
-- **`pattern` is required after the merge, not per layer**, so a project
-  layer can patch an inherited entry (add `word_boundary`, say) without
-  restating it.
+- **`pattern` or `specifics` is required after the merge, not per layer**,
+  so a project layer can patch an inherited entry (add `word_boundary`,
+  say) without restating it. The fields earlier versions wrote (`note`,
+  `judgment`, `disabled`; `MIGRATED_FIELDS`) are refused on an entry with
+  a message naming `git-scan config migrate`, which rewrites the user and
+  project files (`user_patterns.migrate_plan` / `migrate_apply`: `note` to
+  `specifics`, `judgment: true` to `match: judgment`, `disabled: true` to
+  `match: ignore`), prints each file's diff and what validation would
+  still refuse, and writes only on confirmation. Entropy exclusions keep
+  `disabled`.
 - **The user layer's `patterns` key is the personal-patterns switch.**
   Absent: the scan fails with instructions. Present, even as `[]`: the
   user has decided. `patterns add` creates the key; `patterns remove` on the
@@ -194,18 +220,21 @@ Rules:
 - **`patterns remove` means "stop applying this" for the layer being
   written.** It deletes an entry that layer defines; for a pattern inherited
   from a lower layer (a built-in, or with `--project` one of the user's own)
-  it writes `disabled: true` into the target layer, which turns the pattern
-  off for that layer's scope only. `patterns restore` drops that override.
-  Users never choose between deleting and disabling.
+  it writes `match: ignore` into the target layer's override for the id,
+  keeping any other override fields, which turns the pattern off for that
+  layer's scope only. `patterns restore` drops that one field. Users never
+  choose between deleting and ignoring.
 - **A pattern entry's fields:** `id`, `pattern`, `category`, `specifics`
   (the thing it matches, in words, for the reviewer),
   `word_boundary`, `not_followed_by` (list), `exclude_files` (list of
   globs matched against the whole repo-relative path, never the base name
   alone, so one file's exclusion can't cover same-named files elsewhere;
   the pattern is skipped there, and for a name check, when the name itself
-  matches),
-  `disabled`. `patterns edit` writes only the changed fields, which for a
-  built-in means an override entry the merge applies.
+  matches), `ignore_case`, `match`, `relaxed`. `patterns edit` writes only
+  the changed fields, which for a built-in means an override entry the
+  merge applies; `--match block` on an entry the layer owns drops the
+  field, since block is the default, and `--relaxed default` drops
+  `relaxed`.
 - **`patterns exceptions add / remove` change one `not_followed_by` value;
   `edit --not-followed-by` replaces the list.** Both read the merged list
   the scan applies and write the whole result into the target layer, since
@@ -229,19 +258,73 @@ Rules:
   rewrites it from its parsed form, so hand-written comments are lost;
   that is accepted.
 
-### Judgment entries
+### What a match does
 
-A pattern entry with `judgment: true` is compiled like any other, but its
+A pattern entry with `match: judgment` is compiled like any other, but its
 matches feed the `Judgment` check instead of `Patterns`
 (`MergedConfig.scan_patterns` versus `judgment_patterns`). That check fails
 until the matches are acknowledged, and passes without acknowledgement
-only when there are none. The split exists because one configuration
-serves two readers with opposite needs. The scanner wants few, precise
-regexes, or it blocks ordinary commits; a reviewer that weighs context
-wants every value that is sensitive somewhere, with the guidance that says
-where. Deleting an entry to quiet the scanner used to cost the reviewer
-that value. A judgment entry keeps it, makes the committer look at each
-match, and leaves the reviewer its own independent call.
+only when there are none. A `match: warn` entry feeds the `Warnings`
+check, which lists its matches and passes (the CLI prints it as `WARN`).
+The split exists because one configuration serves two readers with
+opposite needs. The scanner wants few, precise regexes, or it blocks
+ordinary commits; a reviewer that weighs context wants every value that
+is sensitive somewhere, with the guidance that says where. Deleting an
+entry to quiet the scanner used to cost the reviewer that value. A
+judgment entry keeps it, makes the committer look at each match, and
+leaves the reviewer its own independent call.
+
+**The judgment flag is how whoever defines a pattern admits that its
+match cannot be trusted as a final, unbypassable call.** For built-in
+patterns that author is git-scan; for the user's own entries it is the
+user. When a match cannot safely be decided by the scan or the review
+alone, the pattern's author sets `match: judgment` as its default, and the
+decision on each match belongs to the user, never to an agent: the agent
+surfaces the match, the user acknowledges or fixes. `warn` is likewise the
+author's choice, made in advance through the CLI: the match is reported and
+the work proceeds.
+
+What governs a protected repository is the merged configuration stack
+loaded for it: the built-in layer, the user's layer, and the repository's
+project layer. Any layer may tighten or loosen what the layers beneath it
+define, because the user owns that decision: a machine may be configured to
+tolerate what git-scan normally refuses, and so may a repository, for
+example a private dotfiles repository where certain identifiers or keys are
+deliberately kept. Overrides exist for two reasons: an unforeseen
+consequence of a pattern as shipped in git-scan, or an exception that
+applies to that user or that repository and that the vast majority of users
+and repositories would not want. Entries are edited or removed only through
+the CLI, and only by the user.
+
+The defence against misuse is therefore not a layer that cannot loosen; it
+is that entries change only through the CLI, by the user, and that every
+decision traces to the merged configuration that was loaded.
+
+The same text is the docstring of `steps.patterns.by_match`, the one
+place the scan picks entries by their match, and is in the README's
+pattern section; keep the three identical.
+
+**The built-in entries.** Besides the 17 token, key and identifier formats
+(pattern and specifics each, block in both modes, `ignore_case: false`),
+`data/git-scan.yaml` ships:
+
+| id | pattern | specifics | match | relaxed |
+|---|---|---|---|---|
+| `user-home-path` | `(/Users/\|/home/\|C:\\Users\\)[^/\\\s]+[/\\]` | a user's home-directory path | block | warn |
+| `credentials` | | a credential written out in plain language, not in a token format | block | block |
+| `financial` | | the owner's financial facts in words: a balance, a card or routing number | block | block |
+| `account-ids` | | an identifier of a specific account at a cloud or online service | block | block |
+| `people` | | another person's name, email address or handle | block | warn |
+| `trackers` | | a key or link to a private tracker, wiki or workspace | block | warn |
+| `personal-framing` | | a description of the author's own setup, chores or personal use | judgment | ignore |
+| `history` | | an account of who did what: session or agent chatter, hand-offs, process narration | block | ignore |
+
+and the environment layer derives `git-name-full`, `git-email`,
+`local-username` and `home-dir` (block; warn when relaxed),
+`git-name-first` / `git-name-last` / `git-name-part-N` (judgment; warn
+when relaxed) and `env-<KEY>` (block in both; the value never leaves the
+machine). An owner entry whose pattern equals a derived value governs,
+and an owner entry overrides any built-in by id.
 
 Acknowledgement is bound to content. `git-scan ack` records the staged
 tree (`marks.record_ack`); the check honors the record only while the
@@ -252,12 +335,18 @@ the steps receive as `acknowledged`; a clean result marks the commit
 `scanned` through the normal path, so there is no second label. Nothing an
 acknowledgement does can clear a finding from another check.
 
-`note` (any entry) and the top-level `notes` list are text the scanner
-never reads. `notes` combine across layers the way `review_required` does,
-since a merge would otherwise let a project layer replace the user's.
-`user_patterns.export_patterns` assembles all of it as the catalog the
-privacy review sends to the reviewer; built-in patterns are left out of it
-because they describe token formats, not the user. No command prints it.
+`specifics` (any entry) and the top-level `notes` list are text the
+scanner never reads, except that the Judgment check shows an entry's
+specifics under its match. `notes` combine across layers the way
+`review_required` does, since a merge would otherwise let a project layer
+replace the user's. `user_patterns.export_patterns(relaxed=...)` assembles
+every entry of the merged configuration that is not ignored in that mode,
+with its `match` resolved for the mode, as the catalog the privacy review
+sends; a `.env` entry goes with its specifics and without its value. The
+pattern entries that are ignored in the mode ride along under `ignored`,
+which `review.build_prompt` strips before the prompt and
+`review.sort_findings` uses to drop a finding on a value one of them
+names. No command prints the catalog.
 
 ## The hook script is a contract
 
@@ -336,27 +425,47 @@ records a review. Rules:
   gate reads only those. The runner is started with no tools and
   no user context (`--tools ""`, `--setting-sources ""` for `claude`), so
   the prompt is the reviewer's whole world and nothing on the machine can
-  steer the range, the catalog or the mode. The mode is public unless the
-  caller asks for relaxed and the repository passes `relaxed.check_use`;
-  see the next rule.
-- **Relaxed review: eligibility once, use per review.** `sdk/relaxed.py`
-  keeps the two apart. `git-scan relax` makes a clone eligible and writes
+  steer the range, the catalog or the mode. The mode (`review.review_mode`)
+  is public unless `--relaxed` asks, and then relaxed only once
+  `relaxed.check_use` has asked the host again. See the next rules.
+- **Relaxed review: eligibility, then a review that asks.** `sdk/relaxed.py`:
+  `git-scan relax` makes a clone eligible and writes
   `git-scan.relaxed-remote` (the exact `origin` URL) and
-  `git-scan.relaxed-basis` to the repository's own `.git/config`; `git-scan
-  review --relaxed` (`check_use`) is refused unless the same URL is eligible,
-  and a verifying host is asked again every time. Without the flag a review
-  is public; a failed check refuses the review rather than running it in
-  another mode. No remote, an unregistered host, or
+  `git-scan.relaxed-basis` to the repository's own `.git/config`.
+  Eligibility by itself changes nothing: `review --relaxed` (`check_use`)
+  asks a verifying host again every time and is refused when the clone is
+  not eligible or the host no longer reports it private, rather than
+  running in another mode. No remote, an unregistered host, or
   `review.public_prospective` in any layer (read per layer, like
-  `review_required`) is never eligible. What a finding does in each mode is
-  `review.sort_findings`, one table keyed by category (`NOTE_IN_RELAXED`,
-  `DROP_IN_RELAXED`, everything else blocks). The reviewer reports categories
-  and no severity: a model's grade varied between runs on identical text, so
-  the verdict must not depend on it. Every finding carries a `note` naming
-  the rule it breaks (the schema requires it), and `warnings` are only for
-  what limited the review: a reviewer that passed something it was unsure
-  about and explained the call in a warning turned a finding into a footnote. A category the table doesn't name, the
-  owner's own pattern categories included, blocks in both modes.
+  `review_required`) is never eligible. The scan reads none of this.
+- **The reviewer is bound to the entry.** The prompt
+  (`data/review-prompt.md`) is the rules of conduct, the merged entries by
+  id with `pattern`, `specifics`, `category` and the `match` resolved for
+  the mode (`export_patterns(relaxed=...)`; `review.mark_found` flags the
+  entries whose pattern matches the batch), and one standing instruction:
+  an entry also covers the value's variants in spelling, case, spacing and
+  form, reported under that entry. The exposure table and the prose about
+  what to look for beyond the catalog are gone; the built-in
+  specifics-only entries carry those rules. The reviewer reports each
+  finding with the `entry` id it matched. `review.sort_findings` then
+  applies the entry's `match`, never the reviewer's label: `block` and
+  `judgment` block (the reviewer having looked at the match in context),
+  `warn` is a note naming the entry, and a value an ignored pattern entry
+  names is dropped. `entry_for` takes a named entry as named when it has
+  no pattern, or when its pattern matches the value; a named entry whose
+  pattern does not match, or a partial match (a secret that contains a
+  name), names no entry; an unnamed finding is matched whole against the
+  patterns. A finding that matches no entry blocks in both modes, and an
+  id the reviewer was not given names no entry. The regression fixture in
+  `tests/unit/test_review.py` (`_tenant`) reproduces the case that forced
+  this: a `domain` judgment entry the reviewer re-labelled an account
+  identifier. The reviewer reports categories and no severity: a model's
+  grade varied between runs on identical text, so the verdict must not
+  depend on it. Every finding carries a `note` naming the entry and the
+  reason (the schema requires it), and `warnings` are only for what
+  limited the review: a reviewer that passed something it was unsure
+  about and explained the call in a warning turned a finding into a
+  footnote.
 - **Hosts and providers.** `sdk/hosts.py` keeps registered hosts in the
   global git config (`[git-scan-host "HOST"] type, allow-relaxed`); github.com
   is built in. A type names a `HostProvider`: `github` asks `gh api` (REST;

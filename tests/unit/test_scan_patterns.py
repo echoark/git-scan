@@ -207,13 +207,13 @@ def test_git_name_comes_from_commit_identity_not_global_config(tmp_path, monkeyp
     assert not check.passed
 
 
-def test_disabled_pattern_not_detected(tmp_path):
+def test_ignored_pattern_not_detected(tmp_path):
     repo = _init_repo(tmp_path)
     (repo / "git-scan.yaml").write_text(
         "patterns:\n"
         "  - id: secret-keyword\n"
         "    pattern: SUPERSECRETPROJECT\n"
-        "    disabled: true\n"
+        "    match: ignore\n"
     )
     (repo / "notes.txt").write_text("Working on SUPERSECRETPROJECT today")
     subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
@@ -253,8 +253,8 @@ def _judgment_repo(tmp_path):
         "  - id: town\n"
         "    pattern: Springfield\n"
         "    category: city\n"
-        "    judgment: true\n"
-        "    note: only beside an address\n"
+        "    match: judgment\n"
+        "    specifics: only beside an address\n"
     )
     return repo
 
@@ -271,7 +271,7 @@ def test_judgment_match_is_not_a_finding_but_needs_acknowledgement(tmp_path):
     assert not judgment.passed
     text = "\n".join(judgment.findings)
     assert "notes.txt:1 [city] Springfield" in text
-    assert "note: only beside an address" in text
+    assert "town: only beside an address" in text
     assert "git-scan ack" in text
     assert "1 match(es), not acknowledged" in judgment.info
 

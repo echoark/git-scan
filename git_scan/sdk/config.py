@@ -10,10 +10,12 @@ Four layers are merged with higher layers winning:
   4. Project config (``./git-scan.yaml`` in the repo root)
 
 Uses the yaml-config-merge snippet for merging. Arrays of dicts are
-merged by composite key (id, name). Setting ``disabled: true`` on an
-inherited pattern suppresses it. Scalars and plain dicts: higher layer wins.
-Every matcher the scan applies, built in, derived or the user's own, is a
-pattern entry in this merge, so the user's flags on an id always apply.
+merged by composite key (id, name). An inherited pattern is turned off with
+``match: ignore``. Scalars and plain dicts: higher layer wins. Every
+matcher the scan applies, built in, derived or the user's own, is a pattern
+entry in this merge, so the user's flags on an id always apply, and every
+entry says what a match does (``match``, and ``relaxed`` for a relaxed
+review): one rulebook for the scan and the reviewer.
 
 Every layer is validated when loaded. A broken file fails the scan with the
 file, the spot, and the command that fixes it, rather than silently
@@ -52,9 +54,29 @@ MERGE_KEYS = ["id", "name"]
 TOP_LEVEL_KEYS = {"entropy", "thresholds", "patterns", "allowed_emails", "identity", "push",
                   "notes", "review"}
 REVIEW_KEYS = {"runner", "model", "timeout", "batch_bytes", "public_prospective"}
-PATTERN_FIELDS = {"id", "pattern", "category", "word_boundary",
-                  "not_followed_by", "exclude_files", "disabled",
-                  "ignore_case", "judgment", "note", "specifics"}
+PATTERN_FIELDS = {"id", "pattern", "category", "specifics", "word_boundary",
+                  "not_followed_by", "exclude_files", "ignore_case", "match", "relaxed"}
+# Fields earlier versions wrote; ``git-scan config migrate`` rewrites them.
+MIGRATED_FIELDS = {"note": "specifics", "judgment": "match: judgment", "disabled": "match: ignore"}
+
+# What a match on an entry does. ``block``: the scan fails, the review
+# reports a finding. ``judgment``: the scan fails until the user acknowledges
+# the match; the reviewer applies the entry's specifics and reports the match
+# for a human look, never escalating it by inference. ``warn``: the scan
+# prints the match and passes; the review shows it as a note that doesn't
+# block. ``ignore``: the entry is not compiled and not sent to the reviewer.
+MATCHES = ("block", "judgment", "warn", "ignore")
+
+
+def entry_match(entry: dict, relaxed: bool = False) -> str:
+    """What a match on ``entry`` does: its ``match`` (``block`` when absent),
+    or in a relaxed review its ``relaxed`` value when it has one."""
+    match = entry.get("match") or "block"
+    if relaxed and entry.get("relaxed"):
+        return entry["relaxed"]
+    return match
+
+
 THRESHOLD_KEYS = {"large_amount", "suspicious_nonround", "suspicious_any",
                   "cents_review"}
 ENTROPY_KEYS = {"enabled", "threshold", "min_len", "exclusions"}
@@ -147,7 +169,10 @@ def validate_layer(data, path) -> None:
                 continue
             loc = f"patterns[{i}] ({p.get('id', 'no id')})"
             for f in p:
-                if f not in PATTERN_FIELDS:
+                if f in MIGRATED_FIELDS:
+                    errors.append(f"{loc}: '{f}' is no longer a field; it is now {MIGRATED_FIELDS[f]}. "
+                                  "Run 'git-scan config migrate' to rewrite the file")
+                elif f not in PATTERN_FIELDS:
                     errors.append(f"{loc}: unknown field '{f}' (known: {', '.join(sorted(PATTERN_FIELDS))})")
             if not isinstance(p.get("id"), str) or not p.get("id"):
                 errors.append(f"{loc}: 'id' is required and must be text")
@@ -159,12 +184,16 @@ def validate_layer(data, path) -> None:
                         re.compile(p["pattern"])
                     except re.error as e:
                         errors.append(f"{loc}: pattern is not a valid regex: {e}")
-            for text_field in ("category", "note", "specifics"):
-                if text_field in p and not isinstance(p[text_field], str):
+            for text_field in ("category", "specifics"):
+                if text_field in p and (not isinstance(p[text_field], str) or not p[text_field]):
                     errors.append(f"{loc}: '{text_field}' must be text")
-            for flag in ("word_boundary", "disabled", "ignore_case", "judgment"):
+            for flag in ("word_boundary", "ignore_case"):
                 if flag in p and not isinstance(p[flag], bool):
                     errors.append(f"{loc}: '{flag}' must be true or false")
+            for key in ("match", "relaxed"):
+                if key in p and p[key] not in MATCHES:
+                    errors.append(f"{loc}: '{key}' must be one of {', '.join(MATCHES)} "
+                                  f"(run: git-scan patterns edit {p.get('id', 'ID')} --{key} VALUE)")
             for field in ("not_followed_by", "exclude_files"):
                 val = p.get(field)
                 if val is not None and (not isinstance(val, list)
@@ -286,24 +315,33 @@ class MergedConfig:
 
     @property
     def patterns(self) -> list[dict]:
-        """Active patterns (disabled ones filtered out)."""
-        return [p for p in self.raw.get("patterns", [])
-                if not p.get("disabled")]
+        """Active entries: every entry whose ``match`` is not ``ignore``."""
+        return [p for p in self.raw.get("patterns", []) if entry_match(p) != "ignore"]
+
+    def with_match(self, value: str) -> list[dict]:
+        """Active entries with a pattern whose ``match`` is ``value``: what the
+        scan compiles for that treatment. Entries with specifics only are the
+        reviewer's and never compile."""
+        return [p for p in self.patterns if p.get("pattern") and entry_match(p) == value]
 
     @property
     def scan_patterns(self) -> list[dict]:
-        """Active entries whose match is a finding: everything but judgment entries."""
-        return [p for p in self.patterns if not p.get("judgment")]
+        """Entries whose match fails the scan (``match: block``)."""
+        return self.with_match("block")
 
     @property
     def judgment_patterns(self) -> list[dict]:
-        """Active entries whose match is a judgment call, reported for
-        acknowledgement rather than as a finding."""
-        return [p for p in self.patterns if p.get("judgment")]
+        """Entries whose match is a judgment call to acknowledge (``match: judgment``)."""
+        return self.with_match("judgment")
+
+    @property
+    def warn_patterns(self) -> list[dict]:
+        """Entries whose match is reported and passed (``match: warn``)."""
+        return self.with_match("warn")
 
     @property
     def all_patterns(self) -> list[dict]:
-        """All patterns including disabled."""
+        """All patterns including ignored ones."""
         return self.raw.get("patterns", [])
 
     @property
@@ -339,17 +377,20 @@ class MergedConfig:
 
     @property
     def pattern_counts(self) -> dict:
-        """Active patterns by origin: built-in, environment (derived from this
-        machine) or personal (user or project), with judgment entries counted
-        apart since their matches are not findings."""
+        """Blocking pattern entries by origin (built-in, environment, personal),
+        plus the judgment and warn entries, counted apart since their matches
+        are not findings."""
         sources = self.pattern_sources
-        counts = {"built-in": 0, "environment": 0, "personal": 0, "judgment": 0}
+        counts = {"built-in": 0, "environment": 0, "personal": 0, "judgment": 0, "warn": 0}
         for p in self.patterns:
-            if p.get("judgment"):
-                counts["judgment"] += 1
+            if not p.get("pattern"):
                 continue
-            origin = sources.get(p.get("id"), "user")
-            counts[origin if origin in ("built-in", "environment") else "personal"] += 1
+            match = entry_match(p)
+            if match in ("judgment", "warn"):
+                counts[match] += 1
+            else:
+                origin = sources.get(p.get("id"), "user")
+                counts[origin if origin in ("built-in", "environment") else "personal"] += 1
         return counts
 
     @property
@@ -428,7 +469,8 @@ def load_config(repo_path: str = ".") -> MergedConfig:
             merged = _merge_dicts(merged, layers[name], MERGE_KEYS)
 
     config = MergedConfig(raw=merged, layers=layers)
-    missing = [p.get("id") for p in config.patterns if not p.get("pattern")]
+    missing = [p.get("id") for p in config.all_patterns
+               if not p.get("pattern") and not p.get("specifics")]
     # An override of an environment entry this machine doesn't derive (a
     # one-word git name has no parts; another machine's .env key) has nothing
     # to apply to; it is left in place for the machine it was written on.
@@ -439,8 +481,8 @@ def load_config(repo_path: str = ".") -> MergedConfig:
     if missing:
         where = {pid: paths[config.pattern_sources.get(pid, "user")] for pid in missing}
         raise ConfigError("\n".join(
-            ["Invalid config: a pattern has no 'pattern' text in any layer:"]
+            ["Invalid config: an entry has neither 'pattern' nor 'specifics' in any layer:"]
             + [f"  {pid} (first defined in {path})" for pid, path in where.items()]
-            + ["Add the text with 'git-scan patterns add <id> --pattern <text>' "
-               "or remove the entry with 'git-scan patterns remove <id>'."]))
+            + ["Add one with 'git-scan patterns edit <id> --pattern <regex>' or "
+               "'--specifics <text>', or remove the entry with 'git-scan patterns remove <id>'."]))
     return config

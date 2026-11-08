@@ -35,8 +35,8 @@ def test_project_config_overrides(tmp_path, monkeypatch):
     assert any(p["id"] == "test-pat" for p in config.patterns)
 
 
-def test_disabled_pattern_filtered(tmp_path, monkeypatch):
-    """Patterns with disabled: true are excluded from .patterns."""
+def test_ignored_pattern_filtered(tmp_path, monkeypatch):
+    """Patterns with match: ignore are excluded from .patterns."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "noconfig"))
 
     project_config = tmp_path / "git-scan.yaml"
@@ -46,7 +46,7 @@ def test_disabled_pattern_filtered(tmp_path, monkeypatch):
         "    pattern: ACTIVE\n"
         "  - id: gone\n"
         "    pattern: GONE\n"
-        "    disabled: true\n"
+        "    match: ignore\n"
     )
 
     config = load_config(str(tmp_path))

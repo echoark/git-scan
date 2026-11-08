@@ -102,13 +102,13 @@ def test_pattern_counts_and_sources(tmp_path):
     assert config.pattern_counts["built-in"] >= 15
 
 
-def test_judgment_note_ignore_case_and_notes_are_accepted(tmp_path):
+def test_match_specifics_ignore_case_and_notes_are_accepted(tmp_path):
     _user_file().write_text(
         "patterns:\n"
         "  - id: card\n"
         "    pattern: '1234'\n"
-        "    judgment: true\n"
-        "    note: only beside account\n"
+        "    match: judgment\n"
+        "    specifics: only beside account\n"
         "  - id: me\n"
         "    pattern: Jane\n"
         "    ignore_case: true\n"
@@ -127,11 +127,20 @@ def test_judgment_note_ignore_case_and_notes_are_accepted(tmp_path):
 
 def test_bad_types_for_new_fields_are_rejected(tmp_path):
     repo = _repo(tmp_path)
-    _user_file().write_text("patterns:\n  - id: x\n    pattern: a\n    note: 3\n    judgment: yes please\n")
+    _user_file().write_text("patterns:\n  - id: x\n    pattern: a\n    specifics: 3\n    match: yes please\n")
     with pytest.raises(ConfigError) as e:
         load_config(str(repo))
-    assert "'note' must be text" in str(e.value)
-    assert "'judgment' must be true or false" in str(e.value)
+    assert "'specifics' must be text" in str(e.value)
+    assert "'match' must be one of block, judgment, warn, ignore" in str(e.value)
+    _user_file().write_text("patterns:\n  - id: x\n    pattern: a\n    note: n\n    judgment: true\n    disabled: true\n")
+    with pytest.raises(ConfigError) as e:
+        load_config(str(repo))
+    for old, now in (("note", "specifics"), ("judgment", "match: judgment"), ("disabled", "match: ignore")):
+        assert f"'{old}' is no longer a field; it is now {now}" in str(e.value)
+    assert "git-scan config migrate" in str(e.value)
+    _user_file().write_text("patterns:\n  - id: x\n    category: c\n")
+    with pytest.raises(ConfigError, match="neither 'pattern' nor 'specifics'"):
+        load_config(str(repo))
     _user_file().write_text("patterns: []\nnotes: not-a-list\n")
     with pytest.raises(ConfigError, match="notes: must be a list of text"):
         load_config(str(repo))

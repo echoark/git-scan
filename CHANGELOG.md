@@ -5,7 +5,51 @@ Notable changes to git-scan, newest first. Versions follow
 
 ## 0.11.0 (unreleased)
 
+### Added
+
+- **Every entry says what a match does.** `match` is one of `block` (the
+  default), `judgment` (the scan fails until you acknowledge the match;
+  the reviewer applies the entry's specifics and reports the match for a
+  look, never escalating it), `warn` (the scan lists the match under a
+  passing `Warnings` check, printed as `WARN`; the review shows a note) or
+  `ignore` (not compiled, not sent to the reviewer). `relaxed` takes the
+  same values and applies in a relaxed review alone. `patterns add` and
+  `patterns edit` take `--match` and `--relaxed`; `patterns list` shows
+  them. Any layer may set either, tighter or looser.
+- **Entries with specifics only.** An entry may name what it covers in
+  words (`--specifics`) instead of, or beside, a pattern; such an entry is
+  for the privacy review alone. git-scan ships eight of them beside the
+  token formats: `user-home-path` (a pattern), `credentials`, `financial`,
+  `account-ids`, `people`, `trackers`, `personal-framing` and `history`,
+  each with its own `match` and `relaxed`, so the review's rules are
+  entries you can see and tune.
+- `git-scan config migrate` rewrites your user file and the repository's
+  `git-scan.yaml` from the fields earlier versions wrote (`note` to
+  `specifics`, `judgment: true` to `match: judgment`, `disabled: true` to
+  `match: ignore`), showing the diff first and writing on confirmation.
+
 ### Changed
+
+- **The reviewer is bound to the entry.** The prompt is now the merged
+  entries by id, built in, derived and yours, each with its pattern,
+  specifics and the match for the review's mode, plus one standing
+  instruction about variants; the exposure table and the prose about what
+  to look for beyond the catalog are gone. The reviewer reports each
+  finding under the entry it matched, and git-scan applies that entry's
+  `match`, never the reviewer's label. A finding that matches no entry
+  blocks in both modes.
+- **Every review is public unless asked otherwise.** `git-scan review
+  --relaxed` asks for a relaxed review of an eligible clone, after asking
+  the host again; without it a review is public whatever the clone's
+  eligibility, and the commit scan never reads that eligibility. The
+  derived identity entries say `relaxed: warn`, so a relaxed review shows
+  the owner's name, email and login as notes.
+- `patterns remove` on a built-in or derived entry writes `match: ignore`
+  instead of `disabled: true`; `patterns restore` drops it.
+- **Removed:** the entry fields `note`, `judgment` and `disabled` (refused
+  with a message naming `config migrate`), the `--note` and `--judgment`
+  flags, `review --public`, the `exposure:` line of the scan output and
+  the `exposure` field of the MCP `scan_repo` result.
 
 - **Patterns ignore letter case by default.** Every pattern, built in,
   derived or your own, now matches regardless of case unless its entry

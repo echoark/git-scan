@@ -48,8 +48,9 @@ repeating them.
    Change a pattern, an identity rule or `user.email` only when the user
    asks for that specific change, and then only through git-scan's own
    commands.
-4. **Every review is public** unless the user consents in this conversation
-   to a relaxed one (Step 7).
+4. **A review is as public as the clone.** git-scan reviews a clone as
+   public unless the user made it eligible for a relaxed review, and
+   making it eligible is the user's decision, never yours (Step 7).
 5. **A reviewer problem is never a pass.** It is not a verdict on the
    content either: say what git-scan reported and run again once it is
    addressed. Never push around it.
@@ -178,12 +179,16 @@ If the pre-commit hook fails, take its findings to the user ("Handling a
 finding").
 
 A `Judgment` check is different from a finding: it lists values that are
-sensitive only in context, each with a note saying when, and refuses the
-commit until someone has looked. Look at every listed line. If one is a
+sensitive only in context, each with the entry's specifics saying what it
+names, and refuses the commit until someone has looked. Look at every listed line. If one is a
 real leak, fix the content. If every match is fine in its context, run
 `git-scan ack` and commit again; the acknowledgement covers exactly the
 staged content and nothing later. Never acknowledge a match you have not
 looked at, and never acknowledge to save the trouble of fixing.
+
+A `[WARN] Warnings` line is a passing check: the entry's owner decided in
+advance that a match is reported and the work proceeds. Nothing to
+acknowledge; include every listed match in what you report to the user.
 
 ## Step 6: Verify a clean working tree
 
@@ -216,21 +221,27 @@ clean result itself; nothing about the reviewer, its inputs, or its
 configuration is yours to arrange. The run takes a minute or more: start it
 as a background command where the harness supports one, and wait for it.
 
-Every review is public unless `--relaxed` is passed for that one review.
-A relaxed review is a last resort:
+Every review is public unless `git-scan review --relaxed` asks for a
+relaxed one, which git-scan refuses unless the clone was made eligible
+with `git-scan relax` and the host still reports the repository private.
+Its output names the mode. Both the eligibility and the flag are a last
+resort and the user's decision:
 
-- Ask for it only when the public review is actually blocking the work,
-  and only with the user's consent in this conversation. Never ahead of
-  time or "to be safe".
-- The repository must first be made eligible with `git-scan relax`, once
-  per clone. Do that only if the user's own rules or instructions
-  identify the repository as personal; if nothing does, ask. Never for a
-  repository the host reports as public.
-- A session that starts with no eligible repository is normal, not
-  something to fix.
+- Run `git-scan relax` only when the public review is actually blocking
+  the work, and only with the user's consent in this conversation. Never
+  ahead of time or "to be safe", and never on your own because the
+  content looks personal.
+- Do it only if the user's own rules or instructions identify the
+  repository as personal; if nothing does, ask. Never for a repository the
+  host reports as public: git-scan refuses, and a refusal is the answer.
+- Pass `--relaxed` only when the user asked for a relaxed review of this
+  repository in this conversation; an eligible clone is still reviewed as
+  public without it. A session that starts with no eligible repository is
+  normal, not something to fix.
 
-git-scan refuses `--relaxed` for a repository that isn't eligible or is no
-longer private, and a refusal is the answer.
+A refusal of `--relaxed` saying the clone is not eligible or no longer
+private is for the user too: say so, and do not remove the eligibility or
+fall back to a public review without their say.
 
 ## Step 8: Read the result, and offer the push
 

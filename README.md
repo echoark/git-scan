@@ -23,6 +23,7 @@ with git-scan.
 | Commit hooks | The scan: built-in detectors, entropy, and your own patterns, over what each commit changes, its message, and every file, branch and tag name | Every `git commit` |
 | Privacy review (`git-scan review`) | A judgment reviewer, a headless agent CLI, reads the unpushed commits and any pull-request text for what a regex can't catch: names in prose, personal framing, private references | Before a push |
 | Push gate | Refuses a push of commits that were not scanned, or, when you require it, not reviewed | Every `git push` |
+| Match per entry | Every entry, built in, derived or yours, says what a match does (`block`, `judgment`, `warn`, `ignore`) and what it does in a relaxed review; the scan and the reviewer both follow it | Every scan and review |
 | safe-commit skill | The procedure an agent follows: stage, commit, review, push or open a pull request, and bring every finding to you | When you ask an agent to commit |
 | MCP server (optional) | The same scan as tools an agent can call | When an agent calls it |
 
@@ -218,7 +219,8 @@ gate](#push-gate-optional)). `--commit REV` does the same for one commit.
 | Tokens and keys | GitHub, Google, AWS, OpenAI, and Slack tokens; private-key headers; generic API keys; UUIDs; long hex strings |
 | Entropy | random-looking strings that resemble secrets, with exclusions for lockfile hashes and the like |
 | Patterns | the strings you configure (see [Configuration](#configuration)) |
-| Judgment | matches on the entries you marked for judgment, reported for acknowledgement rather than as findings (see [Judgment entries and notes](#judgment-entries-and-notes)) |
+| Judgment | matches on entries whose match is `judgment`, reported for acknowledgement rather than as findings (see [Judgment entries and notes](#judgment-entries-and-notes)) |
+| Warnings | matches on entries whose match is `warn`: listed, and the check passes (see [What a match does](#what-a-match-does)) |
 | Environment | your git name and its parts, git email, login name, home directory name, and values from a `.env` file in the repository, as entries you can tune by id (see [Derived identity patterns](#derived-identity-patterns)) |
 | Emails | addresses outside reserved example domains and your allowed list |
 | SSN / EIN | US tax identifier formats |
@@ -250,15 +252,19 @@ target the repository's `git-scan.yaml` instead of your own.
 
 ### Patterns
 
-A pattern is a regular expression with an id and, optionally, a category
-shown in findings. Matching ignores letter case unless the entry says
-`--no-ignore-case`; escape literal dots. The built-in token, key and
-identifier formats say `ignore_case: false` explicitly, since their case
-is part of the format, and each carries `specifics`, the thing it matches
-in words.
+An entry has an id and names one thing that must stay out of your
+repositories, as a `pattern` (a regular expression the scan compiles), as
+`specifics` (the thing in words, for the privacy review: "the owner's
+street address"), or both; a `category` is a label shown in findings.
+Matching ignores letter case unless the entry says `--no-ignore-case`;
+escape literal dots. The built-in token, key and identifier formats say
+`ignore_case: false` explicitly, since their case is part of the format,
+and every built-in entry carries `specifics`. Each entry also says what a
+match does, `match`, and what it does in a relaxed review, `relaxed` (see
+[What a match does](#what-a-match-does)).
 
 ```bash
-git-scan patterns add ID --pattern REGEX [--category CATEGORY] [OPTIONS]
+git-scan patterns add ID [--pattern REGEX] [--specifics TEXT] [--category CATEGORY] [OPTIONS]
 ```
 
 | Option | Effect |
@@ -267,8 +273,9 @@ git-scan patterns add ID --pattern REGEX [--category CATEGORY] [OPTIONS]
 | `--not-followed-by TEXT` | don't match when this text follows (repeatable) |
 | `--exclude-file GLOB` | don't apply in files whose repository path matches (repeatable) |
 | `--no-ignore-case` | match the spelling given only; the default matches regardless of letter case |
-| `--note TEXT` | guidance shown to a reviewer beside this entry (see [Judgment entries and notes](#judgment-entries-and-notes)) |
-| `--judgment` | a match is a judgment call to acknowledge, not a finding |
+| `--specifics TEXT` | what the entry names, in words; the privacy review looks for it, and the Judgment check shows it beside a match |
+| `--match VALUE` | what a match does: `block` (the default), `judgment`, `warn` or `ignore` (see [What a match does](#what-a-match-does)) |
+| `--relaxed VALUE` | the same in a relaxed review; absent, a relaxed review follows `--match` |
 
 Examples by category:
 
@@ -290,6 +297,9 @@ git-scan patterns add cust-acme-proj --pattern 'Project Falcon'   --category cus
 git-scan patterns add my-property --pattern '12 Example Lane'     --category property
 git-scan patterns add my-policy   --pattern 'POL-[0-9]{8}'        --category policy
 git-scan patterns add my-bank     --pattern 'Example Savings Bank' --category financial
+
+# For the privacy review alone: no regex could say this
+git-scan patterns add my-street --specifics "the owner's street address, in any form" --category address
 ```
 
 Manage them afterwards:
@@ -321,15 +331,15 @@ repository root. git-scan derives them at scan time as entries of the
 `environment` layer, each with a stable id, so `patterns list` shows them
 and every command above works on them by id:
 
-| id | value | default |
-|---|---|---|
-| `git-name-full` | the git author name | finding |
-| `git-name-first`, `git-name-last` | its parts, for a two-part name | judgment |
-| `git-name-part-N` | its N-th part, for a longer name | judgment |
-| `git-email` | the git author email | finding |
-| `local-username` | the login name | finding |
-| `home-dir` | the home directory name, when it differs from the login | finding |
-| `env-KEY` | a value in `.env` longer than eight characters | finding |
+| id | value | match | relaxed |
+|---|---|---|---|
+| `git-name-full` | the git author name | block | warn |
+| `git-name-first`, `git-name-last` | its parts, for a two-part name | judgment | warn |
+| `git-name-part-N` | its N-th part, for a longer name | judgment | warn |
+| `git-email` | the git author email | block | warn |
+| `local-username` | the login name | block | warn |
+| `home-dir` | the home directory name, when it differs from the login | block | warn |
+| `env-KEY` | a value in `.env` longer than eight characters | block | block |
 
 The parts of the name are judgment entries because a given name or a
 surname is often an ordinary word: `Smith360` with the git name `Jane
@@ -342,7 +352,7 @@ beside the value.
 
 ```bash
 git-scan patterns edit git-name-first --word-boundary --no-ignore-case  # 'Will', the name, only
-git-scan patterns edit git-name-last --no-judgment                      # a finding again
+git-scan patterns edit git-name-last --match block                      # refused again, not a judgment call
 git-scan patterns exceptions add git-name-last sonian                   # not 'Smithsonian'
 git-scan patterns remove local-username                                 # off; restore turns it on
 ```
@@ -378,14 +388,15 @@ also an ordinary word; an area code is any three digits. As a regex each
 would block ordinary commits, so a pattern list leaves them out, and
 nothing catches them.
 
-A **judgment entry** keeps such a value in the configuration with a
-different rule for a match: it is a judgment call, not a finding. The
-`Judgment` check lists every match with its note and refuses the commit
-until someone has looked and acknowledged them:
+A **judgment entry** (`--match judgment`) keeps such a value in the
+configuration with a different rule for a match: it is a judgment call,
+not a finding. The `Judgment` check lists every match with the entry's
+specifics and refuses the commit until someone has looked and acknowledged
+them:
 
 ```bash
-git-scan patterns add card-a --pattern '1234' --category last4 --judgment --word-boundary \
-    --note 'a finding only beside account, card, checking or a **** mask'
+git-scan patterns add card-a --pattern '1234' --category last4 --match judgment --word-boundary \
+    --specifics 'the last four digits of a card; a match only beside account, card, checking or a **** mask'
 ```
 
 ```
@@ -395,10 +406,36 @@ git-scan patterns add card-a --pattern '1234' --category last4 --judgment --word
          fix the content, or if all of them are fine, acknowledge them with:
            git-scan ack
          README.md:14 [employer] Example Corp
-             note: a finding when the text says the author works there
+             my-employer: the owner's employer; a match when the text says the author works there
          tests/fixtures/ledger.json:7 [last4] 1234
-             note: a finding only beside account, card, checking or a **** mask
+             card-a: the last four digits of a card; a match only beside account, card, checking or a **** mask
 ```
+
+**The judgment flag is how whoever defines a pattern admits that its
+match cannot be trusted as a final, unbypassable call.** For built-in
+patterns that author is git-scan; for the user's own entries it is the
+user. When a match cannot safely be decided by the scan or the review
+alone, the pattern's author sets `match: judgment` as its default, and the
+decision on each match belongs to the user, never to an agent: the agent
+surfaces the match, the user acknowledges or fixes. `warn` is likewise the
+author's choice, made in advance through the CLI: the match is reported and
+the work proceeds.
+
+What governs a protected repository is the merged configuration stack
+loaded for it: the built-in layer, the user's layer, and the repository's
+project layer. Any layer may tighten or loosen what the layers beneath it
+define, because the user owns that decision: a machine may be configured to
+tolerate what git-scan normally refuses, and so may a repository, for
+example a private dotfiles repository where certain identifiers or keys are
+deliberately kept. Overrides exist for two reasons: an unforeseen
+consequence of a pattern as shipped in git-scan, or an exception that
+applies to that user or that repository and that the vast majority of users
+and repositories would not want. Entries are edited or removed only through
+the CLI, and only by the user.
+
+The defence against misuse is therefore not a layer that cannot loosen; it
+is that entries change only through the CLI, by the user, and that every
+decision traces to the merged configuration that was loaded.
 
 `git-scan ack` applies to exactly the staged content: stage anything more
 and it must be given again, after looking again. It clears judgment matches
@@ -409,9 +446,9 @@ scanned if everything else is clean.
 
 Judgment entries take the same options as any other (`--word-boundary`
 keeps four digits from matching inside a longer number). Move an entry
-between the two modes with `patterns edit ID --judgment` and
-`--no-judgment`. Prefer `--judgment` over `patterns remove` for an entry
-that trips as a regex but still matters: it keeps getting looked at.
+between the two modes with `patterns edit ID --match judgment` and
+`--match block`. Prefer `--match judgment` over `patterns remove` for an
+entry that trips as a regex but still matters: it keeps getting looked at.
 
 **Notes** carry guidance that belongs to no single entry:
 
@@ -423,8 +460,63 @@ git-scan notes remove 1
 
 **The reviewer.** The privacy review (below) reads the same entries and
 notes: git-scan hands them to the reviewer with the commits, so an entry
-that is too noisy for the scanner still gets judged, with its note, when a
-push is reviewed.
+that is too noisy for the scanner still gets judged, with its specifics,
+when a push is reviewed.
+
+### What a match does
+
+Every entry says what a match does, `match`, with one of four values; the
+commit scan and the privacy review follow the same one:
+
+| `match` | The scan | The review |
+|---|---|---|
+| `block` (the default) | the check fails | a finding |
+| `judgment` | the check fails until you acknowledge the match (`git-scan ack`) | the reviewer applies the specifics and reports the match for you to look at; it never escalates it by inference |
+| `warn` | the match is listed under `[WARN] Warnings` and the scan passes; an agent reports it and proceeds | a note, shown, not blocking |
+| `ignore` | the entry is not compiled | the entry is not sent to the reviewer |
+
+`relaxed` takes the same values and applies only in a relaxed review (see
+[Relaxed review](#relaxed-review)); absent, a relaxed review follows
+`match`. Findings that match no entry (a secret shape nobody listed, a
+stranger's name) block in both modes.
+
+```bash
+git-scan patterns add my-tenant --pattern 'acme360' --category domain --match judgment \
+    --specifics 'the tenant name; a match when it identifies the account, not the product'
+git-scan patterns edit my-tenant --relaxed ignore      # a relaxed review never reports it
+git-scan patterns edit my-tenant --relaxed default     # a relaxed review follows match again
+git-scan patterns edit my-nickname --match warn        # reported, the commit proceeds
+```
+
+```
+  [PASS] Patterns (3 personal, 18 built-in, 5 environment; 1 files)
+  [PASS] Judgment (9 entries; no matches)
+  [WARN] Warnings (1 entries; 1 match(es), reported and passed)
+         notes/plan.md:3 [name] JD
+```
+
+Any layer may set either value, tighter or looser: `patterns remove` on a
+built-in or derived entry writes `match: ignore` for it into your layer
+(`--project`: the repository's), and `patterns restore` drops that
+override. `patterns list` shows each entry's match when it isn't `block`,
+and its `relaxed` value when set.
+
+Besides the token, key and identifier formats, git-scan ships entries
+that the review alone can apply: `credentials`, `financial`, `account-ids`
+(block in both modes), `people`, `trackers` and the pattern `user-home-path`
+(block; a note when relaxed), `personal-framing` (judgment; ignored when
+relaxed) and `history` (block; ignored when relaxed). Each is an entry
+like any other: `patterns list` shows them, and `patterns edit` with
+`--match` or `--relaxed` changes what they do for you or for one
+repository.
+
+**From earlier versions.** Entries used to carry `note`, `judgment: true`
+and `disabled: true`; those fields are now refused, and `git-scan config
+migrate` rewrites your user file and the repository's `git-scan.yaml`
+(`note` to `specifics`, `judgment: true` to `match: judgment`,
+`disabled: true` to `match: ignore`), showing the change as a diff and
+anything validation would still refuse, and writing only when you confirm.
+Run it yourself; it is not for an agent.
 
 ### Allowed emails
 
@@ -628,16 +720,17 @@ git-scan review                        # the unpushed commits of this branch
 git-scan review --publish pr-body.md   # and the text that will be published with them
 git-scan review --range A..B           # commits already made
 git-scan review --publish comment.md   # text alone: a body edited after the push, a comment, an issue
+git-scan review --relaxed              # a relaxed review, for an eligible clone (see below)
 ```
 
 What happens: git-scan computes the outgoing commits, builds one prompt
-per batch from its packaged review instructions, your patterns and notes,
-each commit's message and patch, and any `--publish` text, and runs a
-headless agent CLI on it with no tools, so the prompt is the reviewer's
-whole world and nothing on the machine can steer it. The JSON that comes
-back is validated; every commit of a clean batch is recorded as reviewed.
-Findings are printed with the value and the location, and nothing is
-recorded for that batch:
+per batch from its packaged review instructions, every entry of the merged
+configuration with what a match does and your notes, each commit's message
+and patch, and any `--publish` text, and runs a headless agent CLI on it
+with no tools, so the prompt is the reviewer's whole world and nothing on
+the machine can steer it. The JSON that comes back is validated; every
+commit of a clean batch is recorded as reviewed. Findings are printed with
+the value and the location, and nothing is recorded for that batch:
 
 ```
   [FAIL] Privacy review (public; 2 commit(s); 2 finding(s))
@@ -648,9 +741,9 @@ FAILED: fix the content in those commits and review again; nothing was recorded 
 
 Rules the command keeps:
 
-- **Every finding says why.** Its note names the rule it breaks. When the
-  reviewer is unsure, it reports a finding rather than passing with a
-  warning; warnings say only what limited the review.
+- **Every finding says why.** Its note names the entry it matched and the
+  reason. When the reviewer is unsure, it reports a finding rather than
+  passing with a warning; warnings say only what limited the review.
 - **The reviewer's own account is shown.** Each batch ends with the
   reviewer's one-line summary, the model that answered and the time it
   took, so a clean result is never just the word clean. A result that does
@@ -667,9 +760,21 @@ Rules the command keeps:
   recorded, since there is no commit to record; the output says so. Use it
   before posting a pull-request body edited after the push, a comment, or
   an issue.
-- **Every review is public** unless `--relaxed` is given for that review,
-  and that is refused unless the repository is eligible (see
-  [Relaxed review](#relaxed-review)).
+- **The reviewer is bound to the entry.** The prompt lists every entry
+  by id with its pattern, specifics and what a match does (see [What a
+  match does](#what-a-match-does)); the reviewer reports each finding under
+  the entry it matched, and git-scan applies that entry's `match` (its
+  `relaxed` value in a relaxed review), never the reviewer's own label. So
+  a judgment entry is never escalated to a certain finding by inference,
+  and a `warn` entry's match is a note that names the entry. A value no
+  entry names blocks in both modes. One standing instruction goes with
+  the entries: an entry also covers the value's variants in spelling,
+  case, spacing and form, reported under that entry.
+- **Every review is public unless you ask otherwise.** `--relaxed` asks
+  for a relaxed review and is refused unless the clone is eligible and the
+  host, asked again, still reports the repository private (see [Relaxed
+  review](#relaxed-review)). Nothing about the clone changes a review's
+  mode on its own.
 - **Nothing accepts a result from outside.** The only writer of the review
   record is this command, after it has run the reviewer itself.
 
@@ -694,21 +799,19 @@ background command.
 ### Relaxed review
 
 A relaxed review is for a private repository its owner keeps for personal
-material. What a finding does depends on its category, decided by git-scan,
-not by the reviewer:
-
-| Category | Public review | Relaxed review |
-|---|---|---|
-| secrets, account identifiers, financial identifiers | blocks | blocks |
-| names, emails, identity-revealing paths, private-tracker and cross-repository references | blocks | a note: shown, doesn't block |
-| personal framing, history framing | blocks | dropped |
-| anything else, including your own pattern categories | blocks | blocks |
-
-Two steps, kept apart on purpose:
+material. In it each entry's `relaxed` value applies instead of its
+`match` (see [What a match does](#what-a-match-does)): as shipped, the
+owner's name, email and login, other people, private trackers and home
+paths become notes, personal framing and history narration are not sent
+to the reviewer, and secrets, credentials, account and financial
+identifiers block as in a public review. A value no entry names blocks in
+both modes. The commit scan never reads a clone's eligibility: `relaxed`
+applies to a review that asked for it, and to nothing else.
 
 ```bash
 git-scan relax                 # once per clone: make this repository eligible
-git-scan review --relaxed      # each time: ask for a relaxed review
+git-scan review --relaxed      # a relaxed review, after asking the host again
+git-scan review                # public, as every review is unless asked
 git-scan relax --remove        # no longer eligible
 ```
 
@@ -727,10 +830,11 @@ Never eligible: a repository with no remote (or a filesystem-path remote),
 one on a host that isn't registered, or one whose `git-scan.yaml` declares
 it public-prospective.
 
-**Use** (`git-scan review --relaxed`) is asked for review by review. It is
-refused unless this exact remote is eligible, and a host that can be asked
-is asked again each time; a refusal says why and runs nothing. Without the
-flag, every review is public, so no review is ever relaxed by default.
+**Use.** `git-scan review --relaxed` asks for a relaxed review and is
+refused unless this exact remote is eligible; a host that can be asked is
+asked again each time, and when it no longer reports the repository
+private the review is refused rather than run in another mode. Without
+the flag every review is public, whatever the clone's eligibility.
 
 **Hosts.** Kept in the machine's global git config:
 

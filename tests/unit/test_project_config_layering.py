@@ -20,7 +20,7 @@ def test_project_disables_inherited_pattern(tmp_path, monkeypatch):
         "    pattern: AcmeCorp\n"
         "  - id: other-client\n"
         "    pattern: WidgetCo\n"
-        "    disabled: true\n"
+        "    match: ignore\n"
     )
 
     config = load_config(str(tmp_path))
