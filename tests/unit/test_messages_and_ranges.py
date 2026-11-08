@@ -166,7 +166,7 @@ def test_a_clean_range_marks_every_commit_in_one_pass(tmp_path, monkeypatch):
 
 def test_an_author_outside_the_identity_rules_is_refused(tmp_path, monkeypatch):
     _user_config("patterns: []\nidentity:\n"
-                 "  - remote: github.com/octo\n    emails: ['test@example.com']\n")
+                 "  - remote: github.com/octo\n    emails: ['quill@example.com']\n")
     repo = _repo(tmp_path)
     _git(repo, "remote", "add", "origin", "https://github.com/octo/app.git")
     monkeypatch.chdir(repo)

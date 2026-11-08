@@ -219,7 +219,7 @@ gate](#push-gate-optional)). `--commit REV` does the same for one commit.
 | Entropy | random-looking strings that resemble secrets, with exclusions for lockfile hashes and the like |
 | Patterns | the strings you configure (see [Configuration](#configuration)) |
 | Judgment | matches on the entries you marked for judgment, reported for acknowledgement rather than as findings (see [Judgment entries and notes](#judgment-entries-and-notes)) |
-| Environment | your OS username, home directory name, git name and email, and values from a `.env` file in the repository |
+| Environment | your git name and its parts, git email, login name, home directory name, and values from a `.env` file in the repository, as entries you can tune by id (see [Derived identity patterns](#derived-identity-patterns)) |
 | Emails | addresses outside reserved example domains and your allowed list |
 | SSN / EIN | US tax identifier formats |
 | Google Drive IDs | document and folder IDs in Drive URLs |
@@ -239,6 +239,7 @@ Settings merge from three layers; later layers win:
 | Layer | Where | Holds |
 |---|---|---|
 | built-in | shipped with the package | token patterns, entropy settings, thresholds |
+| environment | derived from the machine at scan time, not a file | the git name and its parts, the git email, the login name, the home directory name, `.env` values, as entries with ids (see [Derived identity patterns](#derived-identity-patterns)) |
 | user | `~/.config/git-scan/git-scan.yaml` | your patterns, allowed emails, identity rules, overrides |
 | project | `git-scan.yaml` in a repository root | per-repository additions and overrides |
 
@@ -250,8 +251,11 @@ target the repository's `git-scan.yaml` instead of your own.
 ### Patterns
 
 A pattern is a regular expression with an id and, optionally, a category
-shown in findings. Matching is case-sensitive unless the entry says
-`--ignore-case`; escape literal dots.
+shown in findings. Matching ignores letter case unless the entry says
+`--no-ignore-case`; escape literal dots. The built-in token, key and
+identifier formats say `ignore_case: false` explicitly, since their case
+is part of the format, and each carries `specifics`, the thing it matches
+in words.
 
 ```bash
 git-scan patterns add ID --pattern REGEX [--category CATEGORY] [OPTIONS]
@@ -262,7 +266,7 @@ git-scan patterns add ID --pattern REGEX [--category CATEGORY] [OPTIONS]
 | `--word-boundary` | match whole words only |
 | `--not-followed-by TEXT` | don't match when this text follows (repeatable) |
 | `--exclude-file GLOB` | don't apply in files whose repository path matches (repeatable) |
-| `--ignore-case` | match regardless of letter case |
+| `--no-ignore-case` | match the spelling given only; the default matches regardless of letter case |
 | `--note TEXT` | guidance shown to a reviewer beside this entry (see [Judgment entries and notes](#judgment-entries-and-notes)) |
 | `--judgment` | a match is a judgment call to acknowledge, not a finding |
 
@@ -271,7 +275,7 @@ Examples by category:
 ```bash
 # People
 git-scan patterns add my-name     --pattern 'Jane Doe'     --category name
-git-scan patterns add my-nickname --pattern 'JD'           --category name --word-boundary
+git-scan patterns add my-nickname --pattern 'JD'           --category name --word-boundary --no-ignore-case
 
 # Employer: allow its product names
 git-scan patterns add my-employer --pattern 'Example Corp' --category employer \
@@ -302,10 +306,53 @@ git-scan patterns clear              # declare that you have no personal pattern
 ```
 
 `remove` on a pattern you don't own writes an override rather than touching
-its source: a built-in is turned off in your layer, and with `--project` any
-pattern, yours included, is turned off for that repository only. `restore`
-(with the same `--project` if used) drops the override. `edit` with an empty value
-(`--exclude-file ''`) clears that field.
+its source: a built-in or a derived entry is turned off in your layer, and
+with `--project` any pattern, yours included, is turned off for that
+repository only. `restore` (with the same `--project` if used) drops the
+override. `edit` with an empty value (`--exclude-file ''`) clears that
+field.
+
+### Derived identity patterns
+
+Some strings no catalog lists because they differ per machine: the name
+and email git will commit with, the parts of that name, your login name,
+your home directory name, and the values of a `.env` file in the
+repository root. git-scan derives them at scan time as entries of the
+`environment` layer, each with a stable id, so `patterns list` shows them
+and every command above works on them by id:
+
+| id | value | default |
+|---|---|---|
+| `git-name-full` | the git author name | finding |
+| `git-name-first`, `git-name-last` | its parts, for a two-part name | judgment |
+| `git-name-part-N` | its N-th part, for a longer name | judgment |
+| `git-email` | the git author email | finding |
+| `local-username` | the login name | finding |
+| `home-dir` | the home directory name, when it differs from the login | finding |
+| `env-KEY` | a value in `.env` longer than eight characters | finding |
+
+The parts of the name are judgment entries because a given name or a
+surname is often an ordinary word: `Smith360` with the git name `Jane
+Smith` is listed for a look, not refused, and `Will` is matched in `the
+build will fail` until you say otherwise. Parts of two characters or
+fewer, and shared system account names (`root`, `runner`, `node`), are
+not derived. Each entry carries `specifics`, the thing it matches in
+words ("the owner's email address"), which the privacy review reads
+beside the value.
+
+```bash
+git-scan patterns edit git-name-first --word-boundary --no-ignore-case  # 'Will', the name, only
+git-scan patterns edit git-name-last --no-judgment                      # a finding again
+git-scan patterns exceptions add git-name-last sonian                   # not 'Smithsonian'
+git-scan patterns remove local-username                                 # off; restore turns it on
+```
+
+A change is stored in your layer as an override against the id, as for a
+built-in; the derived value itself is never written to a configuration
+file. An entry of yours whose pattern equals a derived value, in any
+letter case, governs: the derived entry is dropped, so once your catalog
+names something it is the single source of truth for it. A copyright line
+in a license file is never a match for the name entries.
 
 **Exceptions: replace or add.** `edit --not-followed-by` *replaces* the
 pattern's whole exception list, so adding one exception that way means

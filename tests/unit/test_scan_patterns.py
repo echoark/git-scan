@@ -96,6 +96,7 @@ def test_git_username_in_content_detected(tmp_path):
 
 
 def test_local_username_detected(tmp_path, monkeypatch):
+    """The login name is the derived entry 'local-username', a finding."""
     monkeypatch.setenv("USER", "uniquetestuser99")
     repo = _init_repo(tmp_path)
     (repo / "config.txt").write_text("path: /home/uniquetestuser99/secrets")
@@ -104,6 +105,7 @@ def test_local_username_detected(tmp_path, monkeypatch):
     report = run_scan(str(repo), only_step="patterns")
     check = next(c for c in report.checks if c.name == "Patterns")
     assert not check.passed
+    assert "config.txt:1 [username] uniquetestuser99" in "\n".join(check.findings)
 
 
 def test_license_copyright_false_positive_ignored(tmp_path):
@@ -181,6 +183,7 @@ def test_personal_home_dir_name_still_detected(tmp_path, monkeypatch):
     report = run_scan(str(repo), only_step="patterns")
     check = next(c for c in report.checks if c.name == "Patterns")
     assert not check.passed
+    assert "[username] jdevtester" in "\n".join(check.findings)
 
 
 def test_git_name_comes_from_commit_identity_not_global_config(tmp_path, monkeypatch):
@@ -190,8 +193,8 @@ def test_git_name_comes_from_commit_identity_not_global_config(tmp_path, monkeyp
     a personal pattern."""
     monkeypatch.setenv("GIT_AUTHOR_NAME", "Jane Devtester")
     repo = _init_repo(tmp_path)
-    # The sandbox's global config says "Test User"; the environment wins.
-    (repo / "notes.md").write_text("Test User guide.\n")
+    # The sandbox's global config says "Quill Sandboxer"; the environment wins.
+    (repo / "notes.md").write_text("Quill Sandboxer guide.\n")
     subprocess.run(["git", "-C", str(repo), "add", "notes.md"], check=True)
     report = run_scan(str(repo), only_step="patterns")
     check = next(c for c in report.checks if c.name == "Patterns")
@@ -291,7 +294,21 @@ def test_acknowledgement_is_bound_to_the_staged_tree(tmp_path):
     assert not judgment.passed
 
 
-def test_no_judgment_entries_means_no_judgment_check(tmp_path):
+def test_judgment_check_passes_with_no_matches(tmp_path):
+    repo = _init_repo(tmp_path)
+    (repo / "a.txt").write_text("plain\n")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    report = run_scan(str(repo), only_step="patterns")
+    judgment = next(c for c in report.checks if c.name == "Judgment")
+    assert judgment.passed and "no matches" in judgment.info
+
+
+def test_no_judgment_entries_means_no_judgment_check(tmp_path, monkeypatch):
+    """With no judgment entry anywhere (the derived ones turned off), the
+    check is not reported at all."""
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "Solo")          # a one-word name has no parts
+    monkeypatch.delenv("USER", raising=False)
+    monkeypatch.delenv("USERNAME", raising=False)
     repo = _init_repo(tmp_path)
     (repo / "a.txt").write_text("plain\n")
     subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
@@ -299,21 +316,21 @@ def test_no_judgment_entries_means_no_judgment_check(tmp_path):
     assert not any(c.name == "Judgment" for c in report.checks)
 
 
-def test_ignore_case_matches_any_letter_case(tmp_path):
+def test_letter_case_is_ignored_unless_the_entry_says_otherwise(tmp_path):
     repo = _init_repo(tmp_path)
     (repo / "git-scan.yaml").write_text(
         "patterns:\n"
         "  - id: me\n"
         "    pattern: jane doe\n"
         "    category: name\n"
-        "    ignore_case: true\n"
         "  - id: strict\n"
         "    pattern: acme corp\n"
         "    category: customer\n"
+        "    ignore_case: false\n"
     )
     (repo / "a.txt").write_text("Contact: Jane Doe\n")
     (repo / "b.txt").write_text("Vendor: ACME CORP\n")
-    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "a.txt", "b.txt"], check=True)
 
     report = run_scan(str(repo), only_step="patterns")
     check = next(c for c in report.checks if c.name == "Patterns")

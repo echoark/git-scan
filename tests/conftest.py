@@ -11,8 +11,13 @@ def isolate_config(tmp_path, monkeypatch):
     every test a user layer that declares (empty) personal patterns, so the
     personal-patterns check passes unless a test removes it.
 
-    Git's global config is pointed at an empty temp file so dynamic patterns
-    (git name, email) and identity checks never see the developer's own.
+    Git's global config is pointed at a temp file with a sandbox identity so
+    the derived patterns (git name and its parts, email) and identity checks
+    never see the developer's own. The identity's words are ones fixture
+    content never uses by accident: its parts are judgment entries that
+    match regardless of case, so "Test User" would make every "test" in a
+    fixture a judgment match. HOME is a temp directory named after a system
+    account, so the developer's home directory name is not derived either.
     """
     test_config = tmp_path / "xdg_config"
     (test_config / "git-scan").mkdir(parents=True)
@@ -20,9 +25,12 @@ def isolate_config(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(test_config))
 
     global_git = tmp_path / "gitconfig"
-    global_git.write_text("[user]\n\tname = Test User\n\temail = test@example.com\n")
+    global_git.write_text("[user]\n\tname = Quill Sandboxer\n\temail = quill@example.com\n")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_git))
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    home = tmp_path / "root"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
     # Config injected through the environment (GIT_CONFIG_COUNT with
     # GIT_CONFIG_KEY_n / GIT_CONFIG_VALUE_n) is read before any file;
     # hosted environments use it for URL rewrites and credential settings.

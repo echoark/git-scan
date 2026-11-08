@@ -55,13 +55,15 @@ def add_pattern(id: str, pattern: str, category: Optional[str] = None,
                 word_boundary: bool = False, not_followed_by: Optional[List[str]] = None,
                 exclude_files: Optional[List[str]] = None,
                 repo_path: str = ".", project: bool = False,
-                ignore_case: bool = False, judgment: bool = False,
+                ignore_case: Optional[bool] = None, judgment: bool = False,
                 note: Optional[str] = None) -> dict:
     """Add a pattern to the user (or project) layer. Fails on a duplicate id.
 
     A judgment entry (``judgment=True``) is a value whose match is a judgment
     call rather than a finding: it is reported for acknowledgement. ``note``
     carries the guidance that goes with it (and is allowed on any entry).
+    Matching ignores letter case unless ``ignore_case`` is ``False``, which
+    is the one value written.
     """
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", id):
         raise PatternError(f"'{id}' is not a valid id: use letters, digits, '.', '_' or '-'")
@@ -87,8 +89,8 @@ def add_pattern(id: str, pattern: str, category: Optional[str] = None,
         entry["not_followed_by"] = list(not_followed_by)
     if exclude_files:
         entry["exclude_files"] = list(exclude_files)
-    if ignore_case:
-        entry["ignore_case"] = True
+    if ignore_case is False:
+        entry["ignore_case"] = False
     if judgment:
         entry["judgment"] = True
     if note:
@@ -104,21 +106,27 @@ EDITABLE = ("pattern", "category", "word_boundary", "not_followed_by", "exclude_
 
 
 def edit_pattern(id: str, repo_path: str = ".", project: bool = False, **changes) -> dict:
-    """Change fields of a pattern. For an entry in another layer (e.g. a
-    built-in), writes an override entry holding only the changed fields;
-    the merge applies them on top. Lists replace, they don't append."""
+    """Change fields of a pattern. For an entry in another layer (a built-in,
+    one derived from this machine, or with ``project`` one of the user's),
+    writes an override entry holding only the changed fields; the merge
+    applies them on top. Lists replace, they don't append.
+
+    A field set to its default (false, an empty list) is dropped from an
+    entry this layer owns and written explicitly into an override, where it
+    has to beat the lower layer's value. ``ignore_case`` defaults to true, so
+    false is always written."""
     changes = {k: v for k, v in changes.items() if k in EDITABLE and v is not None}
     if not changes:
         raise PatternError("nothing to change")
     config = load_config(repo_path)
-    if id not in config.pattern_sources:
-        raise PatternError(f"no pattern '{id}'")
+    origin = _pattern_origin(id, config)
     if "pattern" in changes:
         try:
             re.compile(changes["pattern"])
         except re.error as e:
             raise PatternError(f"'{changes['pattern']}' is not a valid regex: {e}")
     path = target_path(repo_path, project)
+    owns = origin == ("project" if project else "user")
     data = _read(path)
     entries = _entries(data)
     mine = next((e for e in entries if e.get("id") == id), None)
@@ -128,7 +136,7 @@ def edit_pattern(id: str, repo_path: str = ".", project: bool = False, **changes
     for k, v in changes.items():
         if isinstance(v, (list, tuple)):
             v = [x for x in v if x]          # an empty value clears the list
-        if v in ([], False) and k != "pattern":
+        if v in ([], False) and k != "pattern" and k != "ignore_case" and owns:
             mine.pop(k, None)
         else:
             mine[k] = list(v) if isinstance(v, (list, tuple)) else v
@@ -275,12 +283,13 @@ def remove_pattern(id: str, repo_path: str = ".", project: bool = False) -> str:
     # A pattern defined in a lower layer can't be deleted from here; it is
     # turned off for this layer's scope with an override entry.
     inherited = origin is not None and origin != target_layer and (
-        origin == "built-in" or (origin == "user" and project))
+        origin in ("built-in", "environment") or (origin == "user" and project))
     if inherited:
         remaining.append({"id": id, "disabled": True})
         data["patterns"] = remaining
         _write(path, data)
-        where = "built in" if origin == "built-in" else "from your user config"
+        where = {"built-in": "built in", "environment": "derived from this machine's environment",
+                 "user": "from your user config"}[origin]
         scope = "this repository" if project else path
         if mine:
             return f"removed your version of '{id}' and turned off the {origin} pattern for {scope}"
@@ -316,7 +325,8 @@ def clear_patterns(repo_path: str = ".", project: bool = False) -> str:
 
 
 def list_patterns(repo_path: str = ".", include_disabled: bool = False) -> List[dict]:
-    """Merged patterns with their source layer and state."""
+    """Merged patterns with their source layer and state. ``ignore_case`` is
+    present only when false, the one value that differs from the default."""
     config = load_config(repo_path)
     sources = config.pattern_sources
     rows = []
@@ -331,27 +341,29 @@ def list_patterns(repo_path: str = ".", include_disabled: bool = False) -> List[
             "disabled": bool(p.get("disabled")),
             "judgment": bool(p.get("judgment")),
         }
-        for optional in ("word_boundary", "ignore_case", "not_followed_by",
-                         "exclude_files", "note"):
+        for optional in ("word_boundary", "not_followed_by", "exclude_files", "note", "specifics"):
             if p.get(optional):
                 row[optional] = p[optional]
+        if p.get("ignore_case") is False:
+            row["ignore_case"] = False
         rows.append(row)
     return rows
 
 
 def export_patterns(repo_path: str = ".") -> dict:
     """The catalog the privacy review sends to the reviewer: the active
-    personal entries (scan and judgment alike, with their notes) and the
-    free-text notes.
+    personal entries (scan and judgment alike, with their notes), the
+    identity entries derived from this machine, and the free-text notes.
 
     Built-in token patterns are left out: a reviewer knows those formats, and
-    the list is about what is personal to this configuration.
+    the list is about what is personal to this configuration. So are ``.env``
+    values: they are secrets, and the reviewer runs outside this machine.
     """
     config = load_config(repo_path)
     sources = config.pattern_sources
     entries = []
     for row in list_patterns(repo_path):
-        if row["layer"] == "built-in" or sources.get(row["id"]) == "built-in":
+        if sources.get(row["id"]) == "built-in" or row["category"] == "env":
             continue
         row.pop("layer", None)
         row.pop("disabled", None)

@@ -64,7 +64,7 @@ def test_commit_identity_is_the_sandbox_identity(tmp_path):
     (repo / "a.txt").write_text("x\n")
     _git(repo, "add", ".")
     _git(repo, "commit", "-q", "-m", "x")
-    assert _git(repo, "log", "-1", "--format=%an <%ae>").strip() == "Test User <test@example.com>"
+    assert _git(repo, "log", "-1", "--format=%an <%ae>").strip() == "Quill Sandboxer <quill@example.com>"
 
 
 def test_config_and_hook_paths_point_into_the_sandbox(tmp_path):
@@ -73,6 +73,7 @@ def test_config_and_hook_paths_point_into_the_sandbox(tmp_path):
     assert str(layer_paths(str(tmp_path))["user"]).startswith(str(tmp_path))
     assert os.environ["USER"] == "testuser"
     assert "GIT_CONFIG_GLOBAL" in os.environ
+    assert str(Path.home()).startswith(str(tmp_path)) and Path.home().name == "root"
 
 
 def test_temp_dirs_live_under_the_system_temp_base(tmp_path):

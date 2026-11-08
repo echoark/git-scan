@@ -116,10 +116,12 @@ def test_judgment_note_ignore_case_and_notes_are_accepted(tmp_path):
         "  - a city is a finding only beside an address\n"
     )
     config = load_config(str(_repo(tmp_path)))
-    assert [p["id"] for p in config.judgment_patterns] == ["card"]
+    assert [p["id"] for p in config.judgment_patterns if p["id"] in ("card", "me")] == ["card"]
     assert [p["id"] for p in config.scan_patterns if p["id"] in ("card", "me")] == ["me"]
     assert config.notes == ["a city is a finding only beside an address"]
-    assert config.pattern_counts["judgment"] == 1
+    derived_judgment = [p for p in config.judgment_patterns
+                        if config.pattern_sources[p["id"]] == "environment"]
+    assert config.pattern_counts["judgment"] == 1 + len(derived_judgment)
     assert config.pattern_counts["personal"] == 1
 
 

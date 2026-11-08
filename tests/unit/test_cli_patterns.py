@@ -345,19 +345,26 @@ def test_edit_not_followed_by_still_replaces_and_points_at_exceptions_add(tmp_pa
     assert _entry(_user_file(), "co")["not_followed_by"] == ["-sdk"]
     assert "exceptions add" in _run("patterns", "edit", "--help").output
 
-def test_add_judgment_entry_with_note_and_ignore_case(tmp_path, monkeypatch):
+def test_add_judgment_entry_with_note_and_case_sensitivity(tmp_path, monkeypatch):
     _repo(tmp_path, monkeypatch)
     r = _run("patterns", "add", "card-a", "--pattern", "1234", "--category", "last4",
              "--judgment", "--note", "only beside account or card")
     assert r.exit_code == 0, r.output
-    r = _run("patterns", "add", "me", "--pattern", "Jane", "--category", "name", "--ignore-case")
+    r = _run("patterns", "add", "me", "--pattern", "Jane", "--category", "name", "--no-ignore-case")
+    assert r.exit_code == 0, r.output
+    r = _run("patterns", "add", "co", "--pattern", "Vendorco", "--ignore-case")   # the default
     assert r.exit_code == 0, r.output
     data = yaml.safe_load(_user_file().read_text())
     assert {"id": "card-a", "pattern": "1234", "category": "last4", "judgment": True,
             "note": "only beside account or card"} in data["patterns"]
-    assert {"id": "me", "pattern": "Jane", "category": "name", "ignore_case": True} in data["patterns"]
+    assert {"id": "me", "pattern": "Jane", "category": "name", "ignore_case": False} in data["patterns"]
+    assert {"id": "co", "pattern": "Vendorco"} in data["patterns"]      # nothing to write
     out = _run("patterns", "list").output
     assert "(judgment)" in out
+    user_rows = [ln for ln in out.splitlines() if "  user " in ln]
+    assert [ln for ln in user_rows if "(case-sensitive)" in ln] == \
+        [ln for ln in user_rows if ln.strip().startswith("me ")]
+    assert all("(case-sensitive)" in ln for ln in out.splitlines() if "  built-in " in ln)
 
 
 def test_notes_add_list_remove(tmp_path, monkeypatch):
