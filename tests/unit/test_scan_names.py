@@ -76,19 +76,23 @@ def test_builtin_secret_categories_not_applied_to_names(tmp_path):
     assert _checks(repo)["Patterns in file names"].passed
 
 
-def test_git_name_applies_to_names_but_judgment_entries_do_not(tmp_path):
+def test_derived_findings_apply_to_names_but_judgment_entries_do_not(tmp_path):
     """The derived entries whose match is a finding (the git author name, the
-    email) apply to names; the judgment ones (login name, name parts) don't,
-    since a name has no acknowledgement flow."""
+    email, the login name) apply to names; the judgment ones (the name's
+    parts) don't, since a name has no acknowledgement flow."""
     repo = _repo(tmp_path)
-    _git(repo, "config", "user.name", "Quillsandboxer")
-    (repo / "testuser-notes.md").write_text("x")       # the sandbox login name: judgment
+    _git(repo, "config", "user.name", "Quill Sandboxer")
+    (repo / "sandboxer-notes.md").write_text("x")      # a name part: judgment, not applied
     _git(repo, "add", ".")
-    _git(repo, "branch", "quillsandboxer-experiment")  # the git name, any case
+    _git(repo, "branch", "sandboxer-experiment")
     checks = _checks(repo)
     assert checks["Patterns in file names"].passed
-    assert not checks["Patterns in branch names"].passed
-    assert "quillsandboxer-experiment [name]" in checks["Patterns in branch names"].findings[0]
+    assert checks["Patterns in branch names"].passed
+    (repo / "testuser-notes.md").write_text("x")       # the sandbox login name: a finding
+    _git(repo, "add", ".")
+    checks = _checks(repo)
+    assert not checks["Patterns in file names"].passed
+    assert "testuser-notes.md [username]" in checks["Patterns in file names"].findings[0]
 
 
 def test_non_ascii_file_name_is_matched(tmp_path):

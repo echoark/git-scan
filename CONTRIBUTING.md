@@ -159,8 +159,10 @@ Rules:
   three parts or more), the git email (`git-email`), the login name
   (`local-username`), the home directory name when it differs
   (`home-dir`), and each `.env` value longer than eight characters
-  (`env-KEY`). The full name, the email and `.env` values are findings;
-  the rest are judgment entries, since they are often ordinary words. The
+  (`env-KEY`). The parts of the name are judgment entries, since a given
+  name or a surname is often an ordinary word; everything else is a
+  finding. Each carries `specifics`, the thing it matches in words, as
+  every built-in entry does. The
   layer sits below the user layer so an override wins, and the override is
   stored against the id like a built-in's; the derived value is never
   written to a file. A user or project entry whose `pattern` equals a
@@ -170,7 +172,9 @@ Rules:
   rather than failing the scan as an entry without a pattern.
 - **`ignore_case` defaults to true.** `compile_patterns` treats an absent
   key as true and only an explicit `false` as case-sensitive, so the one
-  value ever written is `ignore_case: false` (`--no-ignore-case`).
+  value ever written is `ignore_case: false` (`--no-ignore-case`). The 17
+  built-in token, key and identifier formats carry it explicitly: their
+  case is part of the format.
   `patterns edit` writes a field set to its default (false, an empty list)
   only into an override, where it has to beat the lower layer's value;
   `ignore_case: false` is always written, since the default is true.
@@ -193,7 +197,8 @@ Rules:
   it writes `disabled: true` into the target layer, which turns the pattern
   off for that layer's scope only. `patterns restore` drops that override.
   Users never choose between deleting and disabling.
-- **A pattern entry's fields:** `id`, `pattern`, `category`,
+- **A pattern entry's fields:** `id`, `pattern`, `category`, `specifics`
+  (the thing it matches, in words, for the reviewer),
   `word_boundary`, `not_followed_by` (list), `exclude_files` (list of
   globs matched against the whole repo-relative path, never the base name
   alone, so one file's exclusion can't cover same-named files elsewhere;

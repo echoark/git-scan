@@ -16,15 +16,15 @@ id                   value                                       default
 ``git-name-last``    its last part (two-part names)              judgment
 ``git-name-part-N``  the N-th part (names of three parts or more) judgment
 ``git-email``        the git author email                        finding
-``local-username``   the login name (``USER``)                   judgment
-``home-dir``         the home directory name, when it differs    judgment
+``local-username``   the login name (``USER``)                   finding
+``home-dir``         the home directory name, when it differs    finding
 ``env-<KEY>``        a value of ``.env`` in the repository root  finding
 ===================  ==========================================  =========
 
-Name parts, the login name and the home directory name are judgment
-entries: they are often ordinary words, so a match is listed for a look
-rather than refused. The full name, the email and ``.env`` values are
-findings.
+The parts of the name are judgment entries: a given name or a surname is
+often an ordinary word, so a match is listed for a look rather than
+refused. Everything else is a finding. Each entry carries ``specifics``,
+the thing it matches in words, for the reviewer.
 
 The layer sits between the built-in and the user layer, so an override in
 the user layer (or a project's) wins, and is stored against the id, as an
@@ -58,12 +58,14 @@ LAYER = "environment"
 ENV_PREFIX = "env-"
 FIXED_IDS = ("git-name-full", "git-email", "local-username", "home-dir")
 
-NAME_PART_NOTE = ("part of the git author name on this machine; a finding when it refers "
-                  "to the author, not when the word is used in another sense")
-LOGIN_NOTE = ("the login name on this machine; a finding when it identifies the author "
-              "(a path, an account), not when the word is used in another sense")
-HOME_NOTE = ("the home directory name on this machine; a finding when it identifies the "
-             "author (a path, an account), not when the word is used in another sense")
+SPECIFICS = {
+    "git-name-full": "the owner's full name",
+    "git-name-part": "the owner's given name or surname",
+    "git-email": "the owner's email address",
+    "local-username": "the owner's login name on this machine",
+    "home-dir": "the name of the owner's home directory",
+    "env": "a value of the repository's .env file",
+}
 
 _IDENT = re.compile(r"^(?P<name>.*?)\s*<(?P<email>[^>]*)>")
 _ID_CHARS = re.compile(r"[^A-Za-z0-9._-]")
@@ -113,12 +115,10 @@ def commit_identity(repo_path: str = ".") -> Tuple[str, str]:
     return _config("user.name"), _config("user.email")
 
 
-def _entry(id: str, value: str, category: str, judgment: bool, note: Optional[str] = None) -> dict:
-    entry = {"id": id, "pattern": re.escape(value), "category": category}
+def _entry(id: str, value: str, category: str, judgment: bool, specifics: str) -> dict:
+    entry = {"id": id, "pattern": re.escape(value), "category": category, "specifics": specifics}
     if judgment:
         entry["judgment"] = True
-    if note:
-        entry["note"] = note
     entry["_value"] = value          # for the precedence check; dropped before use
     return entry
 
@@ -153,18 +153,18 @@ def derived_entries(repo_path: str = ".", governed_by: Iterable[str] = ()) -> Li
 
     username = _personal_account_name(os.environ.get("USER") or os.environ.get("USERNAME"))
     if username:
-        entries.append(_entry("local-username", username, "username", True, LOGIN_NOTE))
+        entries.append(_entry("local-username", username, "username", False, SPECIFICS["local-username"]))
 
     try:
         home_name = _personal_account_name(Path.home().name)
         if home_name and home_name != username:
-            entries.append(_entry("home-dir", home_name, "username", True, HOME_NOTE))
+            entries.append(_entry("home-dir", home_name, "username", False, SPECIFICS["home-dir"]))
     except Exception:
         pass
 
     git_name, git_email = commit_identity(repo_path)
     if git_name:
-        entries.append(_entry("git-name-full", git_name, "name", False))
+        entries.append(_entry("git-name-full", git_name, "name", False, SPECIFICS["git-name-full"]))
         parts = git_name.split()
         if len(parts) > 1:
             for i, part in enumerate(parts):
@@ -174,12 +174,13 @@ def derived_entries(repo_path: str = ".", governed_by: Iterable[str] = ()) -> Li
                     id = "git-name-first" if i == 0 else "git-name-last"
                 else:
                     id = f"git-name-part-{i + 1}"
-                entries.append(_entry(id, part, "name", True, NAME_PART_NOTE))
+                entries.append(_entry(id, part, "name", True, SPECIFICS["git-name-part"]))
     if git_email:
-        entries.append(_entry("git-email", git_email, "email", False))
+        entries.append(_entry("git-email", git_email, "email", False, SPECIFICS["git-email"]))
 
     for key, value in _env_values(repo_path):
-        entries.append(_entry(ENV_PREFIX + (_ID_CHARS.sub("_", key) or "value"), value, "env", False))
+        entries.append(_entry(ENV_PREFIX + (_ID_CHARS.sub("_", key) or "value"), value, "env", False,
+                              SPECIFICS["env"]))
 
     catalog = {t.lower() for t in governed_by if isinstance(t, str)}
     kept = []

@@ -54,7 +54,7 @@ TOP_LEVEL_KEYS = {"entropy", "thresholds", "patterns", "allowed_emails", "identi
 REVIEW_KEYS = {"runner", "model", "timeout", "batch_bytes", "public_prospective"}
 PATTERN_FIELDS = {"id", "pattern", "category", "word_boundary",
                   "not_followed_by", "exclude_files", "disabled",
-                  "ignore_case", "judgment", "note"}
+                  "ignore_case", "judgment", "note", "specifics"}
 THRESHOLD_KEYS = {"large_amount", "suspicious_nonround", "suspicious_any",
                   "cents_review"}
 ENTROPY_KEYS = {"enabled", "threshold", "min_len", "exclusions"}
@@ -159,7 +159,7 @@ def validate_layer(data, path) -> None:
                         re.compile(p["pattern"])
                     except re.error as e:
                         errors.append(f"{loc}: pattern is not a valid regex: {e}")
-            for text_field in ("category", "note"):
+            for text_field in ("category", "note", "specifics"):
                 if text_field in p and not isinstance(p[text_field], str):
                     errors.append(f"{loc}: '{text_field}' must be text")
             for flag in ("word_boundary", "disabled", "ignore_case", "judgment"):

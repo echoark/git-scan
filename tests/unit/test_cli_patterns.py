@@ -361,8 +361,10 @@ def test_add_judgment_entry_with_note_and_case_sensitivity(tmp_path, monkeypatch
     assert {"id": "co", "pattern": "Vendorco"} in data["patterns"]      # nothing to write
     out = _run("patterns", "list").output
     assert "(judgment)" in out
-    assert [ln for ln in out.splitlines() if "(case-sensitive)" in ln] == \
-        [ln for ln in out.splitlines() if ln.strip().startswith("me ")]
+    user_rows = [ln for ln in out.splitlines() if "  user " in ln]
+    assert [ln for ln in user_rows if "(case-sensitive)" in ln] == \
+        [ln for ln in user_rows if ln.strip().startswith("me ")]
+    assert all("(case-sensitive)" in ln for ln in out.splitlines() if "  built-in " in ln)
 
 
 def test_notes_add_list_remove(tmp_path, monkeypatch):

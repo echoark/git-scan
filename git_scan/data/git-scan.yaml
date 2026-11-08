@@ -1,11 +1,13 @@
-# git-scan package defaults — base layer of three-layer config.
+# git-scan package defaults — base layer of the layered config.
 #
 # User overrides: ~/.config/git-scan/git-scan.yaml
 # Project overrides: ./git-scan.yaml (repo root)
 #
 # Arrays of dicts merge by composite key (id + name).
 # Set disabled: true on any inherited pattern to suppress it.
-# All patterns are regex.
+# All patterns are regex. Token, key and identifier formats are
+# case-sensitive (ignore_case: false); every other pattern ignores letter
+# case by default. 'specifics' names the thing an entry matches, in words.
 ---
 
 entropy:
@@ -34,33 +36,53 @@ patterns:
   - id: github-pat
     pattern: "ghp_[0-9a-zA-Z]{36}"
     category: token
+    specifics: a GitHub personal access token
+    ignore_case: false
   - id: github-fine-grained
     pattern: "github[_]pat[_][a-zA-Z0-9_]+"
     category: token
+    specifics: a fine-grained GitHub personal access token
+    ignore_case: false
   - id: google-oauth-access
     pattern: "ya29\\.[a-zA-Z0-9._-]+"
     category: token
+    specifics: a Google OAuth access token
+    ignore_case: false
   - id: google-oauth-client-id
     pattern: "[0-9]+-[a-z0-9]+\\.apps\\.googleusercontent\\.com"
     category: token
+    specifics: a Google OAuth client id
+    ignore_case: false
   - id: google-oauth-client-secret
     pattern: "GOCSPX-[a-zA-Z0-9_-]+"
     category: token
+    specifics: a Google OAuth client secret
+    ignore_case: false
   - id: google-oauth-refresh
     pattern: "1//[0-9a-zA-Z_-]+"
     category: token
+    specifics: a Google OAuth refresh token
+    ignore_case: false
   - id: google-api-key
     pattern: "AIza[a-zA-Z0-9_-]{35}"
     category: token
+    specifics: a Google API key
+    ignore_case: false
   - id: openai-key
     pattern: "sk-[a-zA-Z0-9]{48}"
     category: token
+    specifics: an OpenAI API key
+    ignore_case: false
   - id: slack-token
     pattern: "xox[bp]-[a-zA-Z0-9-]+"
     category: token
+    specifics: a Slack bot or user token
+    ignore_case: false
   - id: aws-access-key
     pattern: "\\bAKIA[A-Z0-9]{16}\\b"
     category: token
+    specifics: an AWS access key id
+    ignore_case: false
 
   # --- Private keys ---
   # Patterns use regex construction to avoid containing the literal key header,
@@ -68,24 +90,38 @@ patterns:
   - id: rsa-private-key
     pattern: "[-]{5}BEGIN[ ]RSA[ ]PRIVATE[ ]KEY[-]{5}"
     category: key
+    specifics: the header of an RSA private key
+    ignore_case: false
   - id: openssh-private-key
     pattern: "[-]{5}BEGIN[ ]OPENSSH[ ]PRIVATE[ ]KEY[-]{5}"
     category: key
+    specifics: the header of an OpenSSH private key
+    ignore_case: false
 
   - id: generic-api-key
     # Four or more 8-character alphanumeric groups joined by - _ or .
     pattern: "\\b[a-zA-Z0-9]{8}(?:[-_.][a-zA-Z0-9]{8}){3,}\\b"
     category: token
+    specifics: an API key of four or more eight-character groups
+    ignore_case: false
   # --- Identifiers ---
   - id: uuid-dashed
     pattern: "\\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\\b"
     category: identifier
+    specifics: a UUID with dashes
+    ignore_case: false
   - id: uuid-compact
     pattern: "\\b[0-9a-fA-F]{32}\\b"
     category: identifier
+    specifics: a UUID without dashes, 32 hex characters
+    ignore_case: false
   - id: uuid-underscore
     pattern: "\\b[0-9a-fA-F]{8}_[0-9a-fA-F]{4}_[0-9a-fA-F]{4}_[0-9a-fA-F]{4}_[0-9a-fA-F]{12}\\b"
     category: identifier
+    specifics: a UUID with underscores
+    ignore_case: false
   - id: hex-40
     pattern: "\\b[a-f0-9]{40}\\b"
     category: identifier
+    specifics: a 40-character hex string, such as a full commit id or a SHA-1 digest
+    ignore_case: false

@@ -341,7 +341,7 @@ def list_patterns(repo_path: str = ".", include_disabled: bool = False) -> List[
             "disabled": bool(p.get("disabled")),
             "judgment": bool(p.get("judgment")),
         }
-        for optional in ("word_boundary", "not_followed_by", "exclude_files", "note"):
+        for optional in ("word_boundary", "not_followed_by", "exclude_files", "note", "specifics"):
             if p.get(optional):
                 row[optional] = p[optional]
         if p.get("ignore_case") is False:

@@ -95,19 +95,17 @@ def test_git_username_in_content_detected(tmp_path):
     assert not check.passed
 
 
-def test_local_username_is_a_judgment_match(tmp_path, monkeypatch):
-    """The login name is often an ordinary word, so a match is listed for a
-    look (the derived entry 'local-username' is a judgment entry), not refused."""
+def test_local_username_detected(tmp_path, monkeypatch):
+    """The login name is the derived entry 'local-username', a finding."""
     monkeypatch.setenv("USER", "uniquetestuser99")
     repo = _init_repo(tmp_path)
     (repo / "config.txt").write_text("path: /home/uniquetestuser99/secrets")
     subprocess.run(["git", "-C", str(repo), "add", "config.txt"], check=True)
 
     report = run_scan(str(repo), only_step="patterns")
-    assert next(c for c in report.checks if c.name == "Patterns").passed
-    judgment = next(c for c in report.checks if c.name == "Judgment")
-    assert not judgment.passed
-    assert "config.txt:1 [username] uniquetestuser99" in "\n".join(judgment.findings)
+    check = next(c for c in report.checks if c.name == "Patterns")
+    assert not check.passed
+    assert "config.txt:1 [username] uniquetestuser99" in "\n".join(check.findings)
 
 
 def test_license_copyright_false_positive_ignored(tmp_path):
@@ -174,7 +172,7 @@ def test_system_account_names_are_not_personal(tmp_path, monkeypatch):
     assert check.passed, check.findings
 
 
-def test_personal_home_dir_name_is_a_judgment_match(tmp_path, monkeypatch):
+def test_personal_home_dir_name_still_detected(tmp_path, monkeypatch):
     monkeypatch.delenv("USER", raising=False)
     monkeypatch.delenv("USERNAME", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path / "jdevtester"))
@@ -183,10 +181,9 @@ def test_personal_home_dir_name_is_a_judgment_match(tmp_path, monkeypatch):
     subprocess.run(["git", "-C", str(repo), "add", "config.txt"], check=True)
 
     report = run_scan(str(repo), only_step="patterns")
-    assert next(c for c in report.checks if c.name == "Patterns").passed
-    judgment = next(c for c in report.checks if c.name == "Judgment")
-    assert not judgment.passed
-    assert "[username] jdevtester" in "\n".join(judgment.findings)
+    check = next(c for c in report.checks if c.name == "Patterns")
+    assert not check.passed
+    assert "[username] jdevtester" in "\n".join(check.findings)
 
 
 def test_git_name_comes_from_commit_identity_not_global_config(tmp_path, monkeypatch):

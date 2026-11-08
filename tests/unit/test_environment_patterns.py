@@ -49,7 +49,10 @@ def test_derived_entries_have_stable_ids_in_the_environment_layer(tmp_path, monk
     assert by_id["git-name-full"]["category"] == "name" and "judgment" not in by_id["git-name-full"]
     assert by_id["git-email"]["category"] == "email" and "judgment" not in by_id["git-email"]
     assert by_id["git-name-first"]["judgment"] and by_id["git-name-last"]["judgment"]
-    assert by_id["local-username"]["judgment"] and by_id["local-username"]["category"] == "username"
+    assert "judgment" not in by_id["local-username"] and by_id["local-username"]["category"] == "username"
+    assert by_id["git-email"]["specifics"] == "the owner's email address"
+    assert by_id["git-name-last"]["specifics"] == "the owner's given name or surname"
+    assert all(p.get("specifics") for p in config.patterns if sources[p["id"]] in ("built-in", "environment"))
     out = _run("patterns", "list").output
     assert "git-name-last" in out and "environment" in out
     assert _user_file().read_text() == "patterns: []\n"            # nothing derived is written
@@ -173,4 +176,14 @@ def test_copyright_line_in_a_license_is_not_a_match(tmp_path, monkeypatch):
 def test_patterns_info_counts_environment_entries(tmp_path, monkeypatch):
     repo = _repo(tmp_path, monkeypatch)
     info = _checks(repo, "plain\n")["Patterns"].info
-    assert "2 environment" in info                     # git-name-full and git-email are findings
+    assert "3 environment" in info        # git-name-full, git-email and local-username are findings
+
+
+def test_built_in_formats_are_case_sensitive_and_say_what_they_match(tmp_path, monkeypatch):
+    repo = _repo(tmp_path, monkeypatch)
+    config = load_config(str(repo))
+    built_in = [p for p in config.patterns if config.pattern_sources[p["id"]] == "built-in"]
+    assert len(built_in) == 17
+    assert all(p["ignore_case"] is False and p["specifics"] for p in built_in)
+    assert _checks(repo, "key = akia" + "a" * 16 + "\n")["Patterns"].passed      # a format, in its case only
+    assert not _checks(repo, "key = AKIA" + "A" * 16 + "\n")["Patterns"].passed

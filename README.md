@@ -252,7 +252,10 @@ target the repository's `git-scan.yaml` instead of your own.
 
 A pattern is a regular expression with an id and, optionally, a category
 shown in findings. Matching ignores letter case unless the entry says
-`--no-ignore-case`; escape literal dots.
+`--no-ignore-case`; escape literal dots. The built-in token, key and
+identifier formats say `ignore_case: false` explicitly, since their case
+is part of the format, and each carries `specifics`, the thing it matches
+in words.
 
 ```bash
 git-scan patterns add ID --pattern REGEX [--category CATEGORY] [OPTIONS]
@@ -324,16 +327,18 @@ and every command above works on them by id:
 | `git-name-first`, `git-name-last` | its parts, for a two-part name | judgment |
 | `git-name-part-N` | its N-th part, for a longer name | judgment |
 | `git-email` | the git author email | finding |
-| `local-username` | the login name | judgment |
-| `home-dir` | the home directory name, when it differs from the login | judgment |
+| `local-username` | the login name | finding |
+| `home-dir` | the home directory name, when it differs from the login | finding |
 | `env-KEY` | a value in `.env` longer than eight characters | finding |
 
-Name parts, the login name and the home directory name are judgment
-entries because they are often ordinary words: `Smith360` with the git
-name `Jane Smith` is listed for a look, not refused, and `Will` is matched
-in `the build will fail` until you say otherwise. Parts of two characters
-or fewer, and shared system account names (`root`, `runner`, `node`), are
-not derived.
+The parts of the name are judgment entries because a given name or a
+surname is often an ordinary word: `Smith360` with the git name `Jane
+Smith` is listed for a look, not refused, and `Will` is matched in `the
+build will fail` until you say otherwise. Parts of two characters or
+fewer, and shared system account names (`root`, `runner`, `node`), are
+not derived. Each entry carries `specifics`, the thing it matches in
+words ("the owner's email address"), which the privacy review reads
+beside the value.
 
 ```bash
 git-scan patterns edit git-name-first --word-boundary --no-ignore-case  # 'Will', the name, only
