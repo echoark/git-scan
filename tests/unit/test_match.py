@@ -1,6 +1,7 @@
 """What a match does, on the scan side: each entry's ``match`` (block,
-judgment, warn, ignore) decides, the scan never reads a clone's relaxed
-eligibility, the commands that set it, and ``config migrate``."""
+judgment, warn, ignore) decides, or its ``relaxed`` value in a clone that
+is eligible for a relaxed review and private; the commands that set them,
+and ``config migrate``."""
 
 import asyncio
 import os
@@ -15,6 +16,7 @@ from click.testing import CliRunner
 
 from git_scan.cli.main import cli
 from git_scan.sdk.config import entry_match, load_config, ConfigError
+from git_scan.sdk import relaxed
 from git_scan.sdk.scanner import run_scan
 from git_scan.sdk.user_patterns import export_patterns
 
@@ -102,19 +104,137 @@ def test_a_warn_only_change_passes_and_is_shown(repo):
     assert "[PASS] Warnings" in r.output and "[WARN]" not in r.output
 
 
-def test_the_scan_never_reads_the_clones_relaxed_eligibility(repo):
-    """Eligibility is for 'review --relaxed' alone: the scan applies 'match'
-    whatever the clone's state, and 'relaxed' is never applied to a commit."""
-    assert _run("patterns", "edit", "me", "--relaxed", "ignore").exit_code == 0
+LOGGING_GH = ('import os, sys\nlog = os.environ.get("STUB_GH_LOG")\n'
+              'if log:\n    open(log, "a").write(" ".join(sys.argv[1:]) + "\\n")\n'
+              'answer = os.environ.get("STUB_GH", "private")\n'
+              'if answer == "fail":\n    sys.exit(1)\nprint(answer)\n')
+
+
+@pytest.fixture
+def gh_log(repo, tmp_path, monkeypatch):
+    """The fixture's gh, logging each call, so a test can count network asks."""
+    (tmp_path / "ghbin" / "gh").write_text(f"#!{sys.executable}\n" + LOGGING_GH)
+    log = tmp_path / "gh.log"
+    monkeypatch.setenv("STUB_GH_LOG", str(log))
+    return lambda: len(log.read_text().splitlines()) if log.exists() else 0
+
+
+def _relaxed_judgment():
+    assert _run("patterns", "edit", "me", "--relaxed", "judgment").exit_code == 0
+
+
+def test_an_eligible_private_clone_applies_each_entrys_relaxed_value_at_commit_time(repo, gh_log):
+    _relaxed_judgment()
     assert _run("relax").exit_code == 0
     report, checks = _checks(repo, "Jane Doe\n")
-    assert not checks["Patterns"].passed and "[name] Jane Doe" in checks["Patterns"].findings[0]
-    assert not hasattr(report, "exposure")
+    assert report.relaxed == "verified private by github.com"
+    assert checks["Patterns"].passed                                  # not a block here
+    assert not checks["Judgment"].passed and "notes.md:1 [name] Jane Doe" in checks["Judgment"].findings
+    assert _run("ack").exit_code == 0                                 # ackable
+    _, checks = _checks(repo, "Jane Doe\n")
+    assert checks["Judgment"].passed and checks["Judgment"].info.endswith("acknowledged")
     r = _run("run", str(repo))
-    assert "exposure" not in r.output
-    assert _run("patterns", "edit", "me", "--relaxed", "default").exit_code == 0
-    assert "relaxed" not in next(e for e in yaml.safe_load(_user_file().read_text())["patterns"]
-                                 if e["id"] == "me")
+    assert "relaxed: private repo (verified private by github.com)" in r.output
+
+
+def test_the_push_gates_scan_of_commits_applies_it_too(repo, gh_log):
+    _relaxed_judgment()
+    (repo / "a.md").write_text("Jane Doe\n")
+    _git(repo, "add", "a.md")
+    _git(repo, "commit", "-q", "--no-verify", "-m", "a")
+    sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    strict = {c.name: c for c in run_scan(str(repo), commits=[sha]).checks}
+    assert not strict["Patterns"].passed
+    assert _run("relax").exit_code == 0
+    report = run_scan(str(repo), commits=[sha])
+    checks = {c.name: c for c in report.checks}
+    assert report.relaxed and checks["Patterns"].passed and not checks["Judgment"].passed
+    assert f"  git-scan ack --commit {sha[:12]}" in checks["Judgment"].findings
+
+
+def test_removed_lines_are_treated_like_added_ones(repo, gh_log):
+    _relaxed_judgment()
+    (repo / "old.md").write_text("Jane Doe\n")
+    _git(repo, "add", "old.md")
+    _git(repo, "commit", "-q", "-m", "old")
+    assert _run("relax").exit_code == 0
+    _git(repo, "rm", "-q", "old.md")
+    report = run_scan(str(repo))
+    checks = {c.name: c for c in report.checks}
+    assert checks["Patterns"].passed and "old.md:1 (removed) [name] Jane Doe" in checks["Judgment"].findings
+
+
+def test_the_same_entry_blocks_in_an_ineligible_clone(repo, gh_log):
+    _relaxed_judgment()
+    report, checks = _checks(repo, "Jane Doe\n")                     # never made eligible
+    assert report.relaxed is None and not checks["Patterns"].passed
+    assert gh_log() == 0
+    r = _run("run", str(repo))
+    assert "relaxed:" not in r.output
+
+
+def test_a_public_repository_is_strict_and_the_answer_is_recorded(repo, gh_log, monkeypatch):
+    _relaxed_judgment()
+    assert _run("relax").exit_code == 0
+    _age_privacy_record(repo)
+    monkeypatch.setenv("STUB_GH", "public")                           # the repository went public
+    report, checks = _checks(repo, "Jane Doe\n")
+    assert report.relaxed is None and not checks["Patterns"].passed
+    asks = gh_log()
+    report, _ = _checks(repo, "Jane Doe\n")                          # the 'public' answer is reused
+    assert report.relaxed is None and gh_log() == asks
+
+
+@pytest.mark.parametrize("why", ["gh fails", "gh missing", "no record yet"])
+def test_unknown_privacy_falls_back_to_strict(repo, gh_log, monkeypatch, tmp_path, why):
+    _relaxed_judgment()
+    assert _run("relax").exit_code == 0
+    _age_privacy_record(repo)
+    if why == "gh fails":
+        monkeypatch.setenv("STUB_GH", "fail")
+    elif why == "gh missing":
+        (tmp_path / "ghbin" / "gh").unlink()
+    else:
+        _git(repo, "config", "--local", "--unset", relaxed.KEY_CHECKED)
+        monkeypatch.setenv("STUB_GH", "fail")
+    report, checks = _checks(repo, "Jane Doe\n")
+    assert report.relaxed is None and not checks["Patterns"].passed
+
+
+def test_no_network_call_per_commit_and_one_ask_once_the_answer_is_old(repo, gh_log):
+    _relaxed_judgment()
+    assert _run("relax").exit_code == 0
+    assert gh_log() == 1                                              # relax asked, and recorded it
+    for i in range(3):
+        report, _ = _checks(repo, f"Jane Doe {i}\n")
+        assert report.relaxed
+    assert gh_log() == 1                                              # no ask per commit
+    _age_privacy_record(repo)
+    for i in range(3):
+        report, _ = _checks(repo, f"Jane Doe again {i}\n")
+        assert report.relaxed
+    assert gh_log() == 2                                              # one ask, then recorded again
+
+
+def test_public_prospective_keeps_the_commit_scan_strict(repo, gh_log):
+    _relaxed_judgment()
+    assert _run("relax").exit_code == 0
+    assert _run("config", "public-prospective", "on", "--project").exit_code == 0
+    report, checks = _checks(repo, "Jane Doe\n")
+    assert report.relaxed is None and not checks["Patterns"].passed
+
+
+def test_without_a_relaxed_value_the_entry_keeps_its_match(repo, gh_log):
+    assert _run("relax").exit_code == 0
+    report, checks = _checks(repo, "Jane Doe\n")                     # 'me' has no relaxed value
+    assert report.relaxed and not checks["Patterns"].passed
+
+
+def _age_privacy_record(repo):
+    """Make the host's last answer older than the commit scan trusts."""
+    when, private = relaxed._recorded(str(repo))
+    old = int(when) - relaxed.PRIVACY_TTL - 60
+    _git(repo, "config", "--local", relaxed.KEY_CHECKED, f"{old} {'private' if private else 'not-private'}")
 
 
 def test_an_entry_with_specifics_only_is_for_the_review_alone(repo):

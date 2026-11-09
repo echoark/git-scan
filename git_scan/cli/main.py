@@ -42,7 +42,11 @@ _FULL_SHA = re.compile(r"\b[0-9a-f]{40}\b")
 
 
 def _echo_checks(report, verbose=False, hide_skipped=False, failed_only=False, err=False):
-    """One line per check, with findings under a failing one."""
+    """One line per check, with findings under a failing one, after a line
+    saying so when the entries' relaxed values applied."""
+    if getattr(report, "relaxed", None):
+        click.echo(f"  relaxed: private repo ({report.relaxed}); each entry's relaxed value applies",
+                   err=err)
     for check in report.checks:
         if check.skipped and (hide_skipped or failed_only):
             continue
@@ -147,7 +151,8 @@ def run(path, deep, step, unstaged, untracked, verbose, hide_skipped, commit, re
             _echo_checks(report, verbose=verbose, failed_only=True)
             click.echo(_message_refusal(report, message_file))
             sys.exit(1)
-        click.echo(f"git-scan: commit message clean ({report.passed_count} checks)")
+        mode = f"; relaxed: private repo ({report.relaxed})" if report.relaxed else ""
+        click.echo(f"git-scan: commit message clean ({report.passed_count} checks{mode})")
         return
 
     _echo_checks(report, verbose=verbose, hide_skipped=hide_skipped)
@@ -409,9 +414,12 @@ def review_ack(rev):
 def relax(remove):
     """Make this repository eligible for a relaxed review (once per clone).
 
-    Eligibility only allows 'git-scan review --relaxed'; no review is relaxed
-    by default. It is recorded in this repository's .git/config for its exact
-    origin URL, and needs:
+    Eligibility allows 'git-scan review --relaxed' (no review is relaxed by
+    default) and, while the host reports the repository private, makes the
+    commit hooks apply each entry's relaxed value too. It is recorded in this
+    repository's .git/config for its exact origin URL, with the host's
+    answer and its time (the commit hooks trust it for a day, then ask once
+    more), and needs:
 
     \b
       github.com, or a host added as 'github': the host reports the

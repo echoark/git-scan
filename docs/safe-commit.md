@@ -91,9 +91,13 @@ Every review is public unless `git-scan review --relaxed` asks for a
 relaxed one, and git-scan refuses that unless the user made the clone
 eligible with `git-scan relax` (which needs the host to report the
 repository private, or a host the user vouched for) and the host, asked
-again, still reports it private. Each entry's `match` binds the scan and
-the review alike, and its `relaxed` value applies in a relaxed review, so
-the hook and the review never disagree about a value the user named. The
+again, still reports it private. The scan and the review share one entry
+policy per mode: each entry's `match` binds both, and its `relaxed` value
+applies in a relaxed review and, in an eligible clone the host reports
+private, in the commit hooks too, so the hook and the review never
+disagree about a value the user named. Making a clone eligible therefore
+relaxes its commit hooks as well, which the skill tells the user when it
+asks. The
 skill adds what git-scan can't check: the user's own rules or instructions
 must identify the repository as personal, the public review must be
 blocking, and the user must consent to both the eligibility and the flag;

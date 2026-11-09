@@ -312,17 +312,22 @@ class MergedConfig:
     """Resolved config after three-layer merge."""
     raw: dict = field(default_factory=dict)
     layers: dict = field(default_factory=dict)   # layer name -> parsed dict or None
+    # The mode entries are resolved in: False is each entry's ``match``; True
+    # is its ``relaxed`` value where it has one. Only the scan sets it, for a
+    # clone ``relaxed.commit_mode`` finds eligible and private.
+    relaxed: bool = False
 
     @property
     def patterns(self) -> list[dict]:
-        """Active entries: every entry whose ``match`` is not ``ignore``."""
-        return [p for p in self.raw.get("patterns", []) if entry_match(p) != "ignore"]
+        """Active entries: every entry whose match, in this mode, is not ``ignore``."""
+        return [p for p in self.raw.get("patterns", []) if entry_match(p, self.relaxed) != "ignore"]
 
     def with_match(self, value: str) -> list[dict]:
-        """Active entries with a pattern whose ``match`` is ``value``: what the
-        scan compiles for that treatment. Entries with specifics only are the
-        reviewer's and never compile."""
-        return [p for p in self.patterns if p.get("pattern") and entry_match(p) == value]
+        """Active entries with a pattern whose match, in this mode, is
+        ``value``: what the scan compiles for that treatment. Entries with
+        specifics only are the reviewer's and never compile."""
+        return [p for p in self.patterns if p.get("pattern")
+                and entry_match(p, self.relaxed) == value]
 
     @property
     def scan_patterns(self) -> list[dict]:
@@ -385,7 +390,7 @@ class MergedConfig:
         for p in self.patterns:
             if not p.get("pattern"):
                 continue
-            match = entry_match(p)
+            match = entry_match(p, self.relaxed)
             if match in ("judgment", "warn"):
                 counts[match] += 1
             else:

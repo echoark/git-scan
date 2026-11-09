@@ -3,6 +3,20 @@
 Notable changes to git-scan, newest first. Versions follow
 [CONTRIBUTING.md](CONTRIBUTING.md#version-management).
 
+## 0.13.0 (unreleased)
+
+### Changed
+
+- **The commit hooks apply each entry's `relaxed` value in a private
+  repository eligible for a relaxed review**, exactly as a relaxed review
+  does: pre-commit, commit-msg, the push gate's scan and `ack`. An entry
+  with `relaxed: judgment` is then a judgment call to acknowledge rather
+  than a block, for added and removed lines alike. The output starts with
+  a `relaxed: private repo (...)` line. The host is not asked per commit:
+  its last answer, recorded with the time by `git-scan relax` and
+  `review --relaxed`, stands for a day; anything that can't be established
+  is strict.
+
 ## 0.12.0 (unreleased)
 
 ### Added

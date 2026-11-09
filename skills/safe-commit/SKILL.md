@@ -50,7 +50,10 @@ repeating them.
    commands.
 4. **A review is as public as the clone.** git-scan reviews a clone as
    public unless the user made it eligible for a relaxed review, and
-   making it eligible is the user's decision, never yours (Step 7).
+   making it eligible is the user's decision, never yours (Step 7). The
+   commit hooks and the review share one entry policy per mode: in an
+   eligible private clone the hooks apply each entry's relaxed value too,
+   and their output starts with a `relaxed: private repo` line.
 5. **A reviewer problem is never a pass.** It is not a verdict on the
    content either: say what git-scan reported and run again once it is
    addressed. Never push around it.
@@ -230,7 +233,8 @@ Its output names the mode. Both the eligibility and the flag are a last
 resort and the user's decision:
 
 - Run `git-scan relax` only when the public review is actually blocking
-  the work, and only with the user's consent in this conversation. Never
+  the work, and only with the user's consent in this conversation. It
+  relaxes the commit hooks for that clone as well; say so when you ask. Never
   ahead of time or "to be safe", and never on your own because the
   content looks personal.
 - Do it only if the user's own rules or instructions identify the
