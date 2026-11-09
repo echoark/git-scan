@@ -751,7 +751,9 @@ with no tools, so the prompt is the reviewer's whole world and nothing on
 the machine can steer it. The JSON that comes back is validated; every
 commit of a clean batch is recorded as reviewed. Findings are printed with
 the value and the location. Nothing is recorded for a commit with
-findings; the other commits of its batch are recorded as reviewed:
+findings. The other commits of its batch are recorded as reviewed when
+every finding names a commit; a finding on the publish text, or one that
+names no commit, leaves the whole batch unrecorded:
 
 ```
   [FAIL] Privacy review (public; 2 commit(s); 2 finding(s))

@@ -174,9 +174,8 @@ def test_findings_are_saved_per_commit_in_their_own_notes_ref(ack_repo, monkeypa
                                   "location": f"{first[:12]}:a.txt:1", "value": "Pat Example",
                                   "category": "people", "reason": "a name", "mode": "public"}]
     assert marks.review_note(second)["findings"] == []           # publish text is no commit's
-    assert marks.marks_on(first) == {"scanned"}                  # the label note: labels only
-    labels = _git(ack_repo, "notes", f"--ref={marks.NOTES_REF}", "show", second).stdout
-    assert labels.split() == ["reviewed", "scanned"]
+    labels = _git(ack_repo, "notes", f"--ref={marks.NOTES_REF}", "show", first).stdout
+    assert labels.split() == ["scanned"]                         # the label note: labels only
 
     # a later review replaces the saved findings: they are always the latest
     _result(monkeypatch, findings=[{"category": "people", "value": "Lee Example", "entry": "people",
@@ -201,6 +200,33 @@ def test_review_ack_on_the_flagged_commit_is_enough_for_its_batch(ack_repo, tmp_
     assert _run("review", "ack", flagged).exit_code == 0
     assert _git(ack_repo, "push", "-q", "origin", "main", check=False).returncode == 0
     assert len(_prompts(tmp_path)) == 1                          # one review run in all
+
+
+@pytest.mark.parametrize("location", ["publish:pr.md:1", "message", "0123456789ab:a.txt:1"],
+                         ids=["publish text", "no commit", "unknown commit"])
+def test_a_finding_that_names_no_commit_of_the_batch_records_nothing(ack_repo, tmp_path,
+                                                                    monkeypatch, location):
+    """Clean commits of a flagged batch are recorded only when every finding
+    names a commit of the batch; one on the publish text, or one that names
+    no commit or another one, leaves the whole batch unrecorded."""
+    flagged = _commit(ack_repo, "a.txt")
+    clean = _commit(ack_repo, "b.txt")
+    (tmp_path / "pr.md").write_text("A pull-request body.\n")
+    _result(monkeypatch, findings=[{"category": "people", "value": "Pat Example", "entry": "people",
+                                    "location": f"{flagged[:12]}:a.txt:1", "note": "a name"},
+                                   {"category": "names", "value": "Lee Example",
+                                    "location": location, "note": "a name"}])
+    r = _run("review", "--publish", str(tmp_path / "pr.md"))
+    assert r.exit_code == 1 and "Recorded as reviewed" not in r.output
+    assert marks.marks_on(clean) == {"scanned"} and marks.marks_on(flagged) == {"scanned"}
+
+
+def test_names_a_commit():
+    shas = ["a" * 40, "b" * 40]
+    assert review.names_a_commit("aaaaaaaaaaaa:x.txt:1", shas)
+    assert not review.names_a_commit("publish:pr.md:1", shas)
+    assert not review.names_a_commit("message", shas)
+    assert not review.names_a_commit("cccccccccccc:x.txt:1", shas)
 
 
 def test_review_ack_records_the_commit_when_every_finding_is_judgment(ack_repo, monkeypatch):

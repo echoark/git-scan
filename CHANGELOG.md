@@ -17,8 +17,9 @@ Notable changes to git-scan, newest first. Versions follow
 - **`git-scan review ack <sha>`.** A review that flags a commit saves its
   findings with the commit; `review ack` shows them and records the commit
   as reviewed when none of them is block. A finding that fits no entry
-  counts as a judgment call there. The commits of a flagged batch that
-  have no findings are recorded as reviewed by that same run.
+  counts as a judgment call there. When every finding of a flagged
+  batch names one of its commits, the batch's other commits are recorded
+  as reviewed by that same run.
 
 ### Changed
 

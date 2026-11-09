@@ -435,8 +435,10 @@ records a review. Rules:
   `summary`, with the model and timing the envelope reports, is printed
   per batch so the caller sees what was judged, not only the verdict. A clean batch
   marks each of its commits; a batch with findings marks the commits no
-  finding was saved on (`review.save_findings` says which), and a reviewer
-  failure marks none, so a rerun resumes. Publish text with no commit left to review
+  finding was saved on, but only when every finding names a commit of the
+  batch (`review.names_a_commit`): a finding on publish text, or one that
+  names no commit or another one, leaves the whole batch unmarked. A
+  reviewer failure marks none, so a rerun resumes. Publish text with no commit left to review
   goes through `_review_text_only`: one prompt with no commit records,
   the same validation, and no mark, since a mark belongs to a commit and the
   gate reads only those. The runner is started with no tools and

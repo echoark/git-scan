@@ -272,8 +272,8 @@ def review(ctx, relaxed_review, publish, rev_range, runner, timeout, quiet):
 
     \b
     Findings are printed with the value and location; nothing is recorded
-    for a commit with findings, while the other commits of its batch are
-    recorded. Each flagged commit's findings are saved with it, for
+    for a commit with findings; the other commits of its batch are recorded
+    when every finding names a commit of the batch. Each flagged commit's findings are saved with it, for
     'git-scan review ack'. A reviewer problem (not installed, failed, timed out,
     unreadable output) is reported as such and records nothing. Commits
     already reviewed are skipped, so a rerun costs only what is new. With

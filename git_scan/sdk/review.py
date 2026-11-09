@@ -22,8 +22,8 @@ hook) are listed in the prompt beside the commit, and the reviewer, which
 checks each against the entries, may leave those exact matches out of its
 findings and list them under ``acknowledged``; git-scan does no matching
 of its own. A batch with findings saves each flagged commit's findings in
-the commit's review note and records the batch's other commits as
-reviewed; ``ack_findings`` (``git-scan review ack``) records a flagged
+the commit's review note and, when every finding names a commit of the
+batch, records the batch's other commits as reviewed; ``ack_findings`` (``git-scan review ack``) records a flagged
 commit as reviewed when none of its findings is ``block``.
 """
 
@@ -377,7 +377,8 @@ def review(repo_path: str = ".", commits: Optional[List[str]] = None,
             result.findings += blocking
             flagged = save_findings(repo_path, shas, blocking, mode, catalog)
             result.flagged += flagged
-            clean = [s for s in shas if s not in flagged]
+            clean = ([s for s in shas if s not in flagged]
+                     if all(names_a_commit(f.get("location", ""), shas) for f in blocking) else [])
             if clean:
                 marks.add_marks(marks.REVIEWED, clean, repo_path)
                 result.recorded += clean
@@ -481,6 +482,15 @@ def finding_match(finding: dict, catalog: Optional[dict]) -> str:
     if entry is None:
         return "judgment"
     return "judgment" if entry.get("match") == "judgment" else "block"
+
+
+def names_a_commit(location: str, shas: Sequence[str]) -> bool:
+    """Whether a finding's location names one commit of the batch. Only when
+    every finding of a flagged batch does are its other commits recorded:
+    a finding on publish text, or one that names no commit or another one,
+    leaves the whole batch unrecorded."""
+    head = str(location).split(":", 1)[0].strip().lower()
+    return len(head) >= 7 and head != "publish" and sum(s.startswith(head) for s in shas) == 1
 
 
 def _commits_of(location: str, shas: Sequence[str]) -> List[str]:
