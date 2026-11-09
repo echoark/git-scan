@@ -191,9 +191,13 @@ Rules:
   entry not ignored; `scan_patterns`, `judgment_patterns` and
   `warn_patterns` are the pattern entries by match. An entry with
   `specifics` and no `pattern` is the reviewer's alone and never
-  compiles. The scan never reads a clone's relaxed eligibility: `relaxed`
-  applies to `review --relaxed` and nothing else, so `ScanReport` has no
-  exposure and the MCP result none either. A reviewer's finding on a
+  compiles. The scan resolves entries in one of the same two modes: a
+  `MergedConfig` carries `relaxed` (False unless the scan sets it), and
+  `patterns`, `with_match` and the counts read `entry_match(p,
+  self.relaxed)`. `scanner.run_scan` sets it from `relaxed.commit_mode`,
+  so the commit hooks, the push gate's scan and `ack` share the review's
+  policy per mode; `ScanReport.relaxed` (and the MCP result's `relaxed`)
+  says why when it applied, and the CLI prints it above the checks. A reviewer's finding on a
   value an entry names follows the entry; a finding that matches no entry
   blocks the push in both modes until `review ack` accepts it, unless a
   block entry's pattern occurs in it (then it is block). The design behind the enum is in [What a match
@@ -462,7 +466,19 @@ records a review. Rules:
   not eligible or the host no longer reports it private, rather than
   running in another mode. No remote, an unregistered host, or
   `review.public_prospective` in any layer (read per layer, like
-  `review_required`) is never eligible. The scan reads none of this.
+  `review_required`) is never eligible.
+- **The commit scan reads eligibility, never the network per commit.**
+  `relaxed.commit_mode` returns the reason relaxed values apply, or None:
+  public-prospective, no eligibility for this exact URL, an unregistered or
+  unsupported host all give None. A host that can't be asked (`other` with
+  `allow-relaxed`) needs no network. A host that can is not asked per
+  commit: `mark` and `check_use` record its answer and the time
+  (`git-scan.relaxed-checked` in `.git/config`, "<epoch> private" or
+  "not-private"), the scan trusts it for `PRIVACY_TTL` (a day), and an
+  older answer, or none, is asked again once and recorded. Every error or
+  non-private answer is strict. Removed and added lines get the same
+  treatment: no special case for removals, since a removal stays in
+  history.
 - **The reviewer is bound to the entry.** The prompt
   (`data/review-prompt.md`) is the rules of conduct, the merged entries by
   id with `pattern`, `specifics`, `category` and the `match` resolved for

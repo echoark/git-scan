@@ -98,6 +98,8 @@ async def scan_repo(
         "failed_count": report.failed_count,
         "checks": checks,
     }
+    if report.relaxed:
+        result["relaxed"] = report.relaxed     # why each entry's relaxed value applied
     if report.scope == "commits":
         result["commits"] = report.commits
         result["marked"] = report.marked

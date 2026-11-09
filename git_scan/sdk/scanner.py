@@ -12,7 +12,7 @@ from .config import load_config, ConfigError, read_missing_config_help, user_con
 from .sources import collect, ScanInput, RevisionError
 from .utils import CheckResult
 from .steps import run_all_steps, get_step_names
-from . import marks
+from . import marks, relaxed
 
 
 class InvalidStepError(ValueError):
@@ -32,6 +32,7 @@ class ScanReport:
     scope: str = "staged"                                # staged | message | commits
     commits: List[str] = field(default_factory=list)     # commits read (commits scope)
     marked: List[str] = field(default_factory=list)      # of those, marked 'scanned'
+    relaxed: Optional[str] = None                        # why relaxed values applied; None: strict
 
     @property
     def failed(self) -> bool:
@@ -166,8 +167,11 @@ def run_scan(
     can't be marked by a retry that skips the hooks.
 
     What a match on an entry does is the entry's own ``match`` (block,
-    judgment, warn or ignore) from the merged configuration; the scan reads
-    no per-clone state.
+    judgment, warn or ignore) from the merged configuration, or its
+    ``relaxed`` value where it has one when the clone is eligible for a
+    relaxed review and its host reports it private
+    (``relaxed.commit_mode``, from a recorded answer, so no network call per
+    commit). ``report.relaxed`` says why when it applied.
     """
     if only_step is not None and only_step not in set(get_step_names()):
         raise InvalidStepError(
@@ -192,6 +196,9 @@ def run_scan(
     except ConfigError as e:
         report.checks.append(CheckResult("Configuration", False, str(e).splitlines()))
         return report
+
+    report.relaxed = relaxed.commit_mode(repo_path, config)
+    config.relaxed = report.relaxed is not None
 
     if only_step is None:
         if not config.user_patterns_defined:

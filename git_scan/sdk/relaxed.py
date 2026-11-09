@@ -15,6 +15,12 @@ Two separate things:
   ``check_use`` refuses unless the repository is eligible for the same
   exact URL, and asks a verifying host again each time. Without the flag
   every review is public.
+* **The commit scan** (pre-commit, commit-msg, the push gate) resolves
+  each entry's ``relaxed`` value too, in an eligible clone the host reports
+  private (``commit_mode``). It must not cost a network call per commit, so
+  it reads the host's last answer, which ``mark`` and ``check_use`` record
+  with its time, and asks again only when that answer is older than
+  ``PRIVACY_TTL``. Anything it can't establish, it treats as public.
 
 Nothing here writes git-scan's YAML configuration: per-repository state
 doesn't belong in a file that is backed up and meant to be verified as the
@@ -24,6 +30,7 @@ user's, and a new clone or session simply marks again.
 from __future__ import annotations
 
 import subprocess
+import time
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -33,6 +40,8 @@ from .steps.git_identity import is_local_remote, normalize_remote
 
 KEY_URL = "git-scan.relaxed-remote"
 KEY_BASIS = "git-scan.relaxed-basis"
+KEY_CHECKED = "git-scan.relaxed-checked"   # "<epoch seconds> private|not-private" from the last ask
+PRIVACY_TTL = 24 * 3600                     # how long the commit scan trusts that answer
 
 
 class RelaxedError(ValueError):
@@ -103,6 +112,31 @@ def _verify(url: str) -> str:
                        "--allow-relaxed")
 
 
+def _record(repo_path: str, private: bool, now: Optional[float] = None) -> None:
+    stamp = int(now if now is not None else time.time())
+    _git(repo_path, "config", "--local", KEY_CHECKED,
+         f"{stamp} {'private' if private else 'not-private'}")
+
+
+def _recorded(repo_path: str) -> Optional[Tuple[float, bool]]:
+    """``(when, private)`` from the host's last answer, if one is recorded."""
+    res = _git(repo_path, "config", "--local", "--get", KEY_CHECKED)
+    parts = res.stdout.split() if res.returncode == 0 else []
+    if len(parts) != 2 or not parts[0].isdigit() or parts[1] not in ("private", "not-private"):
+        return None
+    return float(parts[0]), parts[1] == "private"
+
+
+def _verify_and_record(repo_path: str, url: str) -> str:
+    try:
+        basis = _verify(url)
+    except RelaxedError:
+        _record(repo_path, False)
+        raise
+    _record(repo_path, True)
+    return basis
+
+
 def eligible_url(repo_path: str = ".") -> Optional[str]:
     """The remote URL this clone is marked eligible for, if any."""
     res = _git(repo_path, "config", "--local", "--get", KEY_URL)
@@ -119,7 +153,7 @@ def mark(repo_path: str = ".") -> Marking:
     if url and eligible_url(repo_path) == url:
         basis = _git(repo_path, "config", "--local", "--get", KEY_BASIS).stdout.strip()
         return Marking(url, basis, already=True)
-    basis = _verify(url)
+    basis = _verify_and_record(repo_path, url)
     _git(repo_path, "config", "--local", KEY_URL, url)
     _git(repo_path, "config", "--local", KEY_BASIS, basis)
     return Marking(url, basis)
@@ -130,6 +164,7 @@ def unmark(repo_path: str = ".") -> bool:
     had = eligible_url(repo_path) is not None
     _git(repo_path, "config", "--local", "--unset", KEY_URL)
     _git(repo_path, "config", "--local", "--unset", KEY_BASIS)
+    _git(repo_path, "config", "--local", "--unset", KEY_CHECKED)
     return had
 
 
@@ -143,4 +178,37 @@ def check_use(repo_path: str, config: MergedConfig) -> str:
     if eligible_url(repo_path) != url:
         raise RelaxedError("this repository is not marked eligible for a relaxed review "
                            "(git-scan relax)")
-    return _verify(url)
+    return _verify_and_record(repo_path, url)
+
+
+def commit_mode(repo_path: str, config: MergedConfig,
+                now: Optional[float] = None) -> Optional[str]:
+    """Why the commit scan may apply each entry's ``relaxed`` value here, or
+    None for the strict (public) values.
+
+    Relaxed needs what a relaxed review needs: no public-prospective
+    declaration, eligibility for this exact ``origin`` URL, and a host that
+    says private. A host git-scan can't ask is taken as the user vouched for
+    it (no network). A host it can ask is not asked per commit: its last
+    answer stands for ``PRIVACY_TTL``; an older one, or none, is asked again
+    once and recorded. Any error, or an answer other than private, is strict.
+    """
+    now = now if now is not None else time.time()
+    try:
+        if public_prospective(config):
+            return None
+        url = origin_url(repo_path)
+        host, _, _ = _parts(url)
+        if eligible_url(repo_path) != url:
+            return None
+        entry = hosts.get_host(host)
+        if entry is None or entry.provider is None or not entry.provider.supported:
+            return None
+        if not entry.provider.verifies:
+            return _verify(url)
+        last = _recorded(repo_path)
+        if last is not None and 0 <= now - last[0] < PRIVACY_TTL:
+            return f"verified private by {host}" if last[1] else None
+        return _verify_and_record(repo_path, url)
+    except RelaxedError:
+        return None

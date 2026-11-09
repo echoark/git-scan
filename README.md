@@ -495,9 +495,10 @@ commit scan and the privacy review follow the same one:
 | `warn` | the match is listed under `[WARN] Warnings` and the scan passes; an agent reports it and proceeds | a note, shown, not blocking |
 | `ignore` | the entry is not compiled | the entry is not sent to the reviewer |
 
-`relaxed` takes the same values and applies only in a relaxed review (see
-[Relaxed review](#relaxed-review)); absent, a relaxed review follows
-`match`. Findings that match no entry (a secret shape nobody listed, a
+`relaxed` takes the same values and applies in a relaxed review (see
+[Relaxed review](#relaxed-review)) and, in a clone eligible for one whose
+host reports it private, at commit time too; absent, `match` applies. The
+commit hooks and the review share one entry policy per mode. Findings that match no entry (a secret shape nobody listed, a
 stranger's name) block the push in both modes until acknowledged with
 `git-scan review ack`, unless a block entry's pattern occurs in them, in
 which case they are block.
@@ -870,8 +871,25 @@ paths become notes, personal framing and history narration are not sent
 to the reviewer, and secrets, credentials, account and financial
 identifiers block as in a public review. A value no entry names blocks the
 push in both modes until acknowledged with `git-scan review ack`, unless a
-block entry's pattern occurs in it. The commit scan never reads a clone's eligibility: `relaxed`
-applies to a review that asked for it, and to nothing else.
+block entry's pattern occurs in it.
+
+**At commit time** the same values apply. In an eligible clone whose host
+reports it private, the commit hooks and the push gate's scan read each
+entry's `relaxed` value where it has one, exactly as a relaxed review does,
+for added and removed lines alike, and say so at the top of their output:
+
+```
+  relaxed: private repo (verified private by github.com); each entry's relaxed value applies
+```
+
+So an entry with `relaxed: judgment` is a judgment call you can
+acknowledge with `git-scan ack` in such a repository, and a block
+everywhere else. The host is not asked on every commit: its last answer,
+which `git-scan relax` and every `git-scan review --relaxed` record with
+the time, stands for a day; an older one is asked again once. When
+privacy can't be established (no answer recorded, `gh` missing or
+failing, an answer other than private, a public-prospective declaration),
+the strict values apply.
 
 ```bash
 git-scan relax                 # once per clone: make this repository eligible
