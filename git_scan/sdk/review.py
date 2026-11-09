@@ -22,8 +22,9 @@ hook) are listed in the prompt beside the commit, and the reviewer, which
 checks each against the entries, may leave those exact matches out of its
 findings and list them under ``acknowledged``; git-scan does no matching
 of its own. A batch with findings saves each flagged commit's findings in
-the commit's review note, and ``ack_findings`` (``git-scan review ack``)
-records the commit as reviewed when none of them is ``block``.
+the commit's review note and records the batch's other commits as
+reviewed; ``ack_findings`` (``git-scan review ack``) records a flagged
+commit as reviewed when none of its findings is ``block``.
 """
 
 from __future__ import annotations
@@ -76,6 +77,7 @@ class ReviewResult:
     findings: List[dict] = field(default_factory=list)
     acknowledged: List[dict] = field(default_factory=list)   # left out by the reviewer on an ack
     flagged: List[str] = field(default_factory=list)      # commits whose findings were saved
+    recorded: List[str] = field(default_factory=list)     # commits without findings in a flagged batch, recorded
     notes: List[dict] = field(default_factory=list)       # matches on warn entries: shown, not blocking
     warnings: List[str] = field(default_factory=list)
     batches: int = 0
@@ -373,8 +375,14 @@ def review(repo_path: str = ".", commits: Optional[List[str]] = None,
         result.notes += notes
         if blocking:
             result.findings += blocking
-            result.flagged += save_findings(repo_path, shas, blocking, mode, catalog)
-            say(f"batch {i}/{len(batches)}: {len(blocking)} finding(s); not recorded")
+            flagged = save_findings(repo_path, shas, blocking, mode, catalog)
+            result.flagged += flagged
+            clean = [s for s in shas if s not in flagged]
+            if clean:
+                marks.add_marks(marks.REVIEWED, clean, repo_path)
+                result.recorded += clean
+            say(f"batch {i}/{len(batches)}: {len(blocking)} finding(s); "
+                + (f"{len(clean)} commit(s) without findings recorded" if clean else "not recorded"))
         else:
             marks.add_marks(marks.REVIEWED, shas, repo_path)
             say(f"batch {i}/{len(batches)}: clean; recorded")

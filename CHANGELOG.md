@@ -3,6 +3,28 @@
 Notable changes to git-scan, newest first. Versions follow
 [CONTRIBUTING.md](CONTRIBUTING.md#version-management).
 
+## 0.12.0 (unreleased)
+
+### Added
+
+- **Acknowledgements reach the review.** `git-scan ack` now records which
+  matches it accepted (entry, file, added or removed, line, text), and the
+  commit carries them. The privacy review lists them beside the commit;
+  the reviewer may leave an acknowledged match out of its findings when
+  its entry is a judgment entry in that mode, and reports a claim on any
+  other entry as a finding. `git-scan review` prints the acknowledgements
+  it honoured.
+- **`git-scan review ack <sha>`.** A review that flags a commit saves its
+  findings with the commit; `review ack` shows them and records the commit
+  as reviewed when none of them is block. A finding that fits no entry
+  counts as a judgment call there. The commits of a flagged batch that
+  have no findings are recorded as reviewed by that same run.
+
+### Changed
+
+- The built-in `people` entry is now `match: judgment` (a note when
+  relaxed, as before): another person's name is sensitive only in context.
+
 ## 0.11.0 (unreleased)
 
 ### Added
@@ -23,26 +45,12 @@ Notable changes to git-scan, newest first. Versions follow
   `account-ids`, `people`, `trackers`, `personal-framing` and `history`,
   each with its own `match` and `relaxed`, so the review's rules are
   entries you can see and tune.
-- **Acknowledgements reach the review.** `git-scan ack` now records which
-  matches it accepted (entry, file, added or removed, line, text), and the
-  commit carries them. The privacy review lists them beside the commit;
-  the reviewer may leave an acknowledged match out of its findings when
-  its entry is a judgment entry in that mode, and reports a claim on any
-  other entry as a finding. `git-scan review` prints the acknowledgements
-  it honoured.
-- **`git-scan review ack <sha>`.** A review that flags a commit saves its
-  findings with the commit; `review ack` shows them and records the commit
-  as reviewed when none of them is block. A finding that fits no entry
-  counts as a judgment call there.
 - `git-scan config migrate` rewrites your user file and the repository's
   `git-scan.yaml` from the fields earlier versions wrote (`note` to
   `specifics`, `judgment: true` to `match: judgment`, `disabled: true` to
   `match: ignore`), showing the diff first and writing on confirmation.
 
 ### Changed
-
-- The built-in `people` entry is now `match: judgment` (a note when
-  relaxed, as before): another person's name is sensitive only in context.
 
 - **The reviewer is bound to the entry.** The prompt is now the merged
   entries by id, built in, derived and yours, each with its pattern,

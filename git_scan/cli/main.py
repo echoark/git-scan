@@ -272,7 +272,8 @@ def review(ctx, relaxed_review, publish, rev_range, runner, timeout, quiet):
 
     \b
     Findings are printed with the value and location; nothing is recorded
-    for that batch. Each flagged commit's findings are saved with it, for
+    for a commit with findings, while the other commits of its batch are
+    recorded. Each flagged commit's findings are saved with it, for
     'git-scan review ack'. A reviewer problem (not installed, failed, timed out,
     unreadable output) is reported as such and records nothing. Commits
     already reviewed are skipped, so a rerun costs only what is new. With
@@ -311,6 +312,9 @@ def review(ctx, relaxed_review, publish, rev_range, runner, timeout, quiet):
                                "for text" if result.text_only and not result.commits else
                                "FAILED: fix the content in those commits and review again; "
                                "nothing was recorded for them", fg="red", bold=True))
+        if result.recorded:
+            click.echo(f"Recorded as reviewed: {len(result.recorded)} commit(s) of those batches "
+                       "with no findings.")
         if result.flagged:
             click.echo("The findings are saved per commit. When a commit's findings are all "
                        "judgment calls and you have")

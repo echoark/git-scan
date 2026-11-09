@@ -750,7 +750,8 @@ and patch, and any `--publish` text, and runs a headless agent CLI on it
 with no tools, so the prompt is the reviewer's whole world and nothing on
 the machine can steer it. The JSON that comes back is validated; every
 commit of a clean batch is recorded as reviewed. Findings are printed with
-the value and the location, and nothing is recorded for that batch:
+the value and the location. Nothing is recorded for a commit with
+findings; the other commits of its batch are recorded as reviewed:
 
 ```
   [FAIL] Privacy review (public; 2 commit(s); 2 finding(s))

@@ -174,14 +174,33 @@ def test_findings_are_saved_per_commit_in_their_own_notes_ref(ack_repo, monkeypa
                                   "location": f"{first[:12]}:a.txt:1", "value": "Pat Example",
                                   "category": "people", "reason": "a name", "mode": "public"}]
     assert marks.review_note(second)["findings"] == []           # publish text is no commit's
-    assert marks.marks_on(first) == {"scanned"} and marks.marks_on(second) == {"scanned"}
+    assert marks.marks_on(first) == {"scanned"}                  # the label note: labels only
+    labels = _git(ack_repo, "notes", f"--ref={marks.NOTES_REF}", "show", second).stdout
+    assert labels.split() == ["reviewed", "scanned"]
 
     # a later review replaces the saved findings: they are always the latest
     _result(monkeypatch, findings=[{"category": "people", "value": "Lee Example", "entry": "people",
-                                    "location": f"{second[:12]}:b.txt:1", "note": "a name"}])
+                                    "location": f"{first[:12]}:a.txt:1", "note": "a name"}])
     assert _run("review").exit_code == 1
-    assert marks.review_note(first)["findings"] == []
-    assert [f["value"] for f in marks.review_note(second)["findings"]] == ["Lee Example"]
+    assert [f["value"] for f in marks.review_note(first)["findings"]] == ["Lee Example"]
+
+
+def test_review_ack_on_the_flagged_commit_is_enough_for_its_batch(ack_repo, tmp_path, monkeypatch):
+    """The commits of a flagged batch that had no findings are recorded by
+    that review, so accepting the flagged commit's findings lets the push
+    through without a second review run."""
+    assert _run("hook", "install", "--pre-push", "--require-review").exit_code == 0
+    flagged = _commit(ack_repo, "a.txt")
+    clean = _commit(ack_repo, "b.txt")
+    _result(monkeypatch, findings=[{"category": "people", "value": "Pat Example", "entry": "people",
+                                    "location": f"{flagged[:12]}:a.txt:1", "note": "a name"}])
+    r = _run("review")
+    assert r.exit_code == 1 and "Recorded as reviewed: 1 commit(s)" in r.output
+    assert marks.marks_on(clean) == {"scanned", "reviewed"}
+    assert marks.marks_on(flagged) == {"scanned"}
+    assert _run("review", "ack", flagged).exit_code == 0
+    assert _git(ack_repo, "push", "-q", "origin", "main", check=False).returncode == 0
+    assert len(_prompts(tmp_path)) == 1                          # one review run in all
 
 
 def test_review_ack_records_the_commit_when_every_finding_is_judgment(ack_repo, monkeypatch):
