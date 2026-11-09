@@ -318,11 +318,14 @@ def review(ctx, relaxed_review, publish, rev_range, runner, timeout, quiet):
             click.echo(f"Recorded as reviewed: {len(result.recorded)} commit(s) of those batches "
                        "with no findings.")
         if result.flagged:
-            click.echo("The findings are saved per commit. When a commit's findings are all "
-                       "judgment calls and you have")
-            click.echo("looked at each one and every one is fine, acknowledge them with:")
+            click.echo("The findings are saved per commit. See each commit's findings, and whether "
+                       "they can be")
+            click.echo("acknowledged, with:")
             for sha in result.flagged:
-                click.echo(f"  git-scan review ack {sha[:12]}")
+                click.echo(f"  git-scan review show {sha[:12]}")
+            click.echo("When all of a commit's findings are judgment calls and every one is fine, "
+                       "acknowledge them with:")
+            click.echo("  git-scan review ack <sha>")
         sys.exit(1)
     n = len(result.commits)
     if result.text_only and not n:
@@ -338,6 +341,41 @@ def review(ctx, relaxed_review, publish, rev_range, runner, timeout, quiet):
         click.echo(f"nothing new to review{skipped}")
 
 
+def _echo_saved_findings(findings):
+    for f in findings:
+        entry = f.get("entry") or "no entry"
+        click.echo(f"  {f.get('location')} [{f.get('category')}] {f.get('value')} "
+                   f"({entry}: {f.get('match')}, {f.get('mode')} review)")
+        if f.get("reason"):
+            click.echo(f"      {f['reason']}")
+
+
+@review.command("show")
+@click.argument("rev", metavar="COMMIT")
+def review_show(rev):
+    """Show the findings the latest review saved for COMMIT. Writes nothing.
+
+    Prints each saved finding (location, category, value, its entry and
+    what a match on it is, the review's mode, the reason) and ends with
+    whether 'git-scan review ack' would accept them. Show the user these
+    lines before asking whether to acknowledge.
+    """
+    try:
+        saved = review_sdk.show_findings(rev, ".")
+    except (review_sdk.ReviewError, marks.MarkError) as e:
+        _fail(e)
+    sha = saved.commit[:12]
+    _echo_saved_findings(saved.findings)
+    if saved.reviewed:
+        click.echo(f"already reviewed: {sha} is recorded as reviewed")
+    elif not saved.findings:
+        click.echo(f"no findings saved for {sha}")
+    elif saved.blocking:
+        click.echo(f"{len(saved.blocking)} block finding(s): fix the content")
+    else:
+        click.echo(f"all judgment calls: git-scan review ack {sha} would record it")
+
+
 @review.command("ack")
 @click.argument("rev", metavar="COMMIT")
 def review_ack(rev):
@@ -346,21 +384,16 @@ def review_ack(rev):
     Shows every finding the privacy review saved for the commit and, when
     each one is a judgment call (a judgment entry in that review's mode, or
     a finding that fits no entry and holds no block entry's pattern),
-    records the commit as reviewed, so the
-    push gate lets it through. Run it only after looking at every finding;
-    fix the content otherwise. Refused when any finding is block (the
-    content has to change) or when no findings are saved for the commit. A
-    rewritten commit is a new commit: it has no saved findings and is
-    reviewed again.
+    records the commit as reviewed, so the push gate lets it through. Run
+    'git-scan review show COMMIT' first and acknowledge only after looking
+    at every finding; fix the content otherwise. Refused when any finding
+    is block (the content has to change) or when no findings are saved for
+    the commit. A rewritten commit is a new commit: it has no saved
+    findings and is reviewed again.
     """
     try:
         sha, findings = review_sdk.saved_findings(rev, ".")
-        for f in findings:
-            entry = f.get("entry") or "no entry"
-            click.echo(f"  {f.get('location')} [{f.get('category')}] {f.get('value')} "
-                       f"({entry}: {f.get('match')}, {f.get('mode')} review)")
-            if f.get("reason"):
-                click.echo(f"      {f['reason']}")
+        _echo_saved_findings(findings)
         done = review_sdk.ack_findings(rev, ".")
     except (review_sdk.ReviewError, marks.MarkError) as e:
         _fail(e)

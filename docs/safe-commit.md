@@ -69,11 +69,13 @@ anything else it sees in the same content is still a finding.
 ## Accepting review findings
 
 A review that flags a commit saves its findings, and the output names
-`git-scan review ack <sha>` for each flagged commit. The command accepts
-all of a commit's findings when none is block. The skill treats it as one
-of the ways to resolve a finding, offered to the user and run only on
-their yes for that commit, because accepting a judgment call is the
-user's decision, never the agent's.
+`git-scan review show <sha>` for each flagged commit. `review show` writes
+nothing: it prints the saved findings and says whether `git-scan review
+ack <sha>` would accept them. `review ack` accepts all of a commit's
+findings when none is block. The skill runs `review show`, puts its output
+in front of the user, and offers `review ack` as one of the ways to
+resolve the findings, run only on their yes for that commit, because
+accepting a judgment call is the user's decision, never the agent's.
 
 ## Warnings
 

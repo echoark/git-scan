@@ -573,6 +573,24 @@ def saved_findings(rev: str, repo_path: str = ".") -> tuple:
     return sha, list(marks.review_note(sha, repo_path).get("findings") or [])
 
 
+@dataclass
+class SavedFindings:
+    commit: str
+    findings: List[dict]
+    reviewed: bool
+
+    @property
+    def blocking(self) -> List[dict]:
+        return [f for f in self.findings if f.get("match") != "judgment"]
+
+
+def show_findings(rev: str, repo_path: str = ".") -> SavedFindings:
+    """What ``review ack`` would act on for one commit, read only: its
+    saved findings and whether it is already reviewed. Writes nothing."""
+    sha, findings = saved_findings(rev, repo_path)
+    return SavedFindings(sha, findings, marks.REVIEWED in marks.marks_on(sha, repo_path))
+
+
 def ack_findings(rev: str, repo_path: str = ".") -> FindingsAck:
     """Acknowledge every finding the latest review saved for one commit and
     record it as reviewed. Refused when none were saved, and when any of

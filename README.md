@@ -155,8 +155,9 @@ git push origin HEAD                    # the push gate checks the scan and the 
   [Judgment entries and notes](#judgment-entries-and-notes)).
 - **A review finding** names the commit, file and line, or the publish
   text: fix the content (amend, or add a commit) and review again. When
-  every finding on a commit is a judgment call and each one is fine, run
-  the `git-scan review ack <sha>` the output names instead (see [The
+  every finding on a commit is a judgment call and each one is fine, look
+  at them with the `git-scan review show <sha>` the output names, then run
+  `git-scan review ack <sha>` (see [The
   privacy review](#the-privacy-review)).
 - **Text posted after the push** (an edited pull-request body, a comment, an
   issue): `git-scan review --publish FILE` reviews it alone.
@@ -748,6 +749,7 @@ git-scan review --publish pr-body.md   # and the text that will be published wit
 git-scan review --range A..B           # commits already made
 git-scan review --publish comment.md   # text alone: a body edited after the push, a comment, an issue
 git-scan review --relaxed              # a relaxed review, for an eligible clone (see below)
+git-scan review show SHA               # a flagged commit's saved findings, and whether review ack would accept them
 git-scan review ack SHA                # accept a flagged commit's findings when all are judgment calls
 ```
 
@@ -768,9 +770,11 @@ names no commit, leaves the whole batch unrecorded:
          3f9c2a1b7d0e:contacts.txt:1 [names] Jane Doe
          3f9c2a1b7d0e:message [contextual] ask Dana about the deploy
 FAILED: fix the content in those commits and review again; nothing was recorded for them
-The findings are saved per commit. When a commit's findings are all judgment calls and you have
-looked at each one and every one is fine, acknowledge them with:
-  git-scan review ack 3f9c2a1b7d0e
+The findings are saved per commit. See each commit's findings, and whether they can be
+acknowledged, with:
+  git-scan review show 3f9c2a1b7d0e
+When all of a commit's findings are judgment calls and every one is fine, acknowledge them with:
+  git-scan review ack <sha>
 ```
 
 Rules the command keeps:
@@ -826,8 +830,9 @@ Rules the command keeps:
   in repository-local metadata of their own. That metadata, like the
   acknowledged matches a commit carries, holds the values git-scan matched,
   so it stays in the clone: it is never pushed, and the push gate refuses
-  a push that includes it (`--mirror`, say). `git-scan review ack <sha>`
-  shows them and accepts all of them, recording the commit as reviewed;
+  a push that includes it (`--mirror`, say). `git-scan review show <sha>`
+  prints them and says whether `review ack` would accept them, writing
+  nothing; `git-scan review ack <sha>` shows them and accepts all of them, recording the commit as reviewed;
   it is refused when any of them is block (fix the content) or when none
   are saved. A finding that fits no entry is the reviewer's opinion with no
   rule behind it, so it counts as a judgment call here, unless a block

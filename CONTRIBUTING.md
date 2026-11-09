@@ -530,6 +530,10 @@ records a review. Rules:
   is how the reviewer's finding on an invalid ack claim (it names the
   claim's entry) stays block. An ack claim in the prompt on an entry-less
   finding is still invalid: only `review ack` accepts it.
+  `review show` (`review.show_findings`) reads the same saved findings and
+  says what `review ack` would do, writing nothing; the CLI prints the
+  findings for both through one helper. A failed review points at `review
+  show` first.
   `ack --commit` stays the separate path for commits the hooks did not see.
 - **A pre-commit hook runs before the commit exists.** A passing staged scan
   records the staged tree in the git directory; a refused commit message

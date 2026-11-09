@@ -320,11 +320,13 @@ commit it (an amend or a new commit, either way a new SHA), and restart the
 flow from Step 1. Changing git-scan's configuration is the user's call
 (rule 3).
 
-When the review's output names `git-scan review ack <sha>`, a commit's
-findings were saved and every one of them may be a judgment call. Offer it
-as one of the ways to resolve them, and run it only on the user's yes for
-that commit, after they have seen each finding. It refuses when any finding
-blocks; then the content has to change. The review's `acknowledged:` lines
+When the review's output names `git-scan review show <sha>`, that commit's
+findings were saved. Run it: it writes nothing, prints each saved finding
+and says whether `git-scan review ack <sha>` would accept them. Show the
+user its output verbatim. When it says they are all judgment calls, offer
+`git-scan review ack <sha>` as one of the ways to resolve them, and run it
+only on the user's yes for that commit. When it reports block findings,
+the content has to change. The review's `acknowledged:` lines
 are matches the reviewer left out because of an earlier acknowledgement:
 include them in what you report.
 

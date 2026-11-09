@@ -21,6 +21,9 @@ Notable changes to git-scan, newest first. Versions follow
   in it or it names an entry that is not judgment. When every finding of a flagged
   batch names one of its commits, the batch's other commits are recorded
   as reviewed by that same run.
+- **`git-scan review show <sha>`** prints a flagged commit's saved
+  findings and says whether `review ack` would accept them, writing
+  nothing. A failed review names it for each flagged commit.
 - **git-scan's records are never pushed.** They hold the values it
   matched, so the push gate refuses a push that includes them (for
   example `git push --mirror`) and says why.

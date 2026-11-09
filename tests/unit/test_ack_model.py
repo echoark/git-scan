@@ -239,7 +239,7 @@ def test_a_new_concern_in_acked_content_is_still_reported(ack_repo, monkeypatch)
     r = _run("review")
     assert r.exit_code == 1
     assert "acknowledged:" in r.output and "[people] Pat Example" in r.output
-    assert f"git-scan review ack {sha[:12]}" in r.output
+    assert f"git-scan review show {sha[:12]}" in r.output
     assert "reviewed" not in marks.marks_on(sha)
 
 
@@ -353,3 +353,38 @@ def test_a_finding_is_saved_on_the_commit_its_location_names():
     assert review._commits_of("publish:pr.md:1", shas) == []
     assert review._commits_of("somewhere", shas) == shas            # no commit named: all of them
     assert review.finding_match({"value": "x"}, {"patterns": []}) == "judgment"
+
+
+def _review_state(repo):
+    refs = _git(repo, "for-each-ref", "refs/notes", "--format=%(refname) %(objectname)").stdout
+    return refs
+
+
+@pytest.mark.parametrize("case", ["judgment", "block", "none", "reviewed"])
+def test_review_show_reports_what_review_ack_would_do_and_writes_nothing(ack_repo, monkeypatch, case):
+    sha = _commit(ack_repo, "a.txt")
+    finding = {"category": "people", "value": "Pat Example", "entry": "people",
+               "location": "HEAD12:a.txt:1", "note": "a public author's name"}
+    if case == "block":
+        finding = {"category": "name", "value": "Jane Doe", "entry": "me",
+                   "location": "HEAD12:a.txt:1", "note": "the owner's name"}
+    if case in ("judgment", "block"):
+        _result(monkeypatch, findings=[finding])
+    r = _run("review")
+    assert r.exit_code == (0 if case in ("none", "reviewed") else 1)
+    if case == "none":
+        marks.update_review_note(sha, {"findings": []})            # flagged elsewhere: nothing saved here
+        _git(ack_repo, "notes", f"--ref={marks.NOTES_REF}", "add", "-f", "-m", "scanned", sha)
+    before, labels = _review_state(ack_repo), marks.marks_on(sha)
+    r = _run("review", "show", sha[:12])
+    assert r.exit_code == 0, r.output
+    assert _review_state(ack_repo) == before and marks.marks_on(sha) == labels
+    expected = {"judgment": f"all judgment calls: git-scan review ack {sha[:12]} would record it",
+                "block": "1 block finding(s): fix the content",
+                "none": f"no findings saved for {sha[:12]}",
+                "reviewed": f"already reviewed: {sha[:12]} is recorded as reviewed"}[case]
+    assert expected in r.output
+    if case in ("judgment", "block"):
+        line = "[people] Pat Example (people: judgment, public review)" if case == "judgment" \
+            else "[name] Jane Doe (me: block, public review)"
+        assert line in r.output and line in _run("review", "ack", sha).output   # one printer for both
