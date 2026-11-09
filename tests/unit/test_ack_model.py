@@ -133,16 +133,100 @@ def test_an_ack_claim_on_a_block_entry_comes_back_as_a_finding(ack_repo, tmp_pat
     sha = _commit(ack_repo, "a.txt", "Jane Doe\n", verify=False)
     marks.update_review_note(sha, {"scan_acks": [{"entry": "me", "path": "a.txt", "side": "added",
                                                   "line": 1, "text": "Jane Doe"}]})
-    _result(monkeypatch, findings=[{"category": "name", "value": "Jane Doe", "entry": "me",
+    # the value is the claim, not the entry's pattern: the entry still governs
+    _result(monkeypatch, findings=[{"category": "name", "value": "ack of me at a.txt:1",
+                                    "entry": "me",
                                     "location": "HEAD12:a.txt:1",
                                     "note": "entry me is block: the acknowledgement is not valid"}])
     r = _run("review")
     assert r.exit_code == 1 and "the acknowledgement is not valid" in r.output
     assert '"entry": "me"' in _prompts(tmp_path)[0].split("### acknowledged at commit time")[1]
+    saved = marks.review_note(sha)["findings"]
+    assert [(f["entry"], f["match"]) for f in saved] == [("me", "block")]
     assert "reviewed" not in marks.marks_on(sha)
     r = _run("review", "ack", sha)
     assert r.exit_code == 1 and "block" in r.output and "fix the content" in r.output
     assert "reviewed" not in marks.marks_on(sha)
+
+
+def test_a_block_pattern_inside_a_longer_value_is_block_and_review_ack_refuses(ack_repo, monkeypatch):
+    """A value with words around a block entry's pattern fits no entry
+    whole, but it holds a block pattern, so it is saved as block."""
+    sha = _commit(ack_repo, "a.txt", "ask Jane Doe about it\n", verify=False)
+    _result(monkeypatch, findings=[{"category": "names", "value": "ask Jane Doe about it",
+                                    "location": "HEAD12:a.txt:1", "note": "a name in prose"}])
+    assert _run("review").exit_code == 1
+    assert [f["match"] for f in marks.review_note(sha)["findings"]] == ["block"]
+    r = _run("review", "ack", sha)
+    assert r.exit_code == 1 and "fix the content" in r.output and "reviewed" not in marks.marks_on(sha)
+
+
+def test_an_entry_less_finding_with_no_block_pattern_is_ackable(ack_repo, monkeypatch):
+    sha = _commit(ack_repo, "a.txt")
+    _result(monkeypatch, findings=[{"category": "names", "value": "ask Pat Example about it",
+                                    "entry": None, "location": "HEAD12:a.txt:1", "note": "a name"}])
+    assert _run("review").exit_code == 1
+    assert [(f["entry"], f["match"]) for f in marks.review_note(sha)["findings"]] == [(None, "judgment")]
+    assert _run("review", "ack", sha).exit_code == 0 and "reviewed" in marks.marks_on(sha)
+
+
+def test_what_a_saved_finding_is():
+    catalog = {"patterns": [{"id": "me", "pattern": "Jane Doe", "match": "block"},
+                            {"id": "town", "pattern": "Springfield", "match": "judgment"},
+                            {"id": "people", "specifics": "another person's name", "match": "judgment"},
+                            {"id": "nick", "pattern": "jd[0-9]+", "match": "warn"}]}
+    blocks = review.compile_patterns([catalog["patterns"][0]])
+    m = lambda **f: review.finding_match(dict({"category": "x"}, **f), catalog, blocks)
+    assert m(value="Springfield") == "judgment"                         # a judgment entry, whole
+    assert m(value="Pat Example", entry="people") == "judgment"         # a specifics-only judgment entry
+    assert m(value="says Jane Doe wrote it") == "block"                 # a block pattern inside
+    assert m(value="ack of me at a.txt:1", entry="me") == "block"       # named block entry, no full match
+    assert m(value="near Springfield Ave", entry="town") == "judgment"  # named, its pattern occurs in it
+    assert m(value="near Shelbyville", entry="town") == "block"         # named, its pattern absent
+    assert m(value="jd42 again", entry="nick") == "block"               # named warn entry, no full match
+    assert m(value="Pat Example") == "judgment"                         # truly entry-less
+    assert m(value="Pat Example", entry="no-such-entry") == "judgment"  # an id the catalog lacks
+    assert m(value="Jane Doe's notes", entry="no-such-entry") == "block"
+
+
+def test_an_env_value_inside_an_entry_less_finding_is_block(ack_repo, monkeypatch):
+    """A .env value is a block entry the reviewer never sees; a finding that
+    holds one is still block."""
+    secret = "s3cr3t" + "Value" * 2
+    (ack_repo / ".env").write_text(f"API_TOKEN={secret}\n")
+    sha = _commit(ack_repo, "a.txt")
+    _result(monkeypatch, findings=[{"category": "secret", "value": f"token {secret} in a log",
+                                    "location": "HEAD12:a.txt:1", "note": "looks like a secret"}])
+    assert _run("review").exit_code == 1
+    assert [f["match"] for f in marks.review_note(sha)["findings"]] == ["block"]
+
+
+@pytest.mark.parametrize("refspec", [f"{marks.NOTES_REF}:{marks.NOTES_REF}",
+                                     f"{marks.REVIEW_REF}:{marks.REVIEW_REF}", "--mirror"])
+def test_the_push_gate_refuses_a_push_of_git_scans_own_records(ack_repo, monkeypatch, refspec):
+    assert _run("hook", "install", "--pre-push").exit_code == 0
+    sha = _commit_with_ack(ack_repo)                             # writes both notes refs
+    _result(monkeypatch, findings=[{"category": "people", "value": "Pat Example", "entry": "people",
+                                    "location": "HEAD12:a.txt:1", "note": "a name"}])
+    _commit(ack_repo, "b.txt")
+    assert _run("review").exit_code == 1
+    assert _git(ack_repo, "rev-parse", "--verify", marks.REVIEW_REF).returncode == 0
+    args = ["push", "--mirror", "origin"] if refspec == "--mirror" else ["push", "origin", refspec]
+    refused = _git(ack_repo, *args, check=False)
+    assert refused.returncode != 0
+    assert "git-scan's own records" in refused.stderr and "never pushed" in refused.stderr
+    remote = ack_repo.parent / "remote.git"
+    assert _git(remote, "for-each-ref", "refs/notes").stdout.strip() == ""
+    assert _git(ack_repo, "push", "-q", "origin", "main", check=False).returncode == 0   # branches still push
+    assert sha in _git(remote, "rev-list", "main").stdout
+
+
+def test_private_refs_in():
+    lines = [f"refs/heads/main {'a' * 40} refs/heads/main {'0' * 40}",
+             f"{marks.REVIEW_REF} {'b' * 40} {marks.REVIEW_REF} {'0' * 40}",
+             f"(delete) {'0' * 40} {marks.NOTES_REF} {'c' * 40}"]
+    assert marks.private_refs_in(lines) == [marks.REVIEW_REF, marks.NOTES_REF]
+    assert marks.private_refs_in(lines[:1]) == []
 
 
 def test_a_new_concern_in_acked_content_is_still_reported(ack_repo, monkeypatch):

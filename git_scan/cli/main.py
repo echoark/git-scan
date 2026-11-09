@@ -261,7 +261,9 @@ def review(ctx, relaxed_review, publish, rev_range, runner, timeout, quiet):
     under the entry it matched, and git-scan applies that entry's 'match'
     ('relaxed' in a relaxed review): block is a finding, judgment is a
     finding for you to look at, warn is a note that doesn't block. A
-    finding that matches no entry blocks in both modes.
+    finding that matches no entry blocks the push in both modes until
+    acknowledged with 'git-scan review ack', unless a block entry's pattern
+    occurs in it, in which case it is block.
 
     Judgment matches acknowledged at commit time ('git-scan ack') are listed
     to the reviewer beside their commit. The reviewer may leave such a match
@@ -343,7 +345,8 @@ def review_ack(rev):
 
     Shows every finding the privacy review saved for the commit and, when
     each one is a judgment call (a judgment entry in that review's mode, or
-    a finding that fits no entry), records the commit as reviewed, so the
+    a finding that fits no entry and holds no block entry's pattern),
+    records the commit as reviewed, so the
     push gate lets it through. Run it only after looking at every finding;
     fix the content otherwise. Refused when any finding is block (the
     content has to change) or when no findings are saved for the commit. A

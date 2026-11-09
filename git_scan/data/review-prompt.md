@@ -62,7 +62,9 @@ this batch; look at each in context. Put the entry's `id` in every
 finding's `entry` field: that is how the treatment the owner decided is
 applied, and the only thing your category changes is how the finding
 reads. A finding that fits no entry still gets reported, with `entry`
-null; it blocks whatever the mode. The `notes` list holds guidance that
+null; whatever the mode, it blocks the push until the owner acknowledges
+it with `git-scan review ack`, unless a block entry's pattern occurs in
+it, in which case it is block. The `notes` list holds guidance that
 belongs to no single entry.
 
 ## Acknowledged matches
@@ -76,8 +78,9 @@ the matched text). For each one, first check the entry in the list above:
   the acknowledgement: leave that match out of `findings` and list it under
   `acknowledged`.
 - If the entry's `match` is anything else, or no entry has that id, the
-  acknowledgement is invalid: report it as a finding whose `note` says the
-  acknowledgement is not valid and why.
+  acknowledgement is invalid: report it as a finding with the
+  acknowledgement's own entry id in `entry` (null when no entry has that
+  id) and a `note` that says the acknowledgement is not valid and why.
 
 An acknowledgement covers only the one match the user accepted: that value,
 at that place. It never covers the file, the rest of the content or the

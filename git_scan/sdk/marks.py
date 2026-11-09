@@ -55,6 +55,7 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 
 NOTES_REF = "refs/notes/git-scan"
 REVIEW_REF = "refs/notes/git-scan-review"
+PRIVATE_REFS = (NOTES_REF, REVIEW_REF)   # hold matched values: never pushed
 SCANNED = "scanned"
 REVIEWED = "reviewed"
 ZERO = "0" * 40
@@ -301,6 +302,7 @@ class PushResult:
     unreviewed: List[str] = field(default_factory=list)
     review_required: bool = False
     scan: Optional[Any] = None
+    private_refs: List[str] = field(default_factory=list)   # git-scan's own refs in the push
 
     @property
     def unscanned(self) -> List[str]:
@@ -308,7 +310,8 @@ class PushResult:
 
     @property
     def ok(self) -> bool:
-        return not self.unreviewed and not (self.scan is not None and self.scan.failed)
+        return (not self.private_refs and not self.unreviewed
+                and not (self.scan is not None and self.scan.failed))
 
 
 def _rev_list(repo_path: str, tips: Iterable[str], exclude: Iterable[str]) -> List[str]:
@@ -351,13 +354,33 @@ def outgoing_commits(push_lines: Iterable[str], remote: Optional[str] = None,
     return _rev_list(repo_path, tips, _exclusions(repo_path, remote, remote_shas))
 
 
+def private_refs_in(push_lines: Iterable[str]) -> List[str]:
+    """git-scan's own notes refs among the refs a push names, on either side.
+    They hold matched values (the review's findings, the matches
+    acknowledged), so a push that includes one is refused outright."""
+    found = []
+    for line in push_lines:
+        parts = line.split()
+        if len(parts) != 4:
+            continue
+        for ref in (parts[0], parts[2]):
+            if ref in PRIVATE_REFS and ref not in found:
+                found.append(ref)
+    return found
+
+
 def push_check(push_lines: Iterable[str], remote: Optional[str] = None,
                require_review: bool = False, repo_path: str = ".") -> PushResult:
     """The commits a push would send: which are already scanned, and which no
     recorded review covers when one is required. (Scanning the rest is
-    ``scanner.push_scan``.)
+    ``scanner.push_scan``.) A push that includes git-scan's own notes refs
+    is refused before anything else is checked.
     """
+    push_lines = list(push_lines)
     result = PushResult(review_required=require_review)
+    result.private_refs = private_refs_in(push_lines)
+    if result.private_refs:
+        return result
     outgoing = outgoing_commits(push_lines, remote, repo_path)
     result.checked = outgoing
     if not outgoing:
@@ -397,6 +420,14 @@ def format_push_result(result: PushResult, repo_path: str = ".") -> str:
     if result.ok:
         tail = "; review recorded" if result.review_required and result.checked else ""
         return f"git-scan: {summary}{tail}"
+    if result.private_refs:
+        return "\n".join([
+            "git-scan: push refused: it includes git-scan's own records ("
+            + ", ".join(result.private_refs) + ").",
+            "",
+            "They hold the values git-scan matched (review findings, acknowledged",
+            "matches) and are kept in this clone only; they are never pushed. Push",
+            "branches and tags by name instead of --mirror or a notes refspec."])
     lines = [f"git-scan: push refused ({summary})."]
     if result.scan is not None and result.scan.failed:
         lines += ["",

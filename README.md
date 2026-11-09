@@ -497,7 +497,9 @@ commit scan and the privacy review follow the same one:
 `relaxed` takes the same values and applies only in a relaxed review (see
 [Relaxed review](#relaxed-review)); absent, a relaxed review follows
 `match`. Findings that match no entry (a secret shape nobody listed, a
-stranger's name) block in both modes.
+stranger's name) block the push in both modes until acknowledged with
+`git-scan review ack`, unless a block entry's pattern occurs in them, in
+which case they are block.
 
 ```bash
 git-scan patterns add my-tenant --pattern 'acme360' --category domain --match judgment \
@@ -721,6 +723,12 @@ command to run. The scan does not stand in for the review and the review
 does not stand in for the scan: both must pass. A project's `git-scan.yaml`
 can require the review but not lift the requirement.
 
+git-scan's own records (which commits were scanned and reviewed, the
+matches acknowledged, a review's findings) are repository-local metadata
+that holds the values git-scan matched. They are never pushed: a push that
+includes them, such as `git push --mirror`, is refused with the reason.
+Push branches and tags by name.
+
 **Limitation:** the check is made against the remote being pushed to. With
 several remotes, commits cleared relative to one may be pushed to another
 that is further behind; only the remote's own tracking refs and the tips
@@ -793,7 +801,8 @@ Rules the command keeps:
   `relaxed` value in a relaxed review), never the reviewer's own label. So
   a judgment entry is never escalated to a certain finding by inference,
   and a `warn` entry's match is a note that names the entry. A value no
-  entry names blocks in both modes. One standing instruction goes with
+  entry names blocks the push in both modes until `git-scan review ack`
+  accepts it, unless a block entry's pattern occurs in it. One standing instruction goes with
   the entries: an entry also covers the value's variants in spelling,
   case, spacing and form, reported under that entry.
 - **Every review is public unless you ask otherwise.** `--relaxed` asks
@@ -806,18 +815,24 @@ Rules the command keeps:
   The reviewer checks each against the entries: on a judgment entry in
   this mode it may leave that match out of its findings, and the output
   lists it as `acknowledged: ... (ack honoured: ...)`; on any other entry,
-  or none, the claim is itself a finding. git-scan does no matching of its
+  or none, the claim is itself a finding under the claim's entry, which
+  is block when that entry is not judgment, so `review ack` cannot accept
+  it. git-scan does no matching of its
   own between findings and acknowledgements; the reviewer, already judging
   context, decides whether what it sees is what was accepted.
 - **Findings are saved per commit, and judgment calls can be accepted.**
   A review that flags a commit saves that commit's latest findings (the
   entry, its match for the mode, location, value and reason) beside it,
-  in repository-local metadata of their own. `git-scan review ack <sha>`
+  in repository-local metadata of their own. That metadata, like the
+  acknowledged matches a commit carries, holds the values git-scan matched,
+  so it stays in the clone: it is never pushed, and the push gate refuses
+  a push that includes it (`--mirror`, say). `git-scan review ack <sha>`
   shows them and accepts all of them, recording the commit as reviewed;
   it is refused when any of them is block (fix the content) or when none
   are saved. A finding that fits no entry is the reviewer's opinion with no
-  rule behind it, so it counts as a judgment call here; only `review ack`
-  can accept it.
+  rule behind it, so it counts as a judgment call here, unless a block
+  entry's pattern occurs anywhere in its value or it names an entry that is
+  not judgment; then it is block. Only `review ack` can accept it.
 - **Nothing accepts a result from outside.** The only writers of the
   review record are this command, after it has run the reviewer itself,
   and `review ack`, on the findings that run saved.
@@ -848,8 +863,9 @@ material. In it each entry's `relaxed` value applies instead of its
 owner's name, email and login, other people, private trackers and home
 paths become notes, personal framing and history narration are not sent
 to the reviewer, and secrets, credentials, account and financial
-identifiers block as in a public review. A value no entry names blocks in
-both modes. The commit scan never reads a clone's eligibility: `relaxed`
+identifiers block as in a public review. A value no entry names blocks the
+push in both modes until acknowledged with `git-scan review ack`, unless a
+block entry's pattern occurs in it. The commit scan never reads a clone's eligibility: `relaxed`
 applies to a review that asked for it, and to nothing else.
 
 ```bash

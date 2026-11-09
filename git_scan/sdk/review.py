@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
 
 from . import marks, relaxed
-from .config import load_config, MergedConfig, MATCHES
+from .config import entry_match, load_config, MergedConfig, MATCHES
 from .sources import LOG_ARGS
 from .steps.patterns import compile_patterns
 from .user_patterns import export_patterns
@@ -55,7 +55,8 @@ DEFAULT_BATCH_BYTES = 200_000  # patch and message text per prompt
 # The reviewer reports each finding under the entry it matched; git-scan
 # applies that entry's ``match`` (``sort_findings``), never the reviewer's
 # label, so no re-classification can escalate an entry past what the
-# configuration says. A finding that matches no entry blocks in both modes.
+# configuration says. A finding that matches no entry blocks the push in
+# both modes; ``finding_match`` says whether ``review ack`` may accept it.
 _TRIM = " \t\r\n'\"`<>()[]{},.;:"
 
 _FENCE = re.compile(r"```(?:json|privacy-guard-result)?\s*\n(.*?)\n\s*```", re.S)
@@ -452,7 +453,8 @@ def sort_findings(findings: List[dict], mode: str, catalog: Optional[dict] = Non
     is dropped even when the reviewer reports it, since the owner decided
     and git-scan can check a pattern itself. The reviewer's own category
     never decides, and an id it was not given names no entry. A finding
-    that matches no entry blocks in both modes."""
+    that matches no entry blocks the push in both modes (``finding_match``
+    says whether ``review ack`` may accept it)."""
     blocking, notes = [], []
     ignored = {"patterns": (catalog or {}).get("ignored") or []}
     for f in findings:
@@ -473,15 +475,41 @@ def sort_findings(findings: List[dict], mode: str, catalog: Optional[dict] = Non
 
 # --- findings saved per commit, and their acknowledgement ------------------------------
 
-def finding_match(finding: dict, catalog: Optional[dict]) -> str:
-    """What a blocking finding is at ``review ack``: its entry's ``match``
-    for the mode (``block`` or ``judgment``), or ``judgment`` for a finding
-    that fits no entry, which is the reviewer's opinion with no rule behind
-    it and so the owner's call."""
+def named_entry(finding: dict, catalog: Optional[dict]) -> Optional[dict]:
+    """The catalog entry the reviewer named in ``entry``, by id alone."""
+    named = finding.get("entry")
+    return next((e for e in (catalog or {}).get("patterns") or [] if named and e.get("id") == named),
+                None)
+
+
+def block_patterns(repo_path: str, mode: str) -> list:
+    """Every pattern entry whose match is ``block`` in ``mode``, compiled
+    from the merged configuration, ``.env`` values included (the catalog the
+    reviewer sees leaves those out)."""
+    config = load_config(repo_path)
+    return compile_patterns([p for p in config.all_patterns
+                             if p.get("pattern") and entry_match(p, mode == "relaxed") == "block"])
+
+
+def finding_match(finding: dict, catalog: Optional[dict], blocks: Sequence = ()) -> str:
+    """What a blocking finding is at ``review ack``: ``judgment`` or ``block``.
+
+    It is ``judgment`` only when its entry (``entry_for``) is a judgment
+    entry in this mode, or when it is truly entry-less: the reviewer named
+    no entry the catalog has, and no block pattern (``blocks``) occurs
+    anywhere in the value. That is the reviewer's opinion with no rule
+    behind it, so the owner's call. Everything else is ``block``: a named
+    entry that is not judgment, even when its pattern does not match the
+    whole value (the reviewer's finding on an invalid ack claim names the
+    claim's entry), and a value that holds a block pattern among other
+    words."""
     entry = entry_for(finding, catalog)
-    if entry is None:
-        return "judgment"
-    return "judgment" if entry.get("match") == "judgment" else "block"
+    if entry is not None:
+        return "judgment" if entry.get("match") == "judgment" else "block"
+    if named_entry(finding, catalog) is not None:
+        return "block"
+    value = str(finding.get("value", ""))
+    return "block" if any(c.search(value) for c in blocks) else "judgment"
 
 
 def names_a_commit(location: str, shas: Sequence[str]) -> bool:
@@ -515,9 +543,10 @@ def save_findings(repo_path: str, shas: Sequence[str], findings: List[dict], mod
     findings are elsewhere, so an earlier list never outlives a new review.
     Returns the commits that have findings."""
     per: Dict[str, List[dict]] = {s: [] for s in shas}
+    blocks = block_patterns(repo_path, mode)
     for f in findings:
-        entry = entry_for(f, catalog)
-        saved = {"entry": entry["id"] if entry else None, "match": finding_match(f, catalog),
+        entry = entry_for(f, catalog) or named_entry(f, catalog)
+        saved = {"entry": entry["id"] if entry else None, "match": finding_match(f, catalog, blocks),
                  "location": f.get("location"), "value": f.get("value"),
                  "category": f.get("category"), "reason": f.get("note") or "", "mode": mode}
         for sha in _commits_of(f.get("location", ""), shas):

@@ -195,7 +195,8 @@ Rules:
   applies to `review --relaxed` and nothing else, so `ScanReport` has no
   exposure and the MCP result none either. A reviewer's finding on a
   value an entry names follows the entry; a finding that matches no entry
-  blocks in both modes. The design behind the enum is in [What a match
+  blocks the push in both modes until `review ack` accepts it, unless a
+  block entry's pattern occurs in it (then it is block). The design behind the enum is in [What a match
   does](#what-a-match-does) below.
 
 - **Every layer is validated on load** (`config.validate_layer`): known
@@ -415,6 +416,11 @@ records a review. Rules:
   for publish text, on every commit of the batch when it names none).
   The label note stays one label per line. Notes, like marks, do not
   follow a rewritten commit, and nothing maps them across commits.
+- **git-scan's records are never pushed.** The review notes hold matched
+  values in plain text (findings, acknowledged matches), so both notes
+  refs (`marks.PRIVATE_REFS`) stay in the clone. `marks.push_check`
+  refuses a push that names either ref on either side (`private_refs_in`:
+  `--mirror`, an explicit refspec) before it scans anything, and says why.
 - **The gate scans; `scanned` is its cache.** Every outgoing commit without
   `scanned` goes through one `commits` scan, and the clean ones are marked.
   `scanned` is per commit: it says that commit's own changes, message, and
@@ -474,8 +480,9 @@ records a review. Rules:
   no pattern, or when its pattern matches the value; a named entry whose
   pattern does not match, or a partial match (a secret that contains a
   name), names no entry; an unnamed finding is matched whole against the
-  patterns. A finding that matches no entry blocks in both modes, and an
-  id the reviewer was not given names no entry. The regression fixture in
+  patterns. A finding that matches no entry blocks the push in both modes
+  (see `review ack` below for when it can be accepted), and an id the
+  reviewer was not given names no entry. The regression fixture in
   `tests/unit/test_review.py` (`_tenant`) reproduces the case that forced
   this: a `domain` judgment entry the reviewer re-labelled an account
   identifier. The reviewer reports categories and no severity: a model's
@@ -513,10 +520,16 @@ records a review. Rules:
 - **`review ack` accepts saved findings, all or none.**
   `review.ack_findings` refuses when no findings are saved or when any
   saved finding's `match` is `block`; otherwise it adds `reviewed`. The
-  saved `match` is `review.finding_match`: the entry's match for the mode,
-  or `judgment` for a finding that fits no entry, since it is the
-  reviewer's opinion with no rule behind it. An ack claim in the prompt on
-  such a finding is still invalid: only `review ack` accepts it.
+  saved `match` is `review.finding_match`, which defaults to `block`. It
+  is `judgment` only when `entry_for` finds a judgment entry, or when the
+  finding is truly entry-less: the reviewer named no entry the catalog
+  has, and no block pattern (`review.block_patterns`, from the merged
+  configuration, so `.env` values count though the reviewer never sees
+  them) occurs anywhere in the value. A named entry that is not judgment
+  stays block even when its pattern doesn't match the whole value, which
+  is how the reviewer's finding on an invalid ack claim (it names the
+  claim's entry) stays block. An ack claim in the prompt on an entry-less
+  finding is still invalid: only `review ack` accepts it.
   `ack --commit` stays the separate path for commits the hooks did not see.
 - **A pre-commit hook runs before the commit exists.** A passing staged scan
   records the staged tree in the git directory; a refused commit message
