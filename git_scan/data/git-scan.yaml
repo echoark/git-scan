@@ -147,6 +147,7 @@ patterns:
   - id: people
     category: people
     specifics: another person's name, email address or handle
+    match: judgment
     relaxed: warn
   - id: trackers
     category: tracker

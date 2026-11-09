@@ -61,9 +61,19 @@ A judgment entry in git-scan's configuration names a value that is
 sensitive only in context. The scan lists each match with the entry's
 specifics and refuses the commit until the agent has looked and run `git-scan ack`,
 which applies to exactly the staged content. The acknowledgement clears
-judgment matches only and is the committing agent's call; the review sees
-the same entries and judges every line on its own, so an acknowledgement
-never settles the review.
+judgment matches only and is the committing agent's call. The matches
+acknowledged go with the commit to the review, which may honour each one
+whose entry is still judgment in its mode and lists those it honoured;
+anything else it sees in the same content is still a finding.
+
+## Accepting review findings
+
+A review that flags a commit saves its findings, and the output names
+`git-scan review ack <sha>` for each flagged commit. The command accepts
+all of a commit's findings when none is block. The skill treats it as one
+of the ways to resolve a finding, offered to the user and run only on
+their yes for that commit, because accepting a judgment call is the
+user's decision, never the agent's.
 
 ## Warnings
 

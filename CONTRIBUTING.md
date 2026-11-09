@@ -314,7 +314,7 @@ pattern section; keep the three identical.
 | `credentials` | | a credential written out in plain language, not in a token format | block | block |
 | `financial` | | the owner's financial facts in words: a balance, a card or routing number | block | block |
 | `account-ids` | | an identifier of a specific account at a cloud or online service | block | block |
-| `people` | | another person's name, email address or handle | block | warn |
+| `people` | | another person's name, email address or handle | judgment | warn |
 | `trackers` | | a key or link to a private tracker, wiki or workspace | block | warn |
 | `personal-framing` | | a description of the author's own setup, chores or personal use | judgment | ignore |
 | `history` | | an account of who did what: session or agent chatter, hand-offs, process narration | block | ignore |
@@ -327,9 +327,14 @@ machine). An owner entry whose pattern equals a derived value governs,
 and an owner entry overrides any built-in by id.
 
 Acknowledgement is bound to content. `git-scan ack` records the staged
-tree (`marks.record_ack`); the check honors the record only while the
-staged tree is still that one (`marks.ack_applies`), and the post-commit
-hook consumes it with the passed-scan record. For commits already made,
+tree and the matches the Judgment check showed (`marks.record_ack`; each
+match as entry id, path, side, line and text, from `CheckResult.data`);
+the check honors the record only while the staged tree is still that one
+(`marks.ack_applies`), and the post-commit hook consumes it with the
+passed-scan record. When the new commit is marked `scanned` and its tree
+is the acknowledged one, the hook copies the matches into the commit's
+review note as `scan_acks` (see the push gate rules below), which is how
+they reach the privacy review. For commits already made,
 `ack --commit` runs the commit scan with `acknowledge_judgment=True`, which
 the steps receive as `acknowledged`; a clean result marks the commit
 `scanned` through the normal path, so there is no second label. Nothing an
@@ -394,11 +399,22 @@ records a review. Rules:
 - **Marks are internal, and only two exist.** `scanned` is written by the
   post-commit hook and by a scan of existing commits; `reviewed` by
   `review.review` on every commit of a clean batch, after it has run the
-  reviewer itself. Only `marks.py` touches the storage, and no command
+  reviewer itself, and by `review.ack_findings` on a commit whose saved
+  findings are all judgment calls. Only `marks.py` touches the storage, and no command
   writes a mark on request or accepts a result from outside: a command that
   did would hand any agent the bypass along with the documentation of where
   it lives. The storage is repository-local metadata that is not pushed;
   the README says that much and no more, on purpose.
+- **Review notes are JSON beside the labels, never in them.** A second
+  notes ref (`marks.REVIEW_REF`, written through
+  `marks.update_review_note`) holds one JSON object per commit:
+  `scan_acks` from the post-commit hook, and `findings` and `mode` from a
+  review that flagged the commit (`review.save_findings`: every commit of
+  a flagged batch gets its latest list, empty when the findings are
+  elsewhere; a finding is saved on the commit its location names, on none
+  for publish text, on every commit of the batch when it names none).
+  The label note stays one label per line. Notes, like marks, do not
+  follow a rewritten commit, and nothing maps them across commits.
 - **The gate scans; `scanned` is its cache.** Every outgoing commit without
   `scanned` goes through one `commits` scan, and the clean ones are marked.
   `scanned` is per commit: it says that commit's own changes, message, and
@@ -481,6 +497,24 @@ records a review. Rules:
   backup (a new clone or session marks again). Tests stand a stub `gh` on
   `PATH`, and the sandbox's temp global git config keeps host registrations
   off the developer's machine.
+- **The reviewer applies acknowledgements; git-scan does not.**
+  `build_prompt` lists a commit's `scan_acks` beside it as matches the user
+  accepted. The packaged instructions tell the reviewer to honour one only
+  when its entry is `judgment` in the mode, to report an ack on any other
+  entry (or none) as a finding, and that an ack covers that one match and
+  nothing else. Honoured acks come back in the result's `acknowledged`
+  list (required by the schema, defaulted to empty by `parse_result`) and
+  are printed. git-scan never filters findings against acks: deciding
+  whether what the reviewer sees is what was accepted is a judgment, and
+  the reviewer is the one judging context.
+- **`review ack` accepts saved findings, all or none.**
+  `review.ack_findings` refuses when no findings are saved or when any
+  saved finding's `match` is `block`; otherwise it adds `reviewed`. The
+  saved `match` is `review.finding_match`: the entry's match for the mode,
+  or `judgment` for a finding that fits no entry, since it is the
+  reviewer's opinion with no rule behind it. An ack claim in the prompt on
+  such a finding is still invalid: only `review ack` accepts it.
+  `ack --commit` stays the separate path for commits the hooks did not see.
 - **A pre-commit hook runs before the commit exists.** A passing staged scan
   records the staged tree in the git directory; a refused commit message
   deletes that record; the post-commit hook marks HEAD only if its tree is

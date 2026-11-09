@@ -176,6 +176,11 @@ def ack(rev):
     content: stage anything more and it must be given again. It clears
     judgment matches only; every other finding still refuses the commit.
 
+    The matches acknowledged (entry, file, added or removed, line, text)
+    go with the commit: the privacy review is told about them and may leave
+    those exact matches out of its findings, as long as the entry is still
+    a judgment entry in that review's mode.
+
     \b
     --commit REV does the same for a commit the hooks did not see (the push
     gate names the command). The commit is scanned with its judgment
@@ -215,7 +220,7 @@ def ack(rev):
             click.echo("nothing to acknowledge: no judgment matches in the staged change"
                        + (" or its pending commit message" if message else ""))
             return
-    tree = marks.record_ack(".")
+    tree = marks.record_ack(".", judged.data)
     if not tree:
         _fail(marks.MarkError("not a git repository, or nothing is staged"))
     shown = [f for f in judged.findings if not f.startswith(("Each match", "  git-scan", "    "))]
@@ -258,9 +263,17 @@ def review(ctx, relaxed_review, publish, rev_range, runner, timeout, quiet):
     finding for you to look at, warn is a note that doesn't block. A
     finding that matches no entry blocks in both modes.
 
+    Judgment matches acknowledged at commit time ('git-scan ack') are listed
+    to the reviewer beside their commit. The reviewer may leave such a match
+    out of its findings when its entry is still a judgment entry in this
+    mode, and lists it as an acknowledgement it honoured; a claim on any
+    other entry is itself a finding. An acknowledgement covers that one
+    match, never the file or the rest of the content.
+
     \b
     Findings are printed with the value and location; nothing is recorded
-    for that batch. A reviewer problem (not installed, failed, timed out,
+    for that batch. Each flagged commit's findings are saved with it, for
+    'git-scan review ack'. A reviewer problem (not installed, failed, timed out,
     unreadable output) is reported as such and records nothing. Commits
     already reviewed are skipped, so a rerun costs only what is new. With
     --publish and no commit left to review (a pull-request body edited after
@@ -284,6 +297,9 @@ def review(ctx, relaxed_review, publish, rev_range, runner, timeout, quiet):
     for f in result.notes:
         note = f" ({f['note']})" if f.get("note") else ""
         click.echo(f"  note: {f['location']} [{f['category']}] {f['value']}{note}")
+    for a in result.acknowledged:
+        click.echo(f"  acknowledged: {a.get('location')} [{a.get('entry')}] {a.get('value')}"
+                   f" (ack honoured: {a.get('ack')})")
     if result.findings:
         click.echo(click.style(f"  [FAIL] Privacy review ({result.mode}; {len(result.commits)} "
                                f"commit(s); {len(result.findings)} finding(s))", fg="red"))
@@ -295,6 +311,12 @@ def review(ctx, relaxed_review, publish, rev_range, runner, timeout, quiet):
                                "for text" if result.text_only and not result.commits else
                                "FAILED: fix the content in those commits and review again; "
                                "nothing was recorded for them", fg="red", bold=True))
+        if result.flagged:
+            click.echo("The findings are saved per commit. When a commit's findings are all "
+                       "judgment calls and you have")
+            click.echo("looked at each one and every one is fine, acknowledge them with:")
+            for sha in result.flagged:
+                click.echo(f"  git-scan review ack {sha[:12]}")
         sys.exit(1)
     n = len(result.commits)
     if result.text_only and not n:
@@ -308,6 +330,38 @@ def review(ctx, relaxed_review, publish, rev_range, runner, timeout, quiet):
                                f"{n} commit(s){skipped}; recorded", fg="green"))
     else:
         click.echo(f"nothing new to review{skipped}")
+
+
+@review.command("ack")
+@click.argument("rev", metavar="COMMIT")
+def review_ack(rev):
+    """Acknowledge the findings the latest review saved for COMMIT.
+
+    Shows every finding the privacy review saved for the commit and, when
+    each one is a judgment call (a judgment entry in that review's mode, or
+    a finding that fits no entry), records the commit as reviewed, so the
+    push gate lets it through. Run it only after looking at every finding;
+    fix the content otherwise. Refused when any finding is block (the
+    content has to change) or when no findings are saved for the commit. A
+    rewritten commit is a new commit: it has no saved findings and is
+    reviewed again.
+    """
+    try:
+        sha, findings = review_sdk.saved_findings(rev, ".")
+        for f in findings:
+            entry = f.get("entry") or "no entry"
+            click.echo(f"  {f.get('location')} [{f.get('category')}] {f.get('value')} "
+                       f"({entry}: {f.get('match')}, {f.get('mode')} review)")
+            if f.get("reason"):
+                click.echo(f"      {f['reason']}")
+        done = review_sdk.ack_findings(rev, ".")
+    except (review_sdk.ReviewError, marks.MarkError) as e:
+        _fail(e)
+    if done.already:
+        click.echo(f"{sha[:12]} is already recorded as reviewed")
+        return
+    click.echo(f"acknowledged {len(done.findings)} review finding(s) on {sha[:12]}; "
+               "recorded as reviewed")
 
 
 @cli.command("relax")

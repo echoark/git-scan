@@ -139,6 +139,12 @@ def _matches(compiled: List[Compiled], scan_input) -> list:
     return found
 
 
+def match_record(ln, entry: Compiled, value: str) -> dict:
+    """One judgment match as ``git-scan ack`` records it: the entry, the
+    file, the side of the change, the line and the matched text."""
+    return {"entry": entry.id, "path": ln.file, "side": ln.kind, "line": ln.line, "text": value}
+
+
 def _judgment_check(repo_path: str, config, scan_input, acknowledged: bool) -> List[CheckResult]:
     """Matches on judgment entries: reported for a look, cleared by an
     acknowledgement, never a finding in themselves.
@@ -160,6 +166,7 @@ def _judgment_check(repo_path: str, config, scan_input, acknowledged: bool) -> L
     if acked:
         return [CheckResult("Judgment", True, [],
                             info=f"{info}; {len(matches)} match(es) acknowledged")]
+    detail = [match_record(ln, entry, value) for ln, entry, value in matches]
     findings = ["Each match below is a judgment call, not a finding. Look at every one; "
                 "fix the content, or if all of them are fine, acknowledge them with:"]
     if scope in ("staged", "message"):
@@ -172,7 +179,7 @@ def _judgment_check(repo_path: str, config, scan_input, acknowledged: bool) -> L
         if entry.specifics:
             findings.append(f"    {entry.id}: {entry.specifics}")
     return [CheckResult("Judgment", False, findings,
-                        info=f"{info}; {len(matches)} match(es), not acknowledged")]
+                        info=f"{info}; {len(matches)} match(es), not acknowledged", data=detail)]
 
 
 def _warn_check(config, scan_input) -> List[CheckResult]:

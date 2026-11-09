@@ -154,7 +154,10 @@ git push origin HEAD                    # the push gate checks the scan and the 
   match is fine in context, run `git-scan ack` and commit again (see
   [Judgment entries and notes](#judgment-entries-and-notes)).
 - **A review finding** names the commit, file and line, or the publish
-  text: fix the content (amend, or add a commit) and review again.
+  text: fix the content (amend, or add a commit) and review again. When
+  every finding on a commit is a judgment call and each one is fine, run
+  the `git-scan review ack <sha>` the output names instead (see [The
+  privacy review](#the-privacy-review)).
 - **Text posted after the push** (an edited pull-request body, a comment, an
   issue): `git-scan review --publish FILE` reviews it alone.
 
@@ -444,6 +447,22 @@ did not see, the push gate names `git-scan ack --commit <sha>`, which scans
 that commit with its judgment matches acknowledged and records it as
 scanned if everything else is clean.
 
+**Two acknowledgements, one model.** `git-scan ack` records which matches
+you accepted (entry, file, added or removed, line and the matched text),
+and the commit made from that staged content carries them. The privacy
+review is told about them: for each, the reviewer checks the entry, and
+when it is still a judgment entry in that review's mode, it may leave that
+one match out of its findings and lists it as an acknowledgement it
+honoured. A claim on an entry that is not judgment is reported as a
+finding. An acknowledgement covers that one match, never the file, the
+rest of the content or the entry, so anything else the reviewer sees is
+reported as usual. A review that still flags a commit saves its findings
+with the commit; `git-scan review ack <sha>` shows them and, when none is
+block, records the commit as reviewed (see [The privacy
+review](#the-privacy-review)). Acknowledgements belong to one commit: an
+amended, rebased or cherry-picked commit is a new commit and is reviewed
+afresh.
+
 Judgment entries take the same options as any other (`--word-boundary`
 keeps four digits from matching inside a longer number). Move an entry
 between the two modes with `patterns edit ID --match judgment` and
@@ -471,7 +490,7 @@ commit scan and the privacy review follow the same one:
 | `match` | The scan | The review |
 |---|---|---|
 | `block` (the default) | the check fails | a finding |
-| `judgment` | the check fails until you acknowledge the match (`git-scan ack`) | the reviewer applies the specifics and reports the match for you to look at; it never escalates it by inference |
+| `judgment` | the check fails until you acknowledge the match (`git-scan ack`) | the reviewer applies the specifics and reports the match for you to look at, unless you acknowledged that match at commit time; it never escalates it by inference; `git-scan review ack` accepts the findings |
 | `warn` | the match is listed under `[WARN] Warnings` and the scan passes; an agent reports it and proceeds | a note, shown, not blocking |
 | `ignore` | the entry is not compiled | the entry is not sent to the reviewer |
 
@@ -503,9 +522,9 @@ and its `relaxed` value when set.
 
 Besides the token, key and identifier formats, git-scan ships entries
 that the review alone can apply: `credentials`, `financial`, `account-ids`
-(block in both modes), `people`, `trackers` and the pattern `user-home-path`
-(block; a note when relaxed), `personal-framing` (judgment; ignored when
-relaxed) and `history` (block; ignored when relaxed). Each is an entry
+(block in both modes), `people` (judgment; a note when relaxed),
+`trackers` and the pattern `user-home-path` (block; a note when relaxed),
+`personal-framing` (judgment; ignored when relaxed) and `history` (block; ignored when relaxed). Each is an entry
 like any other: `patterns list` shows them, and `patterns edit` with
 `--match` or `--relaxed` changes what they do for you or for one
 repository.
@@ -721,6 +740,7 @@ git-scan review --publish pr-body.md   # and the text that will be published wit
 git-scan review --range A..B           # commits already made
 git-scan review --publish comment.md   # text alone: a body edited after the push, a comment, an issue
 git-scan review --relaxed              # a relaxed review, for an eligible clone (see below)
+git-scan review ack SHA                # accept a flagged commit's findings when all are judgment calls
 ```
 
 What happens: git-scan computes the outgoing commits, builds one prompt
@@ -737,6 +757,9 @@ the value and the location, and nothing is recorded for that batch:
          3f9c2a1b7d0e:contacts.txt:1 [names] Jane Doe
          3f9c2a1b7d0e:message [contextual] ask Dana about the deploy
 FAILED: fix the content in those commits and review again; nothing was recorded for them
+The findings are saved per commit. When a commit's findings are all judgment calls and you have
+looked at each one and every one is fine, acknowledge them with:
+  git-scan review ack 3f9c2a1b7d0e
 ```
 
 Rules the command keeps:
@@ -775,8 +798,26 @@ Rules the command keeps:
   host, asked again, still reports the repository private (see [Relaxed
   review](#relaxed-review)). Nothing about the clone changes a review's
   mode on its own.
-- **Nothing accepts a result from outside.** The only writer of the review
-  record is this command, after it has run the reviewer itself.
+- **Matches acknowledged at commit time go with the commit.** The prompt
+  lists them beside the commit as matches the user looked at and accepted.
+  The reviewer checks each against the entries: on a judgment entry in
+  this mode it may leave that match out of its findings, and the output
+  lists it as `acknowledged: ... (ack honoured: ...)`; on any other entry,
+  or none, the claim is itself a finding. git-scan does no matching of its
+  own between findings and acknowledgements; the reviewer, already judging
+  context, decides whether what it sees is what was accepted.
+- **Findings are saved per commit, and judgment calls can be accepted.**
+  A review that flags a commit saves that commit's latest findings (the
+  entry, its match for the mode, location, value and reason) beside it,
+  in repository-local metadata of their own. `git-scan review ack <sha>`
+  shows them and accepts all of them, recording the commit as reviewed;
+  it is refused when any of them is block (fix the content) or when none
+  are saved. A finding that fits no entry is the reviewer's opinion with no
+  rule behind it, so it counts as a judgment call here; only `review ack`
+  can accept it.
+- **Nothing accepts a result from outside.** The only writers of the
+  review record are this command, after it has run the reviewer itself,
+  and `review ack`, on the findings that run saved.
 
 **The runner.** git-scan uses the first headless agent CLI it finds on
 `PATH`, `claude` or `agy`, each started with its prompt on standard input,

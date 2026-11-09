@@ -1,6 +1,6 @@
 {
   "type": "object",
-  "required": ["status", "findings", "commits_reviewed", "summary"],
+  "required": ["status", "findings", "acknowledged", "commits_reviewed", "summary"],
   "properties": {
     "status": {"type": "string", "enum": ["completed", "failed"]},
     "failure_reason": {"type": ["string", "null"]},
@@ -17,6 +17,19 @@
           "location": {"type": "string"},
           "note": {"type": "string"},
           "entry": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "acknowledged": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["entry", "location", "value", "ack"],
+        "properties": {
+          "entry": {"type": "string"},
+          "location": {"type": "string"},
+          "value": {"type": "string"},
+          "ack": {"type": "string"}
         }
       }
     },
