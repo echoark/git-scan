@@ -184,7 +184,9 @@ names, and refuses the commit until someone has looked. Look at every listed lin
 real leak, fix the content. If every match is fine in its context, run
 `git-scan ack` and commit again; the acknowledgement covers exactly the
 staged content and nothing later. Never acknowledge a match you have not
-looked at, and never acknowledge to save the trouble of fixing.
+looked at, and never acknowledge to save the trouble of fixing. The
+matches you acknowledge go with the commit to the review, which may honour
+them; say in your report which ones you acknowledged.
 
 A `[WARN] Warnings` line is a passing check: the entry's owner decided in
 advance that a match is reported and the work proceeds. Nothing to
@@ -317,6 +319,16 @@ Then wait for the user's guidance. Make only the change the user picks,
 commit it (an amend or a new commit, either way a new SHA), and restart the
 flow from Step 1. Changing git-scan's configuration is the user's call
 (rule 3).
+
+When the review's output names `git-scan review show <sha>`, that commit's
+findings were saved. Run it: it writes nothing, prints each saved finding
+and says whether `git-scan review ack <sha>` would accept them. Show the
+user its output verbatim. When it says they are all judgment calls, offer
+`git-scan review ack <sha>` as one of the ways to resolve them, and run it
+only on the user's yes for that commit. When it reports block findings,
+the content has to change. The review's `acknowledged:` lines
+are matches the reviewer left out because of an earlier acknowledgement:
+include them in what you report.
 
 ## If content was pushed without a review
 

@@ -177,7 +177,7 @@ def test_the_built_in_entries_say_what_a_match_does(repo):
     assert home["specifics"] == "a user's home-directory path" and home["relaxed"] == "warn"
     assert re.search(home["pattern"], "/home/jane/x") and re.search(home["pattern"], "C:\\Users\\jane\\x")
     for id, match, relaxed in (("credentials", None, None), ("financial", None, None),
-                               ("account-ids", None, None), ("people", None, "warn"),
+                               ("account-ids", None, None), ("people", "judgment", "warn"),
                                ("trackers", None, "warn"), ("personal-framing", "judgment", "ignore"),
                                ("history", None, "ignore")):
         entry = by_id[id]

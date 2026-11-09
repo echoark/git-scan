@@ -14,6 +14,7 @@ class CheckResult:
     skipped: bool = False
     error: Optional[str] = None
     info: Optional[str] = None
+    data: List[dict] = field(default_factory=list)   # structured detail, for callers that need it
 
 
 def run_cmd(cmd: str, cwd: str, timeout: int = 300) -> Tuple[int, str, str]:

@@ -62,8 +62,30 @@ this batch; look at each in context. Put the entry's `id` in every
 finding's `entry` field: that is how the treatment the owner decided is
 applied, and the only thing your category changes is how the finding
 reads. A finding that fits no entry still gets reported, with `entry`
-null; it blocks whatever the mode. The `notes` list holds guidance that
+null; whatever the mode, it blocks the push until the owner acknowledges
+it with `git-scan review ack`, unless a block entry's pattern occurs in
+it, in which case it is block. The `notes` list holds guidance that
 belongs to no single entry.
+
+## Acknowledged matches
+
+A commit may carry a list headed "acknowledged at commit time": matches
+of judgment entries that the user looked at when committing and accepted
+(the entry, the file, whether the line was added or removed, the line and
+the matched text). For each one, first check the entry in the list above:
+
+- If the entry's `match` in this review mode is `judgment`, you may honour
+  the acknowledgement: leave that match out of `findings` and list it under
+  `acknowledged`.
+- If the entry's `match` is anything else, or no entry has that id, the
+  acknowledgement is invalid: report it as a finding with the
+  acknowledgement's own entry id in `entry` (null when no entry has that
+  id) and a `note` that says the acknowledgement is not valid and why.
+
+An acknowledgement covers only the one match the user accepted: that value,
+at that place. It never covers the file, the rest of the content or the
+entry. Anything beyond it, another value, a different concern or a broader
+problem in the same content, is reported as usual.
 
 Known false positives: reserved example domains and addresses, `localhost`,
 obvious placeholders and dummy keys built by concatenation, common-word
@@ -79,6 +101,10 @@ own for a finding that fits no entry), the `value` found, its `location`
 `publish:<name>:<line>`), a `note` naming the entry and the reason, and
 the `entry` id, or null. Report every finding you see, in either mode;
 git-scan applies each entry's `match`.
+For each acknowledged match you left out, an item in `acknowledged`: the
+`entry` id, the `location` and `value` as you would report them, and in
+`ack` the acknowledgement you relied on, as it was listed. With none, the
+list is empty.
 List every commit id you reviewed in `commits_reviewed`.
 Put in `warnings` only what limited the review: input that was truncated or
 unreadable, a commit you could not see. Never use them to explain a call

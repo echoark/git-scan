@@ -33,11 +33,20 @@ records the tree whose judgment matches were acknowledged
 (:func:`record_ack`). A refused commit message drops the passed-scan record
 (:func:`forget_passed_scan`); the post-commit hook marks the new commit when
 its tree is the one that passed and consumes both records
-(:func:`mark_if_scanned`).
+(:func:`mark_if_scanned`). The acknowledgement record also lists the
+matches acknowledged, which the post-commit hook carries into the new
+commit's review note.
+
+Review notes are JSON kept beside the labels in a separate notes ref
+(``REVIEW_REF``), one object per commit: ``scan_acks`` (the judgment
+matches acknowledged at commit time) and, after a review that flagged the
+commit, ``findings`` and ``mode``. Like marks they are not pushed and do
+not follow a rewritten commit.
 """
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -45,6 +54,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set
 
 NOTES_REF = "refs/notes/git-scan"
+REVIEW_REF = "refs/notes/git-scan-review"
+PRIVATE_REFS = (NOTES_REF, REVIEW_REF)   # hold matched values: never pushed
 SCANNED = "scanned"
 REVIEWED = "reviewed"
 ZERO = "0" * 40
@@ -166,26 +177,40 @@ def _staged_tree(repo_path: str) -> str:
     return _out(repo_path, "write-tree")
 
 
-def record_ack(repo_path: str = ".") -> str:
+def _read_ack(repo_path: str) -> Optional[dict]:
+    """The acknowledgement record: ``{"tree", "matches"}``, or None."""
+    git_dir = _git_dir(repo_path)
+    if not git_dir:
+        return None
+    try:
+        text = (git_dir / _ACK_FILE).read_text().strip()
+    except OSError:
+        return None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        data = {"tree": text, "matches": []}          # a record from an earlier version
+    if not isinstance(data, dict) or not data.get("tree"):
+        return None
+    return data
+
+
+def record_ack(repo_path: str = ".", matches: Iterable[dict] = ()) -> str:
     """Remember that the judgment matches of the current staged tree were
-    acknowledged. Returns the tree id."""
+    acknowledged, and which matches they were (entry, path, side, line,
+    text). Returns the tree id."""
     tree = _staged_tree(repo_path)
     git_dir = _git_dir(repo_path)
     if tree and git_dir:
-        (git_dir / _ACK_FILE).write_text(tree + "\n")
+        record = {"tree": tree, "matches": list(matches)}
+        (git_dir / _ACK_FILE).write_text(json.dumps(record, ensure_ascii=False) + "\n")
     return tree
 
 
 def ack_applies(repo_path: str = ".") -> bool:
     """Whether an acknowledgement was recorded for exactly the current staged tree."""
-    git_dir = _git_dir(repo_path)
-    if not git_dir:
-        return False
-    record = git_dir / _ACK_FILE
-    if not record.exists():
-        return False
-    acked = record.read_text().strip()
-    return bool(acked) and acked == _staged_tree(repo_path)
+    record = _read_ack(repo_path)
+    return bool(record) and record["tree"] == _staged_tree(repo_path)
 
 
 def pending_message(repo_path: str = ".") -> Optional[str]:
@@ -206,7 +231,9 @@ def forget_ack(repo_path: str = ".") -> None:
 
 
 def mark_if_scanned(repo_path: str = ".") -> bool:
-    """Post-commit: mark HEAD ``scanned`` if its tree is the one that passed.
+    """Post-commit: mark HEAD ``scanned`` if its tree is the one that passed,
+    and carry the acknowledged judgment matches, when the acknowledgement
+    was for that same tree, into HEAD's review notes (``scan_acks``).
 
     Both staged records (passed scan, acknowledgement) are consumed either
     way, so neither can apply to a later commit.
@@ -214,16 +241,50 @@ def mark_if_scanned(repo_path: str = ".") -> bool:
     git_dir = _git_dir(repo_path)
     if not git_dir:
         return False
+    ack = _read_ack(repo_path)
     forget_ack(repo_path)
     record = git_dir / _PASSED_FILE
     if not record.exists():
         return False
     passed = record.read_text().strip()
     record.unlink()
-    if passed and passed == _out(repo_path, "rev-parse", "HEAD^{tree}"):
-        add_mark(SCANNED, "HEAD", repo_path)
+    head_tree = _out(repo_path, "rev-parse", "HEAD^{tree}")
+    if passed and passed == head_tree:
+        sha = add_mark(SCANNED, "HEAD", repo_path)
+        if ack and ack["tree"] == head_tree and ack.get("matches"):
+            update_review_note(sha, {"scan_acks": ack["matches"]}, repo_path)
         return True
     return False
+
+
+# --- review notes ----------------------------------------------------------------
+
+def review_note(commit: str, repo_path: str = ".") -> dict:
+    """The JSON git-scan keeps on a commit in ``REVIEW_REF``: ``scan_acks``
+    (the judgment matches acknowledged at commit time) and, after a review
+    that flagged the commit, ``findings`` and ``mode``. Empty when none."""
+    res = _git(repo_path, "notes", f"--ref={REVIEW_REF}", "show", commit)
+    if res.returncode != 0 or not res.stdout.strip():
+        return {}
+    try:
+        data = json.loads(res.stdout)
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def review_notes(commits: Iterable[str], repo_path: str = ".") -> Dict[str, dict]:
+    """:func:`review_note` for each commit (full ids)."""
+    return {sha: review_note(sha, repo_path) for sha in dict.fromkeys(commits)}
+
+
+def update_review_note(commit: str, fields: dict, repo_path: str = ".") -> None:
+    """Set ``fields`` in a commit's review note, keeping the others. The
+    label note (``NOTES_REF``) is not touched."""
+    note = review_note(commit, repo_path)
+    note.update(fields)
+    _git(repo_path, "notes", f"--ref={REVIEW_REF}", "add", "-f", "-F", "-", commit,
+         input=json.dumps(note, ensure_ascii=False, indent=1) + "\n", check=True)
 
 
 # --- push check ------------------------------------------------------------------
@@ -241,6 +302,7 @@ class PushResult:
     unreviewed: List[str] = field(default_factory=list)
     review_required: bool = False
     scan: Optional[Any] = None
+    private_refs: List[str] = field(default_factory=list)   # git-scan's own refs in the push
 
     @property
     def unscanned(self) -> List[str]:
@@ -248,7 +310,8 @@ class PushResult:
 
     @property
     def ok(self) -> bool:
-        return not self.unreviewed and not (self.scan is not None and self.scan.failed)
+        return (not self.private_refs and not self.unreviewed
+                and not (self.scan is not None and self.scan.failed))
 
 
 def _rev_list(repo_path: str, tips: Iterable[str], exclude: Iterable[str]) -> List[str]:
@@ -291,13 +354,33 @@ def outgoing_commits(push_lines: Iterable[str], remote: Optional[str] = None,
     return _rev_list(repo_path, tips, _exclusions(repo_path, remote, remote_shas))
 
 
+def private_refs_in(push_lines: Iterable[str]) -> List[str]:
+    """git-scan's own notes refs among the refs a push names, on either side.
+    They hold matched values (the review's findings, the matches
+    acknowledged), so a push that includes one is refused outright."""
+    found = []
+    for line in push_lines:
+        parts = line.split()
+        if len(parts) != 4:
+            continue
+        for ref in (parts[0], parts[2]):
+            if ref in PRIVATE_REFS and ref not in found:
+                found.append(ref)
+    return found
+
+
 def push_check(push_lines: Iterable[str], remote: Optional[str] = None,
                require_review: bool = False, repo_path: str = ".") -> PushResult:
     """The commits a push would send: which are already scanned, and which no
     recorded review covers when one is required. (Scanning the rest is
-    ``scanner.push_scan``.)
+    ``scanner.push_scan``.) A push that includes git-scan's own notes refs
+    is refused before anything else is checked.
     """
+    push_lines = list(push_lines)
     result = PushResult(review_required=require_review)
+    result.private_refs = private_refs_in(push_lines)
+    if result.private_refs:
+        return result
     outgoing = outgoing_commits(push_lines, remote, repo_path)
     result.checked = outgoing
     if not outgoing:
@@ -337,6 +420,14 @@ def format_push_result(result: PushResult, repo_path: str = ".") -> str:
     if result.ok:
         tail = "; review recorded" if result.review_required and result.checked else ""
         return f"git-scan: {summary}{tail}"
+    if result.private_refs:
+        return "\n".join([
+            "git-scan: push refused: it includes git-scan's own records ("
+            + ", ".join(result.private_refs) + ").",
+            "",
+            "They hold the values git-scan matched (review findings, acknowledged",
+            "matches) and are kept in this clone only; they are never pushed. Push",
+            "branches and tags by name instead of --mirror or a notes refspec."])
     lines = [f"git-scan: push refused ({summary})."]
     if result.scan is not None and result.scan.failed:
         lines += ["",

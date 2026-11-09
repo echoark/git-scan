@@ -3,6 +3,36 @@
 Notable changes to git-scan, newest first. Versions follow
 [CONTRIBUTING.md](CONTRIBUTING.md#version-management).
 
+## 0.12.0 (unreleased)
+
+### Added
+
+- **Acknowledgements reach the review.** `git-scan ack` now records which
+  matches it accepted (entry, file, added or removed, line, text), and the
+  commit carries them. The privacy review lists them beside the commit;
+  the reviewer may leave an acknowledged match out of its findings when
+  its entry is a judgment entry in that mode, and reports a claim on any
+  other entry as a finding. `git-scan review` prints the acknowledgements
+  it honoured.
+- **`git-scan review ack <sha>`.** A review that flags a commit saves its
+  findings with the commit; `review ack` shows them and records the commit
+  as reviewed when none of them is block. A finding that fits no entry
+  counts as a judgment call there, unless a block entry's pattern occurs
+  in it or it names an entry that is not judgment. When every finding of a flagged
+  batch names one of its commits, the batch's other commits are recorded
+  as reviewed by that same run.
+- **`git-scan review show <sha>`** prints a flagged commit's saved
+  findings and says whether `review ack` would accept them, writing
+  nothing. A failed review names it for each flagged commit.
+- **git-scan's records are never pushed.** They hold the values it
+  matched, so the push gate refuses a push that includes them (for
+  example `git push --mirror`) and says why.
+
+### Changed
+
+- The built-in `people` entry is now `match: judgment` (a note when
+  relaxed, as before): another person's name is sensitive only in context.
+
 ## 0.11.0 (unreleased)
 
 ### Added

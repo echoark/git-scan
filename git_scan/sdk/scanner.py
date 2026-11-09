@@ -265,6 +265,6 @@ def push_scan(push_lines: Iterable[str], remote: Optional[str] = None,
     """
     result = marks.push_check(push_lines, remote=remote, require_review=require_review,
                               repo_path=repo_path)
-    if result.unscanned:
+    if result.unscanned and not result.private_refs:
         result.scan = run_scan(repo_path, commits=result.unscanned, remote=remote)
     return result

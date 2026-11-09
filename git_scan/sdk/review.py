@@ -15,6 +15,16 @@ writer of the ``reviewed`` mark is this code path. Reviewer failures fail
 closed: a missing runner, a non-zero exit, a timeout, or output that is not
 a valid result records nothing and says the problem is the reviewer, not
 the content.
+
+Two acknowledgements meet here. The judgment matches acknowledged at
+commit time (``git-scan ack``, carried to the commit by the post-commit
+hook) are listed in the prompt beside the commit, and the reviewer, which
+checks each against the entries, may leave those exact matches out of its
+findings and list them under ``acknowledged``; git-scan does no matching
+of its own. A batch with findings saves each flagged commit's findings in
+the commit's review note and, when every finding names a commit of the
+batch, records the batch's other commits as reviewed; ``ack_findings`` (``git-scan review ack``) records a flagged
+commit as reviewed when none of its findings is ``block``.
 """
 
 from __future__ import annotations
@@ -30,7 +40,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
 
 from . import marks, relaxed
-from .config import load_config, MergedConfig, MATCHES
+from .config import entry_match, load_config, MergedConfig, MATCHES
 from .sources import LOG_ARGS
 from .steps.patterns import compile_patterns
 from .user_patterns import export_patterns
@@ -45,7 +55,8 @@ DEFAULT_BATCH_BYTES = 200_000  # patch and message text per prompt
 # The reviewer reports each finding under the entry it matched; git-scan
 # applies that entry's ``match`` (``sort_findings``), never the reviewer's
 # label, so no re-classification can escalate an entry past what the
-# configuration says. A finding that matches no entry blocks in both modes.
+# configuration says. A finding that matches no entry blocks the push in
+# both modes; ``finding_match`` says whether ``review ack`` may accept it.
 _TRIM = " \t\r\n'\"`<>()[]{},.;:"
 
 _FENCE = re.compile(r"```(?:json|privacy-guard-result)?\s*\n(.*?)\n\s*```", re.S)
@@ -65,6 +76,9 @@ class ReviewResult:
     commits: List[str] = field(default_factory=list)      # reviewed in this run
     skipped: List[str] = field(default_factory=list)      # already marked reviewed
     findings: List[dict] = field(default_factory=list)
+    acknowledged: List[dict] = field(default_factory=list)   # left out by the reviewer on an ack
+    flagged: List[str] = field(default_factory=list)      # commits whose findings were saved
+    recorded: List[str] = field(default_factory=list)     # commits without findings in a flagged batch, recorded
     notes: List[dict] = field(default_factory=list)       # matches on warn entries: shown, not blocking
     warnings: List[str] = field(default_factory=list)
     batches: int = 0
@@ -189,6 +203,10 @@ def build_prompt(mode: str, catalog: dict, records: List[dict],
         parts += [f"## commit {r['sha'][:12]}", f"author: {r['author']}",
                   f"committer: {r['committer']}", "", "### message", "```", r["message"], "```",
                   "", "### patch", "```diff", r["patch"], "```", ""]
+        if r.get("acks"):
+            parts += ["### acknowledged at commit time",
+                      "The user looked at each of these matches and accepted it (git-scan ack).",
+                      "```json", json.dumps(r["acks"], indent=1, ensure_ascii=False), "```", ""]
     if publish:
         parts.append(f"# Publish text ({len(publish)})\n")
         for name, text in publish.items():
@@ -243,6 +261,11 @@ def parse_result(stdout: str) -> dict:
         if not isinstance(f, dict) or not all(k in f for k in ("category", "value", "location")):
             raise ReviewError("a finding in the reviewer's result lacks category, value or location; "
                               "nothing recorded")
+    acked = data.get("acknowledged")
+    if acked is None:
+        data["acknowledged"] = []
+    elif not isinstance(acked, list) or not all(isinstance(a, dict) for a in acked):
+        raise ReviewError("the reviewer's 'acknowledged' is not a list of objects; nothing recorded")
     return data
 
 
@@ -323,6 +346,9 @@ def review(repo_path: str = ".", commits: Optional[List[str]] = None,
             return result
         return _review_text_only(result, argv, mode, catalog, texts, timeout, say)
     records = commit_records(repo_path, todo)
+    for r, note in zip(records, (marks.review_note(r["sha"], repo_path) for r in records)):
+        if note.get("scan_acks"):
+            r["acks"] = note["scan_acks"]
     batches = _batches(records, batch_bytes)
     result.batches = len(batches)
     say(f"reviewing {len(todo)} commit(s) in {len(batches)} batch(es) with {name}"
@@ -345,11 +371,20 @@ def review(repo_path: str = ".", commits: Optional[List[str]] = None,
         report = f"batch {i}/{len(batches)}{by}{secs}: {str(data.get('summary') or '').strip() or '(no summary)'}"
         result.reports.append(report)
         say(report)
+        result.acknowledged += data["acknowledged"]
         blocking, notes = sort_findings(data["findings"], mode, catalog)
         result.notes += notes
         if blocking:
             result.findings += blocking
-            say(f"batch {i}/{len(batches)}: {len(blocking)} finding(s); not recorded")
+            flagged = save_findings(repo_path, shas, blocking, mode, catalog)
+            result.flagged += flagged
+            clean = ([s for s in shas if s not in flagged]
+                     if all(names_a_commit(f.get("location", ""), shas) for f in blocking) else [])
+            if clean:
+                marks.add_marks(marks.REVIEWED, clean, repo_path)
+                result.recorded += clean
+            say(f"batch {i}/{len(batches)}: {len(blocking)} finding(s); "
+                + (f"{len(clean)} commit(s) without findings recorded" if clean else "not recorded"))
         else:
             marks.add_marks(marks.REVIEWED, shas, repo_path)
             say(f"batch {i}/{len(batches)}: clean; recorded")
@@ -371,6 +406,7 @@ def _review_text_only(result: ReviewResult, argv: List[str], mode: str, catalog:
     report = f"publish text{by}{secs}: {str(data.get('summary') or '').strip() or '(no summary)'}"
     result.reports.append(report)
     say(report)
+    result.acknowledged += data["acknowledged"]
     blocking, notes = sort_findings(data["findings"], mode, catalog)
     result.findings += blocking
     result.notes += notes
@@ -417,7 +453,8 @@ def sort_findings(findings: List[dict], mode: str, catalog: Optional[dict] = Non
     is dropped even when the reviewer reports it, since the owner decided
     and git-scan can check a pattern itself. The reviewer's own category
     never decides, and an id it was not given names no entry. A finding
-    that matches no entry blocks in both modes."""
+    that matches no entry blocks the push in both modes (``finding_match``
+    says whether ``review ack`` may accept it)."""
     blocking, notes = [], []
     ignored = {"patterns": (catalog or {}).get("ignored") or []}
     for f in findings:
@@ -434,3 +471,140 @@ def sort_findings(findings: List[dict], mode: str, catalog: Optional[dict] = Non
         else:
             blocking.append(f)
     return blocking, notes
+
+
+# --- findings saved per commit, and their acknowledgement ------------------------------
+
+def named_entry(finding: dict, catalog: Optional[dict]) -> Optional[dict]:
+    """The catalog entry the reviewer named in ``entry``, by id alone."""
+    named = finding.get("entry")
+    return next((e for e in (catalog or {}).get("patterns") or [] if named and e.get("id") == named),
+                None)
+
+
+def block_patterns(repo_path: str, mode: str) -> list:
+    """Every pattern entry whose match is ``block`` in ``mode``, compiled
+    from the merged configuration, ``.env`` values included (the catalog the
+    reviewer sees leaves those out)."""
+    config = load_config(repo_path)
+    return compile_patterns([p for p in config.all_patterns
+                             if p.get("pattern") and entry_match(p, mode == "relaxed") == "block"])
+
+
+def finding_match(finding: dict, catalog: Optional[dict], blocks: Sequence = ()) -> str:
+    """What a blocking finding is at ``review ack``: ``judgment`` or ``block``.
+
+    It is ``judgment`` only when its entry (``entry_for``) is a judgment
+    entry in this mode, or when it is truly entry-less: the reviewer named
+    no entry the catalog has, and no block pattern (``blocks``) occurs
+    anywhere in the value. That is the reviewer's opinion with no rule
+    behind it, so the owner's call. Everything else is ``block``: a named
+    entry that is not judgment, even when its pattern does not match the
+    whole value (the reviewer's finding on an invalid ack claim names the
+    claim's entry), and a value that holds a block pattern among other
+    words."""
+    entry = entry_for(finding, catalog)
+    if entry is not None:
+        return "judgment" if entry.get("match") == "judgment" else "block"
+    if named_entry(finding, catalog) is not None:
+        return "block"
+    value = str(finding.get("value", ""))
+    return "block" if any(c.search(value) for c in blocks) else "judgment"
+
+
+def names_a_commit(location: str, shas: Sequence[str]) -> bool:
+    """Whether a finding's location names one commit of the batch. Only when
+    every finding of a flagged batch does are its other commits recorded:
+    a finding on publish text, or one that names no commit or another one,
+    leaves the whole batch unrecorded."""
+    head = str(location).split(":", 1)[0].strip().lower()
+    return len(head) >= 7 and head != "publish" and sum(s.startswith(head) for s in shas) == 1
+
+
+def _commits_of(location: str, shas: Sequence[str]) -> List[str]:
+    """The commits of a batch a finding's location names: the one its
+    commit id prefix names, none for publish text, and every commit of the
+    batch when the location names no commit of it."""
+    head = str(location).split(":", 1)[0].strip()
+    if head == "publish":
+        return []
+    if len(head) >= 7:
+        named = [s for s in shas if s.startswith(head.lower())]
+        if named:
+            return named
+    return list(shas)
+
+
+def save_findings(repo_path: str, shas: Sequence[str], findings: List[dict], mode: str,
+                  catalog: Optional[dict]) -> List[str]:
+    """Save the latest findings of a flagged batch in each commit's review
+    note (entry, its match for the mode, location, value, category, reason,
+    mode). Every commit of the batch gets its list, empty when the batch's
+    findings are elsewhere, so an earlier list never outlives a new review.
+    Returns the commits that have findings."""
+    per: Dict[str, List[dict]] = {s: [] for s in shas}
+    blocks = block_patterns(repo_path, mode)
+    for f in findings:
+        entry = entry_for(f, catalog) or named_entry(f, catalog)
+        saved = {"entry": entry["id"] if entry else None, "match": finding_match(f, catalog, blocks),
+                 "location": f.get("location"), "value": f.get("value"),
+                 "category": f.get("category"), "reason": f.get("note") or "", "mode": mode}
+        for sha in _commits_of(f.get("location", ""), shas):
+            per[sha].append(saved)
+    for sha, saved in per.items():
+        marks.update_review_note(sha, {"findings": saved, "mode": mode}, repo_path)
+    return [s for s in shas if per[s]]
+
+
+@dataclass
+class FindingsAck:
+    commit: str
+    findings: List[dict]
+    already: bool = False
+
+
+def saved_findings(rev: str, repo_path: str = ".") -> tuple:
+    """``(commit id, findings)`` saved for ``rev`` by its latest review."""
+    res = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"],
+                         cwd=repo_path, capture_output=True, text=True)
+    sha = res.stdout.strip()
+    if res.returncode != 0 or not sha:
+        raise ReviewError(f"'{rev}' is not a commit in this repository")
+    return sha, list(marks.review_note(sha, repo_path).get("findings") or [])
+
+
+@dataclass
+class SavedFindings:
+    commit: str
+    findings: List[dict]
+    reviewed: bool
+
+    @property
+    def blocking(self) -> List[dict]:
+        return [f for f in self.findings if f.get("match") != "judgment"]
+
+
+def show_findings(rev: str, repo_path: str = ".") -> SavedFindings:
+    """What ``review ack`` would act on for one commit, read only: its
+    saved findings and whether it is already reviewed. Writes nothing."""
+    sha, findings = saved_findings(rev, repo_path)
+    return SavedFindings(sha, findings, marks.REVIEWED in marks.marks_on(sha, repo_path))
+
+
+def ack_findings(rev: str, repo_path: str = ".") -> FindingsAck:
+    """Acknowledge every finding the latest review saved for one commit and
+    record it as reviewed. Refused when none were saved, and when any of
+    them is ``block``: that content has to be fixed."""
+    sha, findings = saved_findings(rev, repo_path)
+    if marks.REVIEWED in marks.marks_on(sha, repo_path):
+        return FindingsAck(sha, findings, already=True)
+    if not findings:
+        raise ReviewError(f"no review findings are saved for {sha[:12]}: run 'git-scan review' "
+                          "first; a commit with no findings is recorded by the review itself")
+    blocking = [f for f in findings if f.get("match") != "judgment"]
+    if blocking:
+        raise ReviewError(f"{len(blocking)} finding(s) on {sha[:12]} are block, not judgment calls; "
+                          "fix the content (amend, or a new commit) and review again")
+    marks.add_mark(marks.REVIEWED, sha, repo_path)
+    marks.update_review_note(sha, {"findings_acknowledged": True}, repo_path)
+    return FindingsAck(sha, findings)
