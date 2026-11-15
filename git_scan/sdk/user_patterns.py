@@ -24,7 +24,7 @@ import yaml
 from .config import (
     load_layer, layer_paths, load_config, user_config_path, project_config_path,
     CONFIG_FILENAME, THRESHOLD_KEYS, ConfigError, MATCHES, MIGRATED_FIELDS, entry_match,
-    validate_layer,
+    validate_layer, GROUP_LAYERS, group_selector, is_group, repo_is_trusted,
 )
 
 
@@ -343,6 +343,115 @@ def restore_pattern(id: str, repo_path: str = ".", project: bool = False) -> str
     data["patterns"] = entries
     _write(path, data)
     return f"'{id}' is on again"
+
+
+# --- groups of entries -------------------------------------------------------
+
+def _group(layer: Optional[str], category: Optional[str], id_glob: Optional[str]) -> tuple:
+    named = [(k, v) for k, v in (("layer", layer), ("category", category), ("id", id_glob)) if v]
+    if len(named) != 1:
+        raise PatternError("name one group: --layer, --category, or an id with * in it")
+    kind, value = named[0]
+    if kind == "layer" and value not in GROUP_LAYERS:
+        raise PatternError(f"--layer takes {' or '.join(GROUP_LAYERS)}; "
+                           "built-in entries are turned off one id at a time")
+    return kind, value
+
+
+def _require_trusted(repo_path: str) -> None:
+    """A repository's own file may turn off a group only when the user's
+    config names that repository; refuse before writing a file the next scan
+    would reject."""
+    layers = {"user": load_layer(user_config_path())}
+    if not repo_is_trusted(layers, repo_path):
+        raise PatternError(
+            "a repository's git-scan.yaml may turn off a group of entries only when your own "
+            "config names the repository. Name it first:\n  git-scan repos trust HOST/OWNER/REPO")
+
+
+def remove_group(layer: Optional[str] = None, category: Optional[str] = None,
+                 id_glob: Optional[str] = None, repo_path: str = ".", project: bool = False) -> str:
+    """Stop applying a group of entries: every entry a layer defines, every
+    entry of a category, or every id a wildcard matches. Written as one item
+    with ``match: ignore``; built-in entries are never part of a group."""
+    kind, value = _group(layer, category, id_glob)
+    if project:
+        _require_trusted(repo_path)
+    path = target_path(repo_path, project)
+    data = _read(path)
+    entries = _entries(data)
+    existing = next((e for e in entries if is_group(e) and group_selector(e) == (kind, value)), None)
+    if existing is not None and existing.get("match") == "ignore":
+        return f"{kind} {value} is already off in {path}"
+    if existing is None:
+        existing = {kind: value}
+        entries.append(existing)
+    existing["match"] = "ignore"
+    data["patterns"] = entries
+    _write(path, data)
+    count = sum(len(g["entries"]) for g in load_config(repo_path).groups
+                if g["selector"] == f"{kind} {value}" and g["layer"] == ("project" if project else "user"))
+    scope = "this repository" if project else "every repository on this machine"
+    return f"{kind} {value} is now off for {scope} ({count} entr{'y' if count == 1 else 'ies'} today)"
+
+
+def restore_group(layer: Optional[str] = None, category: Optional[str] = None,
+                  id_glob: Optional[str] = None, repo_path: str = ".", project: bool = False) -> str:
+    """Drop a group's ``match: ignore``, so its entries apply again."""
+    kind, value = _group(layer, category, id_glob)
+    path = target_path(repo_path, project)
+    data = _read(path)
+    entries = _entries(data)
+    existing = next((e for e in entries if is_group(e) and group_selector(e) == (kind, value)
+                     and e.get("match") == "ignore"), None)
+    if existing is None:
+        raise PatternError(f"{kind} {value} is not turned off in {path}")
+    existing.pop("match")
+    if set(existing) == {kind}:
+        entries.remove(existing)
+    data["patterns"] = entries
+    _write(path, data)
+    return f"{kind} {value} is on again"
+
+
+# --- trusted repositories ----------------------------------------------------
+
+def trust_repo(remote: str) -> List[str]:
+    """Name a repository (or every repository under a host or owner) whose
+    own git-scan.yaml may turn off groups of entries and lift the push
+    review. Always written to the user's config."""
+    remote = _norm_remote(remote)
+    if not remote or "://" in remote or "@" in remote:
+        raise PatternError(f"'{remote}' is not a host/owner/repo prefix (e.g. github.com/octo/fleet)")
+    path = user_config_path()
+    data = _read(path)
+    repos = [r for r in (data.get("trusted_repos") or []) if isinstance(r, str)]
+    if remote.lower() not in (r.lower() for r in repos):
+        repos.append(remote)
+    data["trusted_repos"] = repos
+    _write(path, data)
+    return repos
+
+
+def untrust_repo(remote: str) -> List[str]:
+    remote = _norm_remote(remote)
+    path = user_config_path()
+    data = _read(path)
+    repos = [r for r in (data.get("trusted_repos") or []) if isinstance(r, str)]
+    kept = [r for r in repos if r.lower() != remote.lower()]
+    if len(kept) == len(repos):
+        raise PatternError(f"'{remote}' is not a trusted repository in {path}")
+    if kept:
+        data["trusted_repos"] = kept
+    else:
+        data.pop("trusted_repos", None)
+    _write(path, data)
+    return kept
+
+
+def list_trusted_repos() -> List[str]:
+    return [r for r in ((load_layer(user_config_path()) or {}).get("trusted_repos") or [])
+            if isinstance(r, str)]
 
 
 def clear_patterns(repo_path: str = ".", project: bool = False) -> str:

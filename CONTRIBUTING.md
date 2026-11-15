@@ -255,6 +255,33 @@ Rules:
   With no matching rule the identity check is *skipped*, never failed:
   enforcement exists only where the user has said what is allowed. The
   check makes no network calls and reads no CLI login state.
+- **A group override is a `patterns` item without a single id.** It names
+  `layer` (`user` or `environment`), `category`, or an `id` containing
+  `*`, and carries `match` and/or `relaxed`: the same field, with the same
+  values, as on an entry, so there is still one rulebook and no second
+  source of a verdict. `config.load_config` takes group items out of each
+  layer before the merge (the merge keys on `id`) and applies them after
+  it (`_apply_groups`), the user layer's first and the project's after. An
+  entry that the same or a later layer sets that field on by its own id
+  keeps its value. Built-in entries are skipped by every selector, and
+  `layer: built-in` is refused: nothing turns off credential detection in
+  one line. A selector that matches nothing is not an error, because the
+  user layer differs between machines. `patterns remove` and `restore`
+  write and drop a group's `match: ignore` (`--layer`, `--category`, or an
+  id with `*`).
+- **`trusted_repos`** is a top-level list of `host/owner/repo` prefixes in
+  the user layer, managed by `git-scan repos trust / untrust / list` and
+  matched against `origin` with the identity check's `remote_matches`. It
+  is where the user says a repository's own file may decide more than a
+  repository may by default: group overrides, and lifting the push review.
+  The decision lives in the user layer on purpose. A repository's file is
+  content anyone with write access can change, so it can ask but cannot
+  grant; `trusted_repos` in a project layer is refused. A group in an
+  untrusted repository's file fails the load with the command that would
+  trust it, never silently applies and never silently does nothing. An
+  untrusted repository's `require_review: false` is not honoured, as
+  before. No network call and no per-clone state are involved, unlike
+  relaxed eligibility, so a clone a tool manages needs nothing run in it.
 - **Single settings are named `config` subcommands** with their own
   validation (`large-amount`, `entropy-enabled`, …); lists of things
   (`patterns`) are a command group with `add` / `remove` / `list`. Don't
@@ -560,7 +587,11 @@ records a review. Rules:
   is consumed at the same moment.
 - **Requirements only accumulate.** `review_required` is read per layer and
   combined, never from the merged view (merging replaces values), so a
-  project layer can't lift a requirement the user layer sets.
+  project layer can't lift a requirement the user layer sets. The one
+  exception is decided in the user layer, not the project's: a repository
+  the user names in `trusted_repos` may say `require_review: false`, and
+  then none is needed there. A trusted repository that says nothing still
+  needs the review.
 - **Opt-in.** Without `--pre-push` nothing about pushing changes; without
   `require_review` nothing about reviews does.
 
