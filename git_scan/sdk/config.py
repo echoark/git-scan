@@ -33,6 +33,7 @@ user layer is what's missing when it's needed.
 
 from __future__ import annotations
 
+import fnmatch
 import os
 import re
 from dataclasses import dataclass, field
@@ -52,10 +53,66 @@ FILE_LAYERS = ("built-in", "user", "project")     # the environment layer is der
 MERGE_KEYS = ["id", "name"]
 
 TOP_LEVEL_KEYS = {"entropy", "thresholds", "patterns", "allowed_emails", "identity", "push",
-                  "notes", "review"}
+                  "notes", "review", "trusted_repos"}
 REVIEW_KEYS = {"runner", "model", "timeout", "batch_bytes", "public_prospective"}
 PATTERN_FIELDS = {"id", "pattern", "category", "specifics", "word_boundary",
                   "not_followed_by", "exclude_files", "ignore_case", "match", "relaxed"}
+# A group override: a ``patterns`` item that names a group of entries instead
+# of one id, and sets what a match on each of them does. It has ``layer``
+# (every entry that layer defines), or ``category``, or an ``id`` with ``*``
+# in it, and ``match`` and/or ``relaxed``; nothing else. The effect is the
+# one the same field would have written on each entry it covers.
+GROUP_SELECTORS = ("layer", "category", "id")
+GROUP_LAYERS = ("environment", "user")     # built-in entries are never changed as a group
+GROUP_FIELDS = {"layer", "category", "id", "match", "relaxed"}
+
+
+def is_group(entry) -> bool:
+    """Whether a ``patterns`` item is a group override rather than an entry."""
+    if not isinstance(entry, dict):
+        return False
+    if "layer" in entry:
+        return True
+    id = entry.get("id")
+    if isinstance(id, str) and "*" in id:
+        return True
+    return "id" not in entry and "category" in entry and "pattern" not in entry and "specifics" not in entry
+
+
+def group_selector(entry: dict) -> tuple:
+    """(kind, value) of a group override: ``layer``, ``category`` or ``id``."""
+    for kind in GROUP_SELECTORS:
+        if kind in entry and (kind != "id" or "*" in str(entry["id"])):
+            return kind, entry[kind]
+    return None, None
+
+
+def group_label(entry: dict) -> str:
+    kind, value = group_selector(entry)
+    return f"{kind} {value}"
+
+
+def _validate_group(entry: dict, loc: str, errors: list) -> None:
+    for f in entry:
+        if f not in GROUP_FIELDS:
+            errors.append(f"{loc}: a group override takes only {', '.join(sorted(GROUP_FIELDS))}; "
+                          f"'{f}' belongs on an entry with an id")
+    named = [k for k in GROUP_SELECTORS if k in entry]
+    if len(named) != 1:
+        errors.append(f"{loc}: a group override names one of layer, category or an id with *")
+    if "layer" in entry and entry["layer"] not in GROUP_LAYERS:
+        errors.append(f"{loc}: 'layer' must be one of {', '.join(GROUP_LAYERS)}; "
+                      "built-in entries are changed one id at a time")
+    for key in ("category", "id"):
+        if key in entry and (not isinstance(entry[key], str) or not entry[key]):
+            errors.append(f"{loc}: '{key}' must be text")
+    if "match" not in entry and "relaxed" not in entry:
+        errors.append(f"{loc}: a group override says what a match does: match or relaxed")
+    for key in ("match", "relaxed"):
+        if key in entry and entry[key] not in MATCHES:
+            errors.append(f"{loc}: '{key}' must be one of {', '.join(MATCHES)}")
+
+
 # Fields earlier versions wrote; ``git-scan config migrate`` rewrites them.
 MIGRATED_FIELDS = {"note": "specifics", "judgment": "match: judgment", "disabled": "match: ignore"}
 
@@ -167,6 +224,9 @@ def validate_layer(data, path) -> None:
             if not isinstance(p, dict):
                 errors.append(f"{loc}: must be a mapping with id and pattern")
                 continue
+            if is_group(p):
+                _validate_group(p, f"patterns[{i}] (group override)", errors)
+                continue
             loc = f"patterns[{i}] ({p.get('id', 'no id')})"
             for f in p:
                 if f in MIGRATED_FIELDS:
@@ -265,6 +325,11 @@ def validate_layer(data, path) -> None:
             if not isinstance(em, list) or not em or not all(isinstance(x, str) and x for x in em):
                 errors.append(f"{loc}: 'emails' must be a non-empty list of addresses")
 
+    repos = data.get("trusted_repos", [])
+    if not isinstance(repos, list) or not all(isinstance(r, str) and r for r in repos):
+        errors.append("trusted_repos: must be a list of host/owner/repo prefixes "
+                      "(run: git-scan repos trust REMOTE)")
+
     push = data.get("push", {})
     if not isinstance(push, dict):
         errors.append("push: must be a mapping (require_review: true)")
@@ -316,6 +381,11 @@ class MergedConfig:
     # is its ``relaxed`` value where it has one. Only the scan sets it, for a
     # clone ``relaxed.commit_mode`` finds eligible and private.
     relaxed: bool = False
+    # The user layer names this repository in ``trusted_repos``, so its own
+    # git-scan.yaml may change entries as a group and lift the push review.
+    trusted_repo: bool = False
+    # Group overrides that were applied: {"layer", "selector", "match"/"relaxed", "entries"}.
+    groups: list = field(default_factory=list)
 
     @property
     def patterns(self) -> list[dict]:
@@ -441,8 +511,14 @@ class MergedConfig:
         """Whether a push needs a recorded review, from every layer combined.
 
         Read per layer rather than from the merged view: a layer can require
-        the review, never lift a requirement another layer set.
+        the review, never lift a requirement another layer set. The one
+        exception is a repository the user layer names in ``trusted_repos``:
+        its own git-scan.yaml may say ``require_review: false``, and then no
+        review is needed there.
         """
+        project_push = (self.layers.get("project") or {}).get("push") or {}
+        if self.trusted_repo and project_push.get("require_review") is False:
+            return False
         return any(bool(((layer or {}).get("push") or {}).get("require_review"))
                    for layer in self.layers.values())
 
@@ -458,6 +534,67 @@ def _catalog_texts(layers: dict) -> list:
     return texts
 
 
+def _split_groups(layer: Optional[dict]) -> tuple:
+    """A layer without its group overrides, and those overrides."""
+    if not layer or not isinstance(layer.get("patterns"), list):
+        return layer, []
+    groups = [p for p in layer["patterns"] if is_group(p)]
+    if not groups:
+        return layer, []
+    return {**layer, "patterns": [p for p in layer["patterns"] if not is_group(p)]}, groups
+
+
+def repo_is_trusted(layers: dict, repo_path: str = ".") -> bool:
+    """Whether the user layer's ``trusted_repos`` names this repository's
+    ``origin``, by the same host/owner/repo prefix rule the identity check uses."""
+    from .steps.git_identity import normalize_remote, remote_matches, _git
+    allowed = (layers.get("user") or {}).get("trusted_repos") or []
+    if not allowed:
+        return False
+    try:
+        url = _git(repo_path, "remote", "get-url", "origin")
+    except Exception:
+        return False
+    remote = normalize_remote(url) if url else None
+    return bool(remote) and any(remote_matches(str(rule), remote) for rule in allowed)
+
+
+def _apply_groups(merged: dict, layers: dict, groups: dict, sources: dict) -> list:
+    """Apply each layer's group overrides to the merged entries, the user
+    layer's first and the project's after. An entry the same layer, or a
+    later one, sets that field on by its own id keeps that value: the entry
+    named beats the group it is in. Built-in entries are never changed."""
+    applied = []
+    order = ("user", "project")
+    for position, name in enumerate(order):
+        later = order[position:]
+        for group in groups.get(name) or []:
+            kind, value = group_selector(group)
+            fields = {k: group[k] for k in ("match", "relaxed") if k in group}
+            touched = []
+            for entry in merged.get("patterns") or []:
+                id = entry.get("id")
+                source = sources.get(id)
+                if source == "built-in" or id is None:
+                    continue
+                if kind == "layer" and source != value:
+                    continue
+                if kind == "category" and entry.get("category") != value:
+                    continue
+                if kind == "id" and not fnmatch.fnmatchcase(id, value):
+                    continue
+                for key, val in fields.items():
+                    named = any(isinstance(p, dict) and p.get("id") == id and key in p
+                                for layer in later
+                                for p in ((layers.get(layer) or {}).get("patterns") or []))
+                    if not named:
+                        entry[key] = val
+                        if id not in touched:
+                            touched.append(id)
+            applied.append({"layer": name, "selector": group_label(group), **fields, "entries": touched})
+    return applied
+
+
 def load_config(repo_path: str = ".") -> MergedConfig:
     """Load, validate, and merge config from all layers: the three files and
     the environment layer derived from this machine.
@@ -466,6 +603,27 @@ def load_config(repo_path: str = ".") -> MergedConfig:
     """
     paths = layer_paths(repo_path)
     layers = {name: load_layer(path) for name, path in paths.items()}
+    groups = {}
+    for name in ("built-in", "user", "project"):
+        layers[name], groups[name] = _split_groups(layers[name])
+    if groups["built-in"]:
+        raise ConfigError(f"Invalid config: {paths['built-in']}\n  the built-in layer takes no group overrides")
+    if (layers.get("project") or {}).get("trusted_repos"):
+        raise ConfigError(
+            f"Invalid config: {paths['project']}\n"
+            "  trusted_repos belongs in your own config, not a repository's: a repository cannot "
+            "name itself.\n  Remove it from that file, and name the repository in yours with "
+            "'git-scan repos trust REMOTE'.")
+    trusted_repo = repo_is_trusted(layers, repo_path)
+    if groups["project"] and not trusted_repo:
+        raise ConfigError("\n".join(
+            [f"Invalid config: {paths['project']}",
+             "  This repository's git-scan.yaml turns off entries as a group, which a repository "
+             "may do only when your own config names it:"]
+            + [f"    {group_label(g)}" for g in groups["project"]]
+            + ["  If that is what you want for this repository, name it:",
+               "    git-scan repos trust HOST/OWNER/REPO",
+               "  Otherwise remove those lines from the repository's git-scan.yaml."]))
     layers["environment"] = {"patterns": derived_entries(repo_path, _catalog_texts(layers))}
 
     merged: dict = {}
@@ -473,7 +631,7 @@ def load_config(repo_path: str = ".") -> MergedConfig:
         if layers[name] is not None:
             merged = _merge_dicts(merged, layers[name], MERGE_KEYS)
 
-    config = MergedConfig(raw=merged, layers=layers)
+    config = MergedConfig(raw=merged, layers=layers, trusted_repo=trusted_repo)
     missing = [p.get("id") for p in config.all_patterns
                if not p.get("pattern") and not p.get("specifics")]
     # An override of an environment entry this machine doesn't derive (a
@@ -490,4 +648,5 @@ def load_config(repo_path: str = ".") -> MergedConfig:
             + [f"  {pid} (first defined in {path})" for pid, path in where.items()]
             + ["Add one with 'git-scan patterns edit <id> --pattern <regex>' or "
                "'--specifics <text>', or remove the entry with 'git-scan patterns remove <id>'."]))
+    config.groups = _apply_groups(merged, layers, groups, config.pattern_sources)
     return config

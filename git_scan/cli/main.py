@@ -667,28 +667,57 @@ def patterns_edit(id, pattern, category, specifics, word_boundary, not_followed_
     click.echo(f"updated '{id}'")
 
 
+def _is_group(id, layer, category) -> bool:
+    if sum(bool(x) for x in (id, layer, category)) != 1:
+        _fail(up.PatternError("give one of: an ID, --layer, or --category"))
+    return bool(layer or category or "*" in id)
+
+
 @patterns.command("remove")
-@click.argument("id")
+@click.argument("id", required=False)
+@click.option("--layer", help="Every entry this layer defines: user or environment.")
+@click.option("--category", help="Every entry of this category.")
 @click.option("--project", is_flag=True, help="Act on the repo's git-scan.yaml.")
-def patterns_remove(id, project):
-    """Stop applying a pattern.
+def patterns_remove(id, layer, category, project):
+    """Stop applying a pattern, or a group of them.
 
     Deletes an entry you own; a built-in, an entry derived from this
     machine, or (with --project) one of yours is turned off for that
     layer's scope instead. 'patterns restore' undoes the latter.
+
+    \b
+    A group is turned off as one line, and covers entries added later too:
+      git-scan patterns remove --layer user --project      everything you defined
+      git-scan patterns remove --layer environment --project   everything derived from this machine
+      git-scan patterns remove --category domain --project
+      git-scan patterns remove 'cloud_id-*' --project      an id with * in it
+
+    Built-in entries are never part of a group. With --project, a group
+    needs the repository named in your own config first: 'git-scan repos
+    trust'.
     """
     try:
+        if _is_group(id, layer, category):
+            click.echo(up.remove_group(layer=layer, category=category,
+                                       id_glob=id if id and "*" in id else None, project=project))
+            return
         click.echo(up.remove_pattern(id, project=project))
     except (up.PatternError, up.ConfigError) as e:
         _fail(e)
 
 
 @patterns.command("restore")
-@click.argument("id")
+@click.argument("id", required=False)
+@click.option("--layer", help="The group turned off with 'patterns remove --layer'.")
+@click.option("--category", help="The group turned off with 'patterns remove --category'.")
 @click.option("--project", is_flag=True, help="Act on the repo's git-scan.yaml.")
-def patterns_restore(id, project):
-    """Turn a built-in or derived pattern back on (drops its 'match: ignore' override)."""
+def patterns_restore(id, layer, category, project):
+    """Turn a built-in or derived pattern, or a group, back on (drops its 'match: ignore')."""
     try:
+        if _is_group(id, layer, category):
+            click.echo(up.restore_group(layer=layer, category=category,
+                                        id_glob=id if id and "*" in id else None, project=project))
+            return
         click.echo(up.restore_pattern(id, project=project))
     except (up.PatternError, up.ConfigError) as e:
         _fail(e)
@@ -946,6 +975,64 @@ def identity_list_cmd():
         click.echo("  no identity rules (the git identity check is skipped everywhere)")
     for r in rules:
         click.echo(f"  {r.get('remote')}: {', '.join(r.get('emails') or [])}")
+
+
+# --- trusted repositories ---------------------------------------------------
+
+@cli.group()
+def repos():
+    """Repositories whose own git-scan.yaml you trust to decide more.
+
+    \b
+    Any repository's git-scan.yaml can add entries and turn one off by id.
+    Only a repository named here can also:
+      turn off a whole group of entries (a layer, a category, an id with *)
+      say no privacy review is needed before a push (push.require_review: false)
+
+    \b
+      git-scan repos trust github.com/octo/fleet
+      git-scan repos list
+      git-scan repos untrust github.com/octo/fleet
+
+    The list is kept in your own config; a repository cannot name itself.
+    Prefixes match whole segments, as identity rules do: github.com/octo
+    covers every repository of that owner.
+    """
+
+
+@repos.command("trust")
+@click.argument("remote")
+def repos_trust(remote):
+    """Trust the git-scan.yaml of every repository under REMOTE (host/owner/repo)."""
+    try:
+        up.trust_repo(remote)
+    except (up.PatternError, up.ConfigError) as e:
+        _fail(e)
+    click.echo(f"trusted: {remote.strip().strip('/')}")
+
+
+@repos.command("untrust")
+@click.argument("remote")
+def repos_untrust(remote):
+    """Stop trusting REMOTE's git-scan.yaml."""
+    try:
+        up.untrust_repo(remote)
+    except (up.PatternError, up.ConfigError) as e:
+        _fail(e)
+    click.echo(f"no longer trusted: {remote.strip().strip('/')}")
+
+
+@repos.command("list")
+def repos_list():
+    """Show the repositories whose git-scan.yaml you trust."""
+    try:
+        rows = up.list_trusted_repos()
+    except up.ConfigError as e:
+        _fail(e)
+    if not rows:
+        click.echo("  none (no repository's git-scan.yaml can turn off a group or lift the push review)")
+    for r in rows:
+        click.echo(f"  {r}")
 
 
 # --- config -----------------------------------------------------------------

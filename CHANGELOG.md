@@ -3,6 +3,23 @@
 Notable changes to git-scan, newest first. Versions follow
 [CONTRIBUTING.md](CONTRIBUTING.md#version-management).
 
+## 0.14.0 (unreleased)
+
+### Added
+
+- **Groups of entries.** A `patterns` item can name a group instead of
+  one id (`layer: user` or `environment`, `category`, or an id with `*`)
+  and set `match` for every entry it covers, including ones added later.
+  `git-scan patterns remove --layer|--category` (or an id with `*`) turns
+  a group off and `patterns restore` turns it on. Built-in entries are
+  never part of a group, and an entry named by its own id beats its group.
+- **Trusted repositories.** `git-scan repos trust | untrust | list` keeps
+  `trusted_repos` in your own config: the repositories whose own
+  `git-scan.yaml` may turn off a group of entries and may say no review is
+  needed before a push (`push.require_review: false`). In any other
+  repository a group fails the scan with the command that would trust it,
+  and `require_review: false` is not honoured, as before.
+
 ## 0.13.0 (unreleased)
 
 ### Changed

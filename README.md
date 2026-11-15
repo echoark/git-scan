@@ -541,6 +541,80 @@ migrate` rewrites your user file and the repository's `git-scan.yaml`
 anything validation would still refuse, and writing only when you confirm.
 Run it yourself; it is not for an agent.
 
+### Groups of entries
+
+One line can turn off a whole group of entries, and it covers entries
+added later too:
+
+```bash
+git-scan patterns remove --category domain        # every entry of a category
+git-scan patterns remove 'cloud_id-*'             # every id the wildcard matches
+git-scan patterns remove --layer user --project   # everything you defined, in this repository
+git-scan patterns remove --layer environment --project   # everything derived from this machine
+git-scan patterns restore --category domain       # on again
+```
+
+In the file it is an item of `patterns` that names a group instead of one
+id, with the same `match` field an entry has:
+
+```yaml
+patterns:
+- layer: user
+  match: ignore
+- category: domain
+  match: ignore
+```
+
+- **A group is `layer` (`user` or `environment`), `category`, or an id
+  with `*`.** Its effect is the one `match: ignore` would have on each
+  entry it covers.
+- **Built-in entries are never part of a group.** The token and key
+  formats are turned off one id at a time, so no single line switches off
+  credential detection.
+- **An entry named by its own id beats the group it is in.** `patterns
+  edit domain-01 --match judgment` keeps that one entry while the rest of
+  its category is off.
+- **In a repository's own `git-scan.yaml`, a group needs your say-so**
+  (see below). Without it the scan fails and names the command.
+
+### Trusted repositories
+
+Any repository's `git-scan.yaml` can add entries and turn one off by id.
+Two things are bigger than that, and a repository can do them only when
+your own config names it:
+
+| | Any repository | A trusted repository |
+|---|---|---|
+| Add entries, turn one off by id | yes | yes |
+| Turn off a group of entries | no | yes |
+| Say no review is needed before a push (`push.require_review: false`) | no | yes |
+| Lift a public-prospective declaration | no | no |
+
+```bash
+git-scan repos trust github.com/octo/fleet     # one repository
+git-scan repos trust github.com/octo           # every repository of that owner
+git-scan repos list
+git-scan repos untrust github.com/octo/fleet
+```
+
+The list is `trusted_repos` in your own config, matched against the
+repository's `origin` by whole segments, as identity rules are. A
+repository cannot name itself: `trusted_repos` in a repository's file
+fails the scan.
+
+This is for a repository whose content is the very thing your patterns
+exist to catch, such as a private repository that records your
+deployments, with their project ids and domains. There, turn off what is
+personal and keep the built-in checks and the entropy scan:
+
+```bash
+git-scan repos trust github.com/octo/fleet
+cd fleet
+git-scan patterns remove --layer user --project
+git-scan patterns remove --layer environment --project
+git-scan config require-review off --project      # when a tool, not a person, pushes to it
+```
+
 ### Allowed emails
 
 Addresses the email check should ignore, such as test fixtures and bot
@@ -723,7 +797,8 @@ git-scan review                                       # before pushing
 A push is refused while any commit it sends lacks a clean review, with the
 command to run. The scan does not stand in for the review and the review
 does not stand in for the scan: both must pass. A project's `git-scan.yaml`
-can require the review but not lift the requirement.
+can require the review but not lift the requirement, unless you have named
+that repository as trusted (see [Trusted repositories](#trusted-repositories)).
 
 git-scan's own records (which commits were scanned and reviewed, the
 matches acknowledged, a review's findings) are repository-local metadata
