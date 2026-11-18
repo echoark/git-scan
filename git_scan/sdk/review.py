@@ -92,15 +92,16 @@ class ReviewResult:
 
 # --- runner ----------------------------------------------------------------
 
-def preset_argv(name: str, model: Optional[str] = None) -> Optional[List[str]]:
+def preset_argv(name: str, model: Optional[str] = None, command: Optional[str] = None) -> Optional[List[str]]:
     """The command line for a known headless agent CLI, prompt on stdin,
     no tools, no user context, JSON out; ``model`` pins the model."""
     if name == "claude":
-        argv = ["claude", "-p", "--output-format", "json", "--tools", "", "--max-turns", "1",
+        argv = [command or "claude", "-p", "--output-format", "json", "--tools", "", "--max-turns", "1",
                 "--setting-sources", "", "--disable-slash-commands", "--no-session-persistence",
                 "--json-schema", SCHEMA_FILE.read_text()]
     elif name == "agy":
-        argv = ["agy", "-p", "--output-format", "json"]
+        argv = [command or "agy", "-p", "--output-format", "json",
+                "--disable-slash-commands", "--json-schema", SCHEMA_FILE.read_text()]
     else:
         return None
     if model:
@@ -108,24 +109,39 @@ def preset_argv(name: str, model: Optional[str] = None) -> Optional[List[str]]:
     return argv
 
 
+def _resolve_candidate(spec, model: Optional[str]) -> Optional[tuple]:
+    if isinstance(spec, dict):
+        preset = spec.get("preset")
+        cmd = spec.get("command")
+        if preset in ("claude", "agy") and isinstance(cmd, str) and cmd.strip():
+            parts = shlex.split(cmd)
+            if parts and shutil.which(parts[0]):
+                return preset, preset_argv(preset, model, command=parts[0])
+        return None
+    if isinstance(spec, str) and spec.strip():
+        preset = preset_argv(spec, model)
+        if preset is not None:
+            return (spec, preset) if shutil.which(preset[0]) else None
+        argv = shlex.split(spec)
+        if argv and shutil.which(argv[0]):
+            return spec, argv
+    return None
+
+
 def resolve_runner(config: MergedConfig, override: Optional[str] = None) -> tuple:
     """``(name, argv)`` for the runner to use: the override, else the
-    configured ``review.runner``, else the first known CLI on PATH."""
+    configured ``review.runner`` (single spec or fallback list), else the
+    first known CLI on PATH."""
     chosen = override or config.review.get("runner")
     model = config.review.get("model")
     if chosen:
-        preset = preset_argv(chosen, model)
-        if preset is not None:
-            if not shutil.which(preset[0]):
-                raise ReviewError(f"the configured reviewer runner '{chosen}' is not installed "
-                                  "(not on PATH). Install it, or set another with: "
-                                  "git-scan config review-runner NAME")
-            return chosen, preset
-        argv = shlex.split(chosen)
-        if not argv or not shutil.which(argv[0]):
-            raise ReviewError(f"the configured reviewer runner command '{chosen}' was not found. "
-                              "Set another with: git-scan config review-runner CMD")
-        return chosen, argv
+        candidates = chosen if isinstance(chosen, list) else [chosen]
+        for candidate in candidates:
+            resolved = _resolve_candidate(candidate, model)
+            if resolved is not None:
+                return resolved
+        raise ReviewError(f"no configured reviewer runner in '{chosen}' was found on PATH. "
+                          "Install one, or update review.runner / git-scan config review-runner NAME")
     for name in ("claude", "agy"):
         if shutil.which(name):
             return name, preset_argv(name, model)
@@ -238,17 +254,20 @@ def parse_result(stdout: str) -> dict:
     except json.JSONDecodeError as e:
         raise ReviewError(f"the reviewer's output is not JSON ({e}); nothing recorded")
     meta: Dict[str, object] = {}
-    if isinstance(data, dict) and "status" not in data:
+    if isinstance(data, dict) and ("status" not in data or not isinstance(data.get("findings"), list)):
         models = data.get("modelUsage")
+        dur_ms = data.get("duration_ms")
+        if dur_ms is None and isinstance(data.get("duration_seconds"), (int, float)):
+            dur_ms = round(data["duration_seconds"] * 1000)
         meta = {"model": next(iter(models), None) if isinstance(models, dict) and models else data.get("model"),
-                "duration_ms": data.get("duration_ms")}
+                "duration_ms": dur_ms}
         if data.get("is_error"):
-            raise ReviewError(f"the reviewer failed: {str(data.get('result'))[:200]}; "
+            raise ReviewError(f"the reviewer failed: {str(data.get('result') or data.get('response'))[:200]}; "
                               "nothing recorded")
         if isinstance(data.get("structured_output"), dict):
             data = data["structured_output"]
-        elif isinstance(data.get("result"), str):
-            text = data["result"]
+        elif isinstance(data.get("result"), str) or isinstance(data.get("response"), str):
+            text = data.get("result") if isinstance(data.get("result"), str) else data["response"]
             m = _FENCE.search(text)
             try:
                 data = json.loads(m.group(1) if m else text)

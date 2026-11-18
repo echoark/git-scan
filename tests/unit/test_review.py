@@ -713,7 +713,29 @@ def test_parse_result_shapes():
     ok = {"status": "completed", "findings": []}
     assert review.parse_result(json.dumps(ok))["status"] == "completed"
     assert review.parse_result(json.dumps({"structured_output": ok}))["findings"] == []
+    # CLI envelope with outer status ("SUCCESS") and structured_output / response
+    assert review.parse_result(json.dumps({"status": "SUCCESS", "duration_seconds": 1.5, "structured_output": ok}))["status"] == "completed"
+    assert review.parse_result(json.dumps({"status": "SUCCESS", "response": f"```json\n{json.dumps(ok)}\n```"}))["findings"] == []
     with pytest.raises(review.ReviewError, match="lacks category"):
         review.parse_result(json.dumps({"status": "completed", "findings": [{"category": "x"}]}))
     with pytest.raises(review.ReviewError, match="reviewer failed"):
         review.parse_result(json.dumps({"is_error": True, "result": "rate limited"}))
+
+
+def test_agy_preset_and_runner_fallback_list(repo, tmp_path):
+    argv = review.preset_argv("agy", command="/usr/local/bin/custom-cli")
+    assert argv[0] == "/usr/local/bin/custom-cli"
+    assert "--disable-slash-commands" in argv
+    assert "--json-schema" in argv
+
+    stub = tmp_path / "alt-agy"
+    stub.write_text("#!/bin/sh\nexit 0\n")
+    stub.chmod(0o755)
+    (repo / "git-scan.yaml").write_text(
+        f"review:\n  runner:\n    - nonexistent-runner-xyz\n    - preset: agy\n      command: {stub}\n"
+    )
+    cfg = config.load(str(repo))
+    name, resolved = review.resolve_runner(cfg)
+    assert name == "agy"
+    assert resolved[0] == str(stub)
+    assert "--json-schema" in resolved

@@ -202,6 +202,22 @@ def load_layer(path: Path) -> Optional[dict]:
     return data
 
 
+def _valid_runner_item(item) -> bool:
+    if isinstance(item, str):
+        return bool(item.strip())
+    if isinstance(item, dict):
+        preset = item.get("preset")
+        cmd = item.get("command")
+        return preset in ("claude", "agy") and isinstance(cmd, str) and bool(cmd.strip()) and set(item) <= {"preset", "command"}
+    return False
+
+
+def _valid_runner_spec(value) -> bool:
+    if isinstance(value, list):
+        return bool(value) and all(_valid_runner_item(x) for x in value)
+    return _valid_runner_item(value)
+
+
 def validate_layer(data, path) -> None:
     """Raise ConfigError describing the first problems found."""
     errors = []
@@ -357,8 +373,11 @@ def validate_layer(data, path) -> None:
                               "review.relaxed key from this file")
             elif k not in REVIEW_KEYS:
                 errors.append(f"review.{k}: unknown (known: {', '.join(sorted(REVIEW_KEYS))})")
-            elif k in ("runner", "model") and (not isinstance(v, str) or not v):
-                errors.append(f"review.{k}: must be text")
+            elif k == "runner":
+                if not _valid_runner_spec(v):
+                    errors.append("review.runner: must be a command/preset name, {preset, command}, or a non-empty list of those")
+            elif k == "model" and (not isinstance(v, str) or not v):
+                errors.append("review.model: must be text")
             elif k in ("timeout", "batch_bytes") and (not isinstance(v, int) or isinstance(v, bool)
                                                        or v <= 0):
                 errors.append(f"review.{k}: must be a positive whole number")
