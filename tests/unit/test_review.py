@@ -723,6 +723,7 @@ def test_parse_result_shapes():
 
 
 def test_agy_preset_and_runner_fallback_list(repo, tmp_path):
+    from git_scan.sdk import config
     argv = review.preset_argv("agy", command="/usr/local/bin/custom-cli")
     assert argv[0] == "/usr/local/bin/custom-cli"
     assert "--disable-slash-commands" in argv
@@ -734,7 +735,7 @@ def test_agy_preset_and_runner_fallback_list(repo, tmp_path):
     (repo / "git-scan.yaml").write_text(
         f"review:\n  runner:\n    - nonexistent-runner-xyz\n    - preset: agy\n      command: {stub}\n"
     )
-    cfg = config.load(str(repo))
+    cfg = config.load_config(str(repo))
     name, resolved = review.resolve_runner(cfg)
     assert name == "agy"
     assert resolved[0] == str(stub)

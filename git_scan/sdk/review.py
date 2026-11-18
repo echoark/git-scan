@@ -140,7 +140,7 @@ def resolve_runner(config: MergedConfig, override: Optional[str] = None) -> tupl
             resolved = _resolve_candidate(candidate, model)
             if resolved is not None:
                 return resolved
-        raise ReviewError(f"no configured reviewer runner in '{chosen}' was found on PATH. "
+        raise ReviewError(f"configured reviewer runner '{chosen}' was not found. "
                           "Install one, or update review.runner / git-scan config review-runner NAME")
     for name in ("claude", "agy"):
         if shutil.which(name):
