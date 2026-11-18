@@ -99,13 +99,16 @@ def preset_argv(name: str, model: Optional[str] = None, command: Optional[str] =
         argv = [command or "claude", "-p", "--output-format", "json", "--tools", "", "--max-turns", "1",
                 "--setting-sources", "", "--disable-slash-commands", "--no-session-persistence",
                 "--json-schema", SCHEMA_FILE.read_text()]
+        if model:
+            argv += ["--model", model]
     elif name == "agy":
-        argv = [command or "agy", "-p", "--output-format", "json",
+        argv = [command or "agy", "--output-format", "json",
                 "--disable-slash-commands", "--json-schema", SCHEMA_FILE.read_text()]
+        if model:
+            argv += ["--model", model]
+        argv += ["-p"]
     else:
         return None
-    if model:
-        argv += ["--model", model]
     return argv
 
 
@@ -297,8 +300,10 @@ def covers(reported: Sequence[str], shas: Sequence[str]) -> List[str]:
 
 def run_batch(argv: List[str], prompt: str, timeout: int) -> dict:
     started = time.monotonic()
+    cmd = list(argv) + [prompt] if argv and argv[-1] == "-p" else argv
+    stdin_text = None if argv and argv[-1] == "-p" else prompt
     try:
-        res = subprocess.run(argv, input=prompt, capture_output=True, text=True, timeout=timeout)
+        res = subprocess.run(cmd, input=stdin_text, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         raise ReviewError(f"the reviewer did not answer within {timeout}s; nothing recorded. "
                           "Run again (reviewed commits are skipped), or raise the limit: "

@@ -740,3 +740,4 @@ def test_agy_preset_and_runner_fallback_list(repo, tmp_path):
     assert name == "agy"
     assert resolved[0] == str(stub)
     assert "--json-schema" in resolved
+    assert resolved[-1] == "-p"
